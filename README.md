@@ -89,4 +89,4 @@ docs/ schema/ test/ examples/
 
 ## License
 
-MIT
+[MIT](LICENSE) © Max Derksen
