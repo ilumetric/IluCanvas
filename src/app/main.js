@@ -1226,7 +1226,8 @@ function onDblClick(hit) {
 
 // ---- links ------------------------------------------------------------------------------------------------
 
-const apiKey = () => pref.get('driveKey', '') || window.ILUCANVAS_CONFIG?.googleApiKey || '';
+// the site's key (config.js): restricted to this site and to reading public Drive files
+const apiKey = () => window.ILUCANVAS_CONFIG?.googleApiKey || '';
 
 function linkErrorText(e) {
   const s = t(`linkErr.${e.code || 'http'}`, { msg: e.message });
@@ -1245,7 +1246,7 @@ async function openLinkDialog() {
   const go = async () => {
     const l = remote.parseLink(input.value);
     if (!l) { toast(t('link.bad'), { kind: 'error' }); return false; }
-    if (l.kind === 'gdrive' && !apiKey()) { dlg.close(); openSettings({ focus: 'driveKey' }); return false; }
+    if (l.kind === 'gdrive' && !apiKey()) { toast(t('linkErr.nokey'), { kind: 'error', timeout: 9000 }); return false; }
     dlg.close();
     const key = remote.linkKey(l);
     const known = S.links.find((x) => x.key === key);
@@ -1353,7 +1354,7 @@ async function syncLink(rec, manual = false) {
 
 // ---- settings ---------------------------------------------------------------------------------------------
 
-function openSettings({ focus } = {}) {
+function openSettings() {
   const field = (label, control, note) => h('div.field', {}, h('span.field-label', {}, label), control, note ? h('span.field-note', {}, note) : null);
   const seg = (items, current, onPick) => {
     const box = h('div.seg');
@@ -1405,8 +1406,6 @@ function openSettings({ focus } = {}) {
   };
   paintBgPicks();
 
-  const keyInput = h('input.input.mono', { type: 'text', value: pref.get('driveKey', ''), placeholder: 'AIza…', spellcheck: false, autocomplete: 'off' });
-  keyInput.addEventListener('change', () => { pref.set('driveKey', keyInput.value.trim()); });
   const autosave = h('label.check', {}, h('input', { type: 'checkbox', checked: pref.get('autosave', true), onchange: (e) => { pref.set('autosave', e.target.checked); if (e.target.checked) scheduleSave(); } }), t('settings.autosaveText'));
 
   const body = h('div.form', {},
@@ -1415,15 +1414,13 @@ function openSettings({ focus } = {}) {
     field(t('settings.wheel'), seg([['zoom', t('settings.wheelZoom')], ['pan', t('settings.wheelPan')]], pref.get('wheel', 'zoom'), (v) => { pref.set('wheel', v); S.board.wheelMode = v; }), t('settings.wheelNote')),
     field(t('settings.autosave'), autosave),
     field(t('settings.language'), seg([['ru', 'Русский'], ['en', 'English']], getLang(), (v) => { pref.set('lang', v); setLang(v); dlg.close(); render(); openSettings(); })),
-    field(t('settings.driveKey'), keyInput, h('span', {}, t('settings.driveKeyNote'), ' ', h('a', { href: 'docs/SHARING.md', target: '_blank', rel: 'noopener' }, t('settings.howTo')))),
     h('div.about', {},
       h('span', {}, `IluCanvas ${APP_VERSION}`),
       h('a', { href: REPO_URL, target: '_blank', rel: 'noopener' }, icon('github', 14), 'GitHub'),
       h('a', { href: 'docs/AGENT.md', target: '_blank', rel: 'noopener' }, icon('terminal', 14), 'AGENT.md'),
       h('a', { href: 'docs/FORMAT.md', target: '_blank', rel: 'noopener' }, icon('book', 14), 'FORMAT.md'),
       h('a', { href: '#', onclick: (e) => { e.preventDefault(); showShortcuts(); } }, icon('more', 14), t('settings.keys'))));
-  const dlg = openDialog({ title: t('settings.title'), body, wide: true, actions: [{ spacer: true }, { label: t('dlg.ok'), kind: 'primary', onClick: () => { pref.set('driveKey', keyInput.value.trim()); } }] });
-  if (focus === 'driveKey') setTimeout(() => { keyInput.focus(); keyInput.scrollIntoView({ block: 'center' }); });
+  const dlg = openDialog({ title: t('settings.title'), body, wide: true, actions: [{ spacer: true }, { label: t('dlg.ok'), kind: 'primary' }] });
 }
 
 function showShortcuts() {

@@ -40,10 +40,10 @@ only reads public files; it cannot see anything private.
    * *Application restrictions* → **Websites**: add the site address, e.g.
      `https://ilumetric.github.io/*` (and `http://localhost:8790/*` for local use).
    * *API restrictions* → **Restrict key** → **Google Drive API**.
-5. Either paste the key into IluCanvas → Settings → *Google API key* (kept in
-   that browser only), or — for everyone using your copy of the site — put it in
-   `config.js` (`googleApiKey`). A key restricted this way is safe to publish
-   in a web page: it works only on your site and only for public Drive files.
+5. Put the key into `config.js` (`googleApiKey`) and publish the site. Everyone
+   who opens your copy of IluCanvas can then open Drive links — viewers need
+   no key and no setup. A key restricted this way is safe to publish in a web
+   page: it works only on your site and only for public Drive files.
 
 The Drive API is free; its request quota is far above what viewing a few
 boards needs. The download shows its progress.
@@ -55,7 +55,7 @@ boards needs. The download shows its progress.
 | No access | The file is not shared "Anyone with the link". |
 | File not found | Wrong link, or the file was deleted / moved to trash. |
 | Drive API not enabled | Step 2 above, in the key's project. |
-| The key does not work / not allowed on this site | Check the key, and that the site address is in its website restrictions. |
+| The key does not work / not allowed on this site | Check `config.js`, and that the site address is in the key's website restrictions. |
 
 ## Other places
 
