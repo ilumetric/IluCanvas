@@ -39,6 +39,10 @@ Write (re-read → change → write; the open app picks the change up within sec
         default place: right of everything (or at the bottom of --group)
   set <file> <id|canvas> key=value…     ${EDITABLE_KEYS.join(' ')}; canvas: title
   move <file> <id>… (--by DX,DY | --to X,Y)
+  shape <file> <kind> ["text"] [--fill C] [--stroke C] [--at X,Y] [--w W] [--h H] [--group ID]
+                                        kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
+  connect <file> <from> <to> [--label L] [--route straight|elbow|curve] [--start/--end none|arrow|dot]
+                                        from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
   note <file> "text" [--color C] [--at X,Y] [--group ID] [--w W] [--size s|m|l|xl]
                                         a note; Markdown text ("\\n" = new line); colours: yellow orange
                                         pink green blue violet grey (stickies), paper (document), none (text)
@@ -60,7 +64,7 @@ Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'h', 'v']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -256,7 +260,11 @@ const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 function lsText(doc, only = null) {
   const lines = [];
   const imgs = doc.items.filter((i) => i.type === 'image');
-  lines.push(`canvas "${doc.title}" ${doc.id} · ${imgs.length} images · ${groupsOf(doc).length} groups · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`);
+  const count = (type, word) => {
+    const n = doc.items.filter((i) => i.type === type).length;
+    return n ? ` · ${n} ${word}` : '';
+  };
+  lines.push(`canvas "${doc.title}" ${doc.id} · ${imgs.length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`);
   const img = (it, ind) => {
     const a = doc.assets[it.asset] || {};
     const extra = [it.rot ? `rot=${r0(it.rot)}` : '', it.flipX ? 'flipX' : '', it.flipY ? 'flipY' : '', it.crop ? 'cropped' : '', it.locked ? 'locked' : ''].filter(Boolean).join(' ');
@@ -276,7 +284,13 @@ function lsText(doc, only = null) {
         const more = it.text.split('\n').length - 1;
         lines.push(`${ind}${it.id}  note  "${first.slice(0, 60)}"${more ? ` (+${more} lines)` : ''}  ${it.color}${it.fit ? ' sticky' : ''}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
       }
-      else lines.push(`${ind}${it.id}  ${it.type}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
+      else if (it.type === 'shape') {
+        const first = plainText(it.text).split('\n').find((l) => l.trim()) || '';
+        lines.push(`${ind}${it.id}  shape  ${it.kind}  "${first.slice(0, 60)}"  fill=${it.fill}${it.stroke ? ` stroke=${it.stroke}` : ''}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
+      } else if (it.type === 'connector') {
+        const end = (e) => (e.id ? `${e.id}${e.side ? `.${e.side}` : ''}` : `(${r0(e.x)},${r0(e.y)})`);
+        lines.push(`${ind}${it.id}  connector  ${end(it.from)} → ${end(it.to)}${it.label ? `  "${it.label}"` : ''}  ${it.route || 'straight'}${it.start ? ` start=${it.start}` : ''} end=${it.end}  ${it.color}`);
+      } else lines.push(`${ind}${it.id}  ${it.type}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
     }
   };
   if (only) {
@@ -461,6 +475,18 @@ async function main(argv) {
       case 'ungroup': need(pos[0], 'ungroup: which group?'); ops = [{ op: 'ungroup', id: pos[0] }]; break;
       case 'arrange': need(pos.length, 'arrange: a group id or item ids'); ops = [{ op: 'arrange', ids: pos, width: opt.width, gap: opt.gap }]; break;
       case 'front': case 'back': need(pos.length, `${cmd}: which ids?`); ops = [{ op: cmd, ids: pos }]; break;
+      case 'shape': {
+        need(pos.length >= 1 && pos.length <= 2, 'shape: usage: shape <file> <kind> ["text"] [--fill C] [--at X,Y] [--w W] [--h H] [--group ID]');
+        const at = opt.at ? pair(opt.at, '--at') : null;
+        ops = [{ op: 'shape', kind: pos[0], text: (pos[1] || '').replace(/\\n/g, '\n'), fill: opt.fill, stroke: opt.stroke, x: at?.[0], y: at?.[1], w: opt.w ? Number(opt.w) : undefined, h: opt.h ? Number(opt.h) : undefined, size: opt.size, group: opt.group }];
+        break;
+      }
+      case 'connect': {
+        need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route straight|elbow|curve] [--start H] [--end H] [--color C] [--dash]');
+        const end = (v) => (/^-?[\d.]+\s*,\s*-?[\d.]+$/.test(v) ? (([x, y]) => ({ x, y }))(pair(v, 'point')) : v);
+        ops = [{ op: 'connect', from: end(pos[0]), to: end(pos[1]), label: opt.label, route: opt.route, start: opt.start, end: opt.end, color: opt.color, dash: opt.dash ? true : undefined, width: opt.width ? Number(opt.width) : undefined }];
+        break;
+      }
       case 'note': {
         need(pos.length === 1, 'note: usage: note <file> "text" [--color C] [--at X,Y] [--group ID]');
         const at = opt.at ? pair(opt.at, '--at') : null;

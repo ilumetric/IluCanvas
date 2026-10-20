@@ -80,6 +80,34 @@ for (const [label, cli] of CLIS) {
       assert.equal(spawnSync(process.execPath, [cli, 'frobnicate', f]).status, 2);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test(`CLI (${label}): note, shape, connect, rm detaches`, (t) => {
+    if (!existsSync(cli)) { t.skip(`${cli} not built`); return; }
+    const dir = mkdtempSync(join(tmpdir(), 'ilucanvas-cli-'));
+    const run = (...args) => execFileSync(process.execPath, [cli, ...args], { encoding: 'utf8', cwd: dir });
+    const runJson = (...args) => JSON.parse(run(...args, '--json'));
+    try {
+      const f = join(dir, 'flow.ilucanvas');
+      run('new', f);
+      run('note', f, '# План\\n- [ ] эскиз', '--color', 'paper');
+      const [a] = runJson('shape', f, 'rounded', 'Старт', '--fill', 'green', '--at', '0,0').created;
+      const [b] = runJson('shape', f, 'diamond', 'Ок?', '--fill', 'yellow', '--at', '400,0').created;
+      const [c] = runJson('connect', f, a, b, '--label', 'да', '--route', 'elbow').created;
+      runJson('connect', f, b, '900,300', '--end', 'dot', '--dash');
+      const text = run('ls', f);
+      assert.match(text, /1 notes · 2 shapes · 2 connectors/);
+      assert.match(text, new RegExp(`${c}  connector  ${a} → ${b}  "да"  elbow end=arrow  grey`));
+      assert.match(text, /shape {2}diamond {2}"Ок\?" {2}fill=yellow/);
+      const bad = spawnSync(process.execPath, [cli, 'shape', f, 'blob'], { encoding: 'utf8' });
+      assert.equal(bad.status, 2);
+      assert.match(bad.stderr, /kind must be one of/);
+      run('rm', f, b);
+      const after = runJson('ls', f).items.filter((i) => i.type === 'connector');
+      assert.equal(after.length, 2, 'connectors stay');
+      assert.ok(after.every((x) => x.from.id !== b && x.to.id !== b), 'ends on the removed shape became points');
+      assert.match(run('validate', f), /ok/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 }
 
 test('CLI: from-pur converts the sample PureRef file (when present)', (t) => {

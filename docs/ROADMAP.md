@@ -5,8 +5,8 @@ new features are new item types, not new subsystems.
 
 ## Principles
 
-- **Everything is an item** in `canvas.json` `items`: today `image`, `group`;
-  next `note`, `shape`, `connector`, `stroke`, `video`. Every type gets the same
+- **Everything is an item** in `canvas.json` `items`: today `image`, `group`,
+  `note`, `shape`, `connector`; next `stroke`, `video`. Every type gets the same
   selection, move, resize, groups, undo, autosave, minimap, agent ops.
 - **Drawn on the canvas**, like images (fast with thousands of items; correct
   stacking — a note can lie under a picture). Real DOM appears only while
@@ -138,8 +138,8 @@ connectors as `s1 → s2 "yes"`.
 
 ## Order of work
 
-1. UI scale; the text engine (Markdown subset → layout → canvas, editor). Notes.
-2. Shapes and connectors.
+1. UI scale; the text engine (Markdown subset → layout → canvas, editor). Notes. *(done)*
+2. Shapes and connectors. *(done)*
 3. Ink: pen, highlighter, tape, eraser. *(independent of 1–2)*
 4. Video. *(independent of 1–3)*
 5. PureRef on our rails: a `.pur` opens as ordinary IluCanvas items — its

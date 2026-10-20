@@ -8,9 +8,17 @@
 // Edits replace item objects in doc.items (model.js); a finished gesture is
 // reported with the items as they were before, for undo.
 
-import { itemBounds, unionBounds, intersects, withChildren, reparent, byId, newId, groupsByDepth, groupAtPoint, outermost, GROUP_COLORS, RATIO_K } from '../core/model.js';
+import { itemBounds, unionBounds, intersects, withChildren, reparent, byId, newId, groupsByDepth, groupAtPoint, outermost, translateItem, copyItems, GROUP_COLORS, RATIO_K } from '../core/model.js';
+import { connectorPath, distToPolyline, pathBounds, sidePoint, nearestSide, SIDES } from '../core/connectors.js';
 import { LEVELS, levelFor } from './images.js';
 import { drawNote, checkAt, linkAt } from './text.js';
+import { drawShapeBody, drawConnector, connectorWidth } from './shapes.js';
+
+/** Tools that make things by clicking / dragging on the board. */
+const MAKERS = new Set(['note', 'shape']);
+/** Items a connector can attach to (and that show connection dots). */
+const LINKABLE = new Set(['image', 'note', 'shape']);
+const DOT_OFF = 14; // connection dots: px outside the item's side
 
 const MIN_Z = 0.002;
 const MAX_Z = 64;
@@ -89,7 +97,7 @@ export class Board {
   setTool(tool) {
     this.tool = tool;
     this.stage.classList.toggle('tool-hand', tool === 'hand');
-    this.stage.classList.toggle('tool-create', tool === 'note');
+    this.stage.classList.toggle('tool-create', MAKERS.has(tool) || tool === 'connector');
     this.invalidateOverlay();
   }
 
@@ -282,13 +290,26 @@ export class Board {
       labels.push(g);
     }
 
-    // images
+    // images, notes, shapes, connectors — in their stacking order
+    const look = (id) => m.get(id);
     for (const it of this.doc.items) {
       if (it.type === 'group') continue;
+      if (it.type === 'connector') {
+        const path = connectorPath(it, look);
+        if (!intersects(pathBounds(path.pts), vis)) continue;
+        drawn++;
+        drawConnector(ctx, it, look, { px: k, theme, family: theme.font, path });
+        continue;
+      }
       const b = it.rot ? itemBounds(it) : it;
       if (!intersects(b, vis)) continue;
       drawn++;
       if (it.type === 'note') { drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId }); continue; }
+      if (it.type === 'shape') {
+        drawShapeBody(ctx, it, { px: k });
+        drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId });
+        continue;
+      }
       if (it.type !== 'image') { this.#drawUnknown(ctx, it, z); continue; }
       const a = this.doc.assets[it.asset];
       const px = Math.max(it.w, it.h) * k;
@@ -419,6 +440,7 @@ export class Board {
     const th = this.theme;
     const m = byId(this.doc);
     const outline = (it, width, alpha = 1) => {
+      if (it.type === 'connector') { this.#outlinePath(ctx, it, width, alpha); return; }
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.lineWidth = width;
@@ -450,8 +472,50 @@ export class Board {
     }
     const sel = this.selectedItems();
     if (sel.length && sel.length <= 400) for (const it of sel) outline(it, 1.5);
+    // connection dots on the hovered (or the one selected) item
+    const dotItem = this.#dotItem();
+    if (dotItem) {
+      for (const d of this.#dots(dotItem)) {
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.hot ? 6 : 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = d.hot ? th.select : '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = th.select;
+        ctx.stroke();
+      }
+    }
+    // a connector being drawn, or an end being moved: the target item
+    if ((this.drag?.type === 'connect' || this.drag?.type === 'end') && this.drag.moved) {
+      const d = this.drag;
+      if (d.target) { const g = m.get(d.target); if (g) outline(g, 2.5, 0.9); }
+      if (d.type === 'connect') {
+        const a = this.toScreen(d.a.x, d.a.y);
+        const b = this.toScreen(d.b.x, d.b.y);
+        ctx.save();
+        ctx.setLineDash([6, 5]);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = th.select;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     const box = this.#selectionBox(sel);
-    if (box && !(this.drag?.type === 'move' && this.drag.moved)) {
+    if (sel.length === 1 && sel[0].type === 'connector' && !this.readOnly && !(this.drag?.moved && this.drag.type === 'move')) {
+      // a connector: its two ends are the handles
+      for (const hd of this.#endHandles(sel[0])) {
+        ctx.beginPath();
+        ctx.arc(hd.x, hd.y, HANDLE / 2 + 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = hd.attached ? th.select : '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = hd.attached ? '#ffffff' : th.select;
+        ctx.stroke();
+      }
+    } else if (box && !(this.drag?.type === 'move' && this.drag.moved)) {
       if (sel.length > 1 || sel[0]?.type === 'group') {
         ctx.lineWidth = 1;
         ctx.strokeStyle = th.select;
@@ -488,6 +552,54 @@ export class Board {
     }
   }
 
+  /** Outline a connector's path on the overlay. */
+  #outlinePath(ctx, c, width, alpha) {
+    const m = byId(this.doc);
+    const path = connectorPath(c, (id) => m.get(id));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = this.theme.select;
+    ctx.lineWidth = width + connectorWidth(c, this.view.z * (devicePixelRatio || 1)) * this.view.z;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha = alpha * 0.45;
+    ctx.beginPath();
+    path.pts.forEach((p, i) => { const s = this.toScreen(p.x, p.y); if (i) ctx.lineTo(s.x, s.y); else ctx.moveTo(s.x, s.y); });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Screen positions of a connector's ends. */
+  #endHandles(c) {
+    const m = byId(this.doc);
+    const path = connectorPath(c, (id) => m.get(id));
+    const a = this.toScreen(path.a.x, path.a.y);
+    const b = this.toScreen(path.b.x, path.b.y);
+    return [{ end: 'from', x: a.x, y: a.y, attached: !!c.from.id }, { end: 'to', x: b.x, y: b.y, attached: !!c.to.id }];
+  }
+
+  /** The item showing connection dots: hovered (select tool), or the one selected. */
+  #dotItem() {
+    if (this.readOnly || this.tool !== 'select' || this.editingId || (this.drag && this.drag.type !== 'connect' && this.drag.moved)) return null;
+    if (this.drag?.type === 'connect') return null;
+    const m = byId(this.doc);
+    const id = this.hover || (this.selection.size === 1 ? [...this.selection][0] : null);
+    const it = id && m.get(id);
+    if (!it || !LINKABLE.has(it.type) || it.rot) return null;
+    if (Math.min(it.w, it.h) * this.view.z < 36) return null;
+    return it;
+  }
+
+  #dots(it) {
+    const z = this.view.z;
+    const off = { top: [0, -DOT_OFF], right: [DOT_OFF, 0], bottom: [0, DOT_OFF], left: [-DOT_OFF, 0] };
+    return SIDES.map((side) => {
+      const p = sidePoint(it, side);
+      const s = this.toScreen(p.x, p.y);
+      return { side, id: it.id, x: s.x + off[side][0], y: s.y + off[side][1], hot: this.hotDot === `${it.id}:${side}` };
+    }).filter(() => z > 0);
+  }
+
   /** The selection's bounds on screen (null when nothing is selected). */
   #selectionBox(sel = this.selectedItems()) {
     if (!sel.length) return null;
@@ -501,6 +613,7 @@ export class Board {
       { id: 'nw', x: box.x, y: box.y }, { id: 'ne', x: box.x + box.w, y: box.y },
       { id: 'sw', x: box.x, y: box.y + box.h }, { id: 'se', x: box.x + box.w, y: box.y + box.h },
     ];
+    if (sel.length === 1 && sel[0].type === 'connector') return [];
     if (sel.length === 1 && freeResize(sel[0])) {
       hs.push({ id: 'n', x: box.x + box.w / 2, y: box.y }, { id: 's', x: box.x + box.w / 2, y: box.y + box.h },
         { id: 'w', x: box.x, y: box.y + box.h / 2 }, { id: 'e', x: box.x + box.w, y: box.y + box.h / 2 });
@@ -515,8 +628,13 @@ export class Board {
     if (!this.doc) return { kind: 'none' };
     if (handles && !this.readOnly) {
       const sel = this.selectedItems();
+      if (sel.length === 1 && sel[0].type === 'connector') {
+        for (const hd of this.#endHandles(sel[0])) if (Math.hypot(sx - hd.x, sy - hd.y) <= HANDLE + 2) return { kind: 'end', id: sel[0].id, end: hd.end };
+      }
       const box = this.#selectionBox(sel);
       if (box) for (const hd of this.#handles(box, sel)) if (Math.abs(sx - hd.x) <= HANDLE && Math.abs(sy - hd.y) <= HANDLE) return { kind: 'handle', handle: hd.id };
+      const dotItem = this.#dotItem();
+      if (dotItem) for (const d of this.#dots(dotItem)) if (Math.hypot(sx - d.x, sy - d.y) <= 9) return { kind: 'dot', id: d.id, side: d.side };
     }
     for (let i = this.labelRects.length - 1; i >= 0; i--) {
       const r = this.labelRects[i];
@@ -524,9 +642,16 @@ export class Board {
     }
     const p = this.toWorld(sx, sy);
     const items = this.doc.items;
+    const m = byId(this.doc);
+    const reach = 7 / this.view.z;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.type === 'group') continue;
+      if (it.type === 'connector') {
+        const path = connectorPath(it, (id) => m.get(id));
+        if (distToPolyline(p, path.pts) <= reach + (it.width || 2) / 2) return { kind: 'item', id: it.id };
+        continue;
+      }
       if (inItem(it, p)) return { kind: 'item', id: it.id };
     }
     const g = groupAtPoint(this.doc, p);
@@ -534,6 +659,18 @@ export class Board {
   }
 
   groupAt(p, exclude = new Set()) { return groupAtPoint(this.doc, p, exclude); }
+
+  /** The item under board point `p` a connector can attach to (not `not`, not the connector `self`). */
+  #linkTarget(p, not, self) {
+    const items = this.doc.items;
+    const pad = 6 / this.view.z;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (!LINKABLE.has(it.type) || it.id === not || it.id === self) continue;
+      if (p.x >= it.x - pad && p.y >= it.y - pad && p.x <= it.x + it.w + pad && p.y <= it.y + it.h + pad) return it;
+    }
+    return null;
+  }
 
   // ---- input ------------------------------------------------------------------------------------------
 
@@ -604,13 +741,26 @@ export class Board {
     const w = this.toWorld(p.x, p.y);
     const base = { pointer: e.pointerId, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, hit };
     this.cb.pointerDown?.();
-    if (this.tool === 'note' && !this.readOnly) {
+    if (MAKERS.has(this.tool) && !this.readOnly) {
       this.drag = { ...base, type: 'create', rect: { x: w.x, y: w.y, w: 0, h: 0 } };
       return;
     }
+    if (this.readOnly) { /* below: selecting only */ } else if (this.tool === 'connector' || hit.kind === 'dot') {
+      // drawing a connector: from an item (its dot's side) or from a point
+      const it = hit.kind === 'dot' ? byId(this.doc).get(hit.id) : (hit.kind === 'item' && LINKABLE.has(byId(this.doc).get(hit.id)?.type) ? byId(this.doc).get(hit.id) : null);
+      const from = it ? (hit.side ? { id: it.id, side: hit.side } : { id: it.id }) : { x: w.x, y: w.y };
+      const a = it ? (hit.side ? sidePoint(it, hit.side) : { x: it.x + it.w / 2, y: it.y + it.h / 2 }) : { x: w.x, y: w.y };
+      this.drag = { ...base, type: 'connect', from, a, b: { ...a } };
+      return;
+    }
+    if (hit.kind === 'end') {
+      const c = byId(this.doc).get(hit.id);
+      this.drag = { ...base, type: 'end', id: hit.id, end: hit.end, startItem: c };
+      return;
+    }
     if (hit.kind === 'handle') {
-      if (this.readOnly) return;
-      this.drag = { ...base, type: 'resize', handle: hit.handle, ...this.#resizeStart(hit.handle) };
+      const rs = !this.readOnly && this.#resizeStart(hit.handle);
+      if (rs) this.drag = { ...base, type: 'resize', handle: hit.handle, ...rs };
       return;
     }
     if (hit.kind === 'item' || hit.kind === 'label' || (hit.kind === 'group' && this.selection.has(hit.id))) {
@@ -654,8 +804,24 @@ export class Board {
       this.#marqueeSelect(d);
       this.invalidateOverlay();
     } else if (d.type === 'create') {
-      d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
+      let rw = Math.abs(w.x - d.wx);
+      let rh = Math.abs(w.y - d.wy);
+      if (e.shiftKey) rw = rh = Math.max(rw, rh); // Shift: square / circle
+      d.rect = { x: w.x < d.wx ? d.wx - rw : d.wx, y: w.y < d.wy ? d.wy - rh : d.wy, w: rw, h: rh };
       this.invalidateOverlay();
+    } else if (d.type === 'connect') {
+      const t = this.#linkTarget(w, d.from.id);
+      d.target = t?.id || null;
+      d.b = t ? { x: t.x + t.w / 2, y: t.y + t.h / 2 } : { x: w.x, y: w.y };
+      this.invalidateOverlay();
+    } else if (d.type === 'end') {
+      if (first) d.before = this.doc.items;
+      const c = d.startItem;
+      const t = this.#linkTarget(w, (d.end === 'from' ? c.to : c.from).id, c.id);
+      d.target = t?.id || null;
+      const endv = t ? (sideNear(t, w, this.view.z) ? { id: t.id, side: sideNear(t, w, this.view.z) } : { id: t.id }) : { x: w.x, y: w.y };
+      this.doc.items = d.before.map((it) => (it.id === c.id ? { ...it, [d.end]: endv } : it));
+      this.invalidate();
     }
   }
 
@@ -677,6 +843,21 @@ export class Board {
     if (d.type === 'resize' && d.moved) {
       if (cancelled) { this.doc.items = d.before; this.invalidate(); return; }
       this.cb.commit?.('resize', d.before);
+      this.invalidate();
+      return;
+    }
+    if (d.type === 'connect') {
+      this.invalidateOverlay();
+      if (cancelled || !d.moved) return;
+      const to = d.target ? { id: d.target } : { x: d.b.x, y: d.b.y };
+      if (!d.target && !d.from.id && Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) * this.view.z < 12) return;
+      this.cb.connect?.(d.from, to);
+      return;
+    }
+    if (d.type === 'end') {
+      if (!d.moved) { this.invalidateOverlay(); return; }
+      if (cancelled) { this.doc.items = d.before; this.invalidate(); return; }
+      this.cb.commit?.('connect', d.before);
       this.invalidate();
       return;
     }
@@ -710,10 +891,13 @@ export class Board {
   }
 
   #hover(p) {
-    if (this.tool === 'hand' || this.space || this.tool === 'note') return;
+    if (this.tool === 'hand' || this.space || MAKERS.has(this.tool)) return;
     const hit = this.hitTest(p.x, p.y);
-    const id = hit.kind === 'item' || hit.kind === 'label' ? hit.id : null;
-    let cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : '';
+    const hot = hit.kind === 'dot' ? `${hit.id}:${hit.side}` : null;
+    if (hot !== this.hotDot) { this.hotDot = hot; this.invalidateOverlay(); }
+    // keep the dots of the item the pointer came from while it is on them
+    const id = hit.kind === 'item' || hit.kind === 'label' ? hit.id : hit.kind === 'dot' ? hit.id : null;
+    let cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : hit.kind === 'dot' || hit.kind === 'end' ? 'crosshair' : '';
     if (!cursor && hit.kind === 'item') {
       const it = byId(this.doc).get(hit.id);
       if (it?.type === 'note' && it.id !== this.editingId && !this.readOnly && checkAt(it, this.toWorld(p.x, p.y), this.theme.font)) cursor = 'pointer';
@@ -731,11 +915,8 @@ export class Board {
       const all = withChildren(this.doc, sel.map((s) => s.id));
       const idMap = new Map();
       for (const it of this.doc.items) if (all.has(it.id)) idMap.set(it.id, newId(it.type));
-      const copies = this.doc.items.filter((it) => all.has(it.id)).map((it) => {
-        const c = { ...it, id: idMap.get(it.id) };
-        if (it.parent) { if (idMap.has(it.parent)) c.parent = idMap.get(it.parent); }
-        return c;
-      });
+      const m = byId(this.doc);
+      const copies = copyItems(this.doc.items.filter((it) => all.has(it.id)), idMap, 0, 0, { lookup: (id) => m.get(id) });
       const groups = copies.filter((c) => c.type === 'group');
       const rest = copies.filter((c) => c.type !== 'group');
       this.doc.items = [...groups, ...this.doc.items, ...rest];
@@ -745,14 +926,14 @@ export class Board {
     }
     d.ids = withChildren(this.doc, [...this.selection]);
     d.start = new Map();
-    for (const it of this.doc.items) if (d.ids.has(it.id) && !it.locked) d.start.set(it.id, { x: it.x, y: it.y });
+    for (const it of this.doc.items) if (d.ids.has(it.id) && !it.locked) d.start.set(it.id, it);
   }
 
   #moveTo(d, dx, dy, axis) {
     if (axis) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
     this.doc.items = this.doc.items.map((it) => {
       const s = d.start.get(it.id);
-      return s ? { ...it, x: s.x + dx, y: s.y + dy } : it;
+      return s ? translateItem(s, dx, dy) : it;
     });
     // drop target: the group under the pointer that is not moving
     const p = { x: d.wx + dx, y: d.wy + dy };
@@ -764,10 +945,11 @@ export class Board {
   #resizeStart(handle) {
     const sel = this.selectedItems();
     const b = unionBounds(sel.map(itemBounds));
+    if (!b) return null;
     const frameOnly = sel.length === 1 && freeResize(sel[0]);
     const ids = frameOnly ? new Set([sel[0].id]) : withChildren(this.doc, sel.map((s) => s.id));
     const start = new Map();
-    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h, scale: it.type === 'note' && !it.fit ? it.scale || 1 : null });
+    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h, scale: (it.type === 'note' && !it.fit) || it.type === 'shape' ? it.scale || 1 : null, from: it.type === 'connector' ? it.from : null, to: it.type === 'connector' ? it.to : null });
     const ax = handle.includes('w') ? b.x + b.w : handle.includes('e') ? b.x : null;
     const ay = handle.includes('n') ? b.y + b.h : handle.includes('s') ? b.y : null;
     return { box: b, frameOnly, start, ax, ay };
@@ -810,6 +992,8 @@ export class Board {
       for (const [id, r] of start) {
         const p = { x: ax + (r.x - ax) * s, y: ay + (r.y - ay) * s, w: r.w * s, h: r.h * s };
         if (r.scale) p.scale = r.scale * s; // documents and text scale with their box here
+        const sc = (e) => (e && e.id === undefined ? { x: ax + (e.x - ax) * s, y: ay + (e.y - ay) * s } : e);
+        if (r.from) { p.from = sc(r.from); p.to = sc(r.to); }
         patch.set(id, p);
       }
     }
@@ -872,7 +1056,14 @@ export class Board {
 }
 
 /** Items whose box is resized on its own (8 handles) rather than scaled with the selection. */
-const freeResize = (it) => it.type === 'group' || it.type === 'note';
+const freeResize = (it) => it.type === 'group' || it.type === 'note' || it.type === 'shape';
+
+/** The side of `it` whose middle is near board point `p` (within 24 px on screen), if any. */
+function sideNear(it, p, z) {
+  const s = nearestSide(it, p);
+  const q = sidePoint(it, s);
+  return Math.hypot(q.x - p.x, q.y - p.y) * z <= 24 ? s : null;
+}
 
 function inItem(it, p) {
   if (!it.rot) return p.x >= it.x && p.y >= it.y && p.x <= it.x + it.w && p.y <= it.y + it.h;

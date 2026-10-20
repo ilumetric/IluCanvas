@@ -7,7 +7,7 @@
 // command produces maps onto our small set of marks.
 
 import { parseMarkdown, toMarkdown, merge, MARK_COLORS } from '../core/markdown.js';
-import { layoutNote, notePad, noteFont, NOTE_BG, MARK_ON_LIGHT, MARK_ON_DARK, HIGHLIGHT, INK_TEXT, HEAD, INDENT, LINE, isLight } from './text.js';
+import { layoutNote, notePad, noteFont, textFrame, alignOf, NOTE_BG, MARK_ON_LIGHT, MARK_ON_DARK, HIGHLIGHT, INK_TEXT, HEAD, INDENT, LINE, isLight } from './text.js';
 
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
@@ -277,32 +277,32 @@ export class NoteEditor {
     const it = this.item;
     const el = this.el;
     const light = isLight(it);
+    const f = textFrame(it);
+    const shape = it.type === 'shape';
     el.style.setProperty('--family', this.#family());
     el.style.setProperty('--ink', light ? INK_TEXT : this.board.theme.text);
     el.style.setProperty('--pad', `${notePad(it)}px`);
     el.style.setProperty('--line', LINE);
     el.style.setProperty('--indent', `${INDENT}em`);
-    el.style.background = NOTE_BG[it.color] || 'transparent';
-    el.style.textAlign = it.align || 'left';
+    el.style.paddingLeft = `${f.x}px`;
+    el.style.paddingRight = `${Math.max(0, it.w - f.x - f.w)}px`;
+    el.style.paddingBottom = `${Math.max(0, it.h - f.y - f.h)}px`;
+    el.style.background = shape ? 'transparent' : NOTE_BG[it.color] || 'transparent';
+    el.style.textAlign = alignOf(it);
+    el.style.overflow = shape ? 'visible' : '';
     el.dataset.light = light ? '1' : '0';
     el.style.width = `${it.w}px`;
-    if (it.fit) { el.style.height = `${it.h}px`; el.style.minHeight = ''; } else { el.style.height = ''; el.style.minHeight = `${it.h}px`; }
+    if (it.fit || shape) { el.style.height = `${it.h}px`; el.style.minHeight = ''; } else { el.style.height = ''; el.style.minHeight = `${it.h}px`; }
     this.#refit();
   }
 
-  /** Font size (fit notes shrink as you type) and vertical centring, from the canvas layout. */
+  /** Font size (fit notes shrink as you type) and vertical position (stickies, shapes), from the canvas layout. */
   #refit() {
     const it = this.item;
     if (!this.el) return;
-    let F = noteFont(it);
-    let top = notePad(it);
-    if (it.fit) {
-      const L = layoutNote({ ...it, text: this.markdown() }, this.#family());
-      F = L.F;
-      top = L.offsetY;
-    }
-    this.el.style.setProperty('--F', `${F}px`);
-    this.el.style.paddingTop = `${top}px`;
+    const L = layoutNote({ ...it, text: this.markdown() }, this.#family());
+    this.el.style.setProperty('--F', `${it.fit && it.type === 'note' ? L.F : noteFont(it)}px`);
+    this.el.style.paddingTop = `${L.offsetY}px`;
   }
 
   reposition() {

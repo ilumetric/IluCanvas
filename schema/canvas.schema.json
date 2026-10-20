@@ -63,6 +63,12 @@
             "$ref": "#/$defs/note"
           },
           {
+            "$ref": "#/$defs/shape"
+          },
+          {
+            "$ref": "#/$defs/connector"
+          },
+          {
             "$ref": "#/$defs/other"
           }
         ]
@@ -208,7 +214,7 @@
       }
     },
     "other": {
-      "description": "Item types from newer versions (note, stroke, widget…): kept and drawn as a box.",
+      "description": "Item types from newer versions (stroke, video…): kept and drawn as a box.",
       "allOf": [
         {
           "$ref": "#/$defs/box"
@@ -220,7 +226,9 @@
             "enum": [
               "image",
               "group",
-              "note"
+              "note",
+              "shape",
+              "connector"
             ]
           }
         }
@@ -347,6 +355,202 @@
             "a4",
             "wide"
           ]
+        }
+      }
+    },
+    "shape": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/box"
+        }
+      ],
+      "required": [
+        "kind",
+        "fill",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "shape"
+        },
+        "kind": {
+          "enum": [
+            "rect",
+            "rounded",
+            "ellipse",
+            "diamond",
+            "triangle",
+            "parallelogram",
+            "hexagon",
+            "star"
+          ]
+        },
+        "fill": {
+          "enum": [
+            "white",
+            "grey",
+            "black",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "violet",
+            "pink",
+            "none"
+          ],
+          "description": "Fixed colours; none = only the outline."
+        },
+        "stroke": {
+          "enum": [
+            "white",
+            "grey",
+            "black",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "violet",
+            "pink"
+          ],
+          "description": "Outline colour; no outline when left out (grey for fill none)."
+        },
+        "text": {
+          "type": "string",
+          "description": "Markdown, like notes; centred. The shape grows downwards to show all of it."
+        },
+        "size": {
+          "enum": [
+            "s",
+            "l",
+            "xl"
+          ],
+          "description": "Text size; m when left out."
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "align": {
+          "enum": [
+            "left",
+            "right"
+          ],
+          "description": "center when left out."
+        }
+      }
+    },
+    "end": {
+      "description": "A connector end: on an item (id, optionally pinned to a side) or a free point on the board.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "side": {
+              "enum": [
+                "top",
+                "right",
+                "bottom",
+                "left"
+              ],
+              "description": "Left out: the side facing the other end, chosen as things move."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          }
+        }
+      ]
+    },
+    "connector": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/box"
+        }
+      ],
+      "required": [
+        "from",
+        "to",
+        "end",
+        "color"
+      ],
+      "description": "A line or arrow between two ends. x, y, w, h are its bounds, kept up to date by the tools (not a place to edit).",
+      "properties": {
+        "type": {
+          "const": "connector"
+        },
+        "from": {
+          "$ref": "#/$defs/end"
+        },
+        "to": {
+          "$ref": "#/$defs/end"
+        },
+        "route": {
+          "enum": [
+            "elbow",
+            "curve"
+          ],
+          "description": "straight when left out."
+        },
+        "start": {
+          "enum": [
+            "arrow",
+            "dot"
+          ],
+          "description": "Head at the from end; none when left out."
+        },
+        "end": {
+          "enum": [
+            "none",
+            "arrow",
+            "dot"
+          ],
+          "description": "Head at the to end."
+        },
+        "color": {
+          "enum": [
+            "white",
+            "grey",
+            "black",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "violet",
+            "pink"
+          ]
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Line width in board units; 2 when left out."
+        },
+        "dash": {
+          "const": true
+        },
+        "label": {
+          "type": "string",
+          "description": "Text in the middle of the line."
         }
       }
     }

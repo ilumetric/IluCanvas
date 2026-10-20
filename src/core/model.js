@@ -6,11 +6,17 @@
 // can keep the old `items` array as it is). `items` order is the stacking
 // order; groups are always drawn below images, outer groups below the groups
 // nested in them. An item (or a group) belongs to the group named by `parent`.
+// Connectors (connectors.js) refer to the items at their ends by id.
 
 export const FORMAT = 'ilucanvas';
 export const FORMAT_VERSION = 1;
 export const GROUP_COLORS = ['violet', 'blue', 'orange', 'green', 'pink', 'yellow', 'red', 'amber', 'grey'];
-export const ITEM_TYPES = ['image', 'group', 'note'];
+import { connectorPath, pathBounds, ROUTES, HEADS, SIDES } from './connectors.js';
+
+export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector'];
+export const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
+/** Fixed colours of shapes and connectors (they do not follow the style). */
+export const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
 /** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
 export const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
 export const NOTE_SIZES = ['s', 'm', 'l', 'xl'];
@@ -24,6 +30,8 @@ const ITEM_KEYS = {
   image: ['id', 'type', 'asset', 'x', 'y', 'w', 'h', 'rot', 'flipX', 'flipY', 'crop', 'parent', 'locked', 'opacity', 'note'],
   group: ['id', 'type', 'name', 'color', 'x', 'y', 'w', 'h', 'parent', 'locked', 'note'],
   note: ['id', 'type', 'x', 'y', 'w', 'h', 'rot', 'color', 'fit', 'size', 'scale', 'align', 'ratio', 'parent', 'locked', 'text'],
+  shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
+  connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
 const DOC_KEYS = ['format', 'version', 'id', 'title', 'created', 'updated', 'updated_by', 'generator', 'assets', 'items'];
@@ -95,6 +103,27 @@ export function normalize(raw) {
       if (!NOTE_RATIOS.includes(n.ratio) || n.ratio === 'free') delete n.ratio;
       if (!NOTE_ALIGNS.includes(n.align) || n.align === 'left') delete n.align;
     }
+    if (n.type === 'shape') {
+      if (!SHAPE_KINDS.includes(n.kind)) n.kind = 'rect';
+      if (!PAINT.includes(n.fill) && n.fill !== 'none') n.fill = 'blue';
+      if (!PAINT.includes(n.stroke)) delete n.stroke;
+      n.text = typeof n.text === 'string' ? n.text : '';
+      if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
+      if (!(n.scale > 0) || n.scale === 1) delete n.scale;
+      if (!NOTE_ALIGNS.includes(n.align) || n.align === 'center') delete n.align;
+    }
+    if (n.type === 'connector') {
+      n.from = cleanEnd(n.from);
+      n.to = cleanEnd(n.to);
+      if (!ROUTES.includes(n.route) || n.route === 'straight') delete n.route;
+      if (!HEADS.includes(n.start) || n.start === 'none') delete n.start;
+      if (!HEADS.includes(n.end)) n.end = 'arrow';
+      if (!PAINT.includes(n.color)) n.color = 'grey';
+      if (!(n.width > 0) || n.width === 2) delete n.width;
+      if (n.dash !== true) delete n.dash;
+      if (typeof n.label !== 'string' || !n.label) delete n.label;
+      delete n.parent;
+    }
     if (n.type === 'group') {
       n.name = str(n.name) ?? 'Group';
       if (!GROUP_COLORS.includes(n.color)) n.color = 'grey';
@@ -104,6 +133,12 @@ export function normalize(raw) {
   }
   const groups = new Set(items.filter((i) => i.type === 'group').map((i) => i.id));
   for (const it of items) if (it.parent !== undefined && (!groups.has(it.parent) || it.parent === it.id)) delete it.parent;
+  // a connector end whose item is gone stays where it was
+  const ids = new Set(items.map((i) => i.id));
+  for (const it of items) {
+    if (it.type !== 'connector') continue;
+    for (const k of ['from', 'to']) if (it[k].id && !ids.has(it[k].id)) it[k] = k === 'from' ? { x: it.x, y: it.y } : { x: it.x + it.w, y: it.y + it.h };
+  }
   // a group inside itself (a cycle of parents) would never be drawn: break it
   const parentOf = new Map(items.map((i) => [i.id, i.parent]));
   for (const it of items) {
@@ -144,7 +179,15 @@ export function validate(doc, { files = null } = {}) {
     if (ids.has(it.id)) err(`${p}.id`, `duplicate id "${it.id}"`, it.id);
     ids.add(it.id);
     if (!ITEM_TYPES.includes(it.type)) warn(`${p}.type`, `unknown type "${it.type}" (kept, not editable here)`, it.id);
-    if (it.type === 'note' && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
+    if ((it.type === 'note' || it.type === 'shape') && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
+    if (it.type === 'connector') {
+      for (const k of ['from', 'to']) {
+        const e = it[k];
+        if (!e || (e.id === undefined && !(Number.isFinite(e.x) && Number.isFinite(e.y)))) err(`${p}.${k}`, 'must be { id } or { x, y }', it.id);
+        else if (e.id !== undefined && !doc.items.some((o) => o.id === e.id)) err(`${p}.${k}.id`, `unknown item "${e.id}"`, it.id);
+        else if (e.id === it.id) err(`${p}.${k}.id`, 'a connector cannot end on itself', it.id);
+      }
+    }
     if (it.type === 'image') {
       if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id);
       used.add(it.asset);
@@ -326,12 +369,77 @@ export function patchItems(doc, patches, by = 'human') {
   return doc.items;
 }
 
+/** An item moved by dx, dy (a connector: its free ends; attached ends follow their items). */
+export function translateItem(it, dx, dy) {
+  if (it.type !== 'connector') return { ...it, x: it.x + dx, y: it.y + dy };
+  const n = { ...it, x: it.x + dx, y: it.y + dy };
+  if (n.from.id === undefined) n.from = { x: n.from.x + dx, y: n.from.y + dy };
+  if (n.to.id === undefined) n.to = { x: n.to.x + dx, y: n.to.y + dy };
+  return n;
+}
+
+/**
+ * Copies of `items` under new ids (idMap: old id → new id), moved by dx, dy.
+ * Parents and connector ends that were copied too point at the copies; the
+ * others keep pointing at the originals when `lookup(id)` finds them (same
+ * board), or are let go (pasting into another board).
+ */
+export function copyItems(items, idMap, dx = 0, dy = 0, { lookup = null } = {}) {
+  return items.map((it) => {
+    const n = translateItem({ ...it, id: idMap.get(it.id) }, dx, dy);
+    if (it.parent && idMap.has(it.parent)) n.parent = idMap.get(it.parent);
+    else if (it.parent && !lookup?.(it.parent)) delete n.parent;
+    if (it.type === 'connector') {
+      for (const k of ['from', 'to']) {
+        const e = it[k];
+        if (e.id === undefined) continue;
+        if (idMap.has(e.id)) n[k] = { ...e, id: idMap.get(e.id) };
+        else if (!lookup?.(e.id)) n[k] = k === 'from' ? { x: it.x + dx, y: it.y + dy } : { x: it.x + it.w + dx, y: it.y + it.h + dy };
+      }
+    }
+    return n;
+  });
+}
+
 /** Move items (and the children of moved groups) by dx, dy. */
 export function moveItems(doc, ids, dx, dy, by = 'human') {
   const set = withChildren(doc, ids);
-  const patches = new Map();
-  for (const it of doc.items) if (set.has(it.id) && !it.locked) patches.set(it.id, { x: it.x + dx, y: it.y + dy });
-  return patchItems(doc, patches, by);
+  doc.items = doc.items.map((it) => (set.has(it.id) && !it.locked ? translateItem(it, dx, dy) : it));
+  touch(doc, by);
+  refreshConnectors(doc);
+  return doc.items;
+}
+
+const cleanEnd = (e) => {
+  if (e && typeof e === 'object' && typeof e.id === 'string' && e.id) return SIDES.includes(e.side) ? { id: e.id, side: e.side } : { id: e.id };
+  if (typeof e === 'string' && e) return { id: e };
+  return { x: Number(e?.x) || 0, y: Number(e?.y) || 0 };
+};
+export { cleanEnd };
+
+/** Where connector `c` runs now (connectors.js), with this doc's items. */
+export function pathOf(doc, c) {
+  const m = byId(doc);
+  return connectorPath(c, (id) => m.get(id));
+}
+
+/**
+ * Keep connectors' x, y, w, h (their bounds) up to date with the items they
+ * join — for minimap, culling, fit-to-screen. Returns the ids that changed.
+ */
+export function refreshConnectors(doc) {
+  if (!doc.items.some((it) => it.type === 'connector')) return [];
+  const changed = [];
+  const m = byId(doc);
+  const items = doc.items.map((it) => {
+    if (it.type !== 'connector') return it;
+    const b = pathBounds(connectorPath(it, (id) => m.get(id)).pts);
+    if (Math.abs(b.x - it.x) < 0.5 && Math.abs(b.y - it.y) < 0.5 && Math.abs(b.w - it.w) < 0.5 && Math.abs(b.h - it.h) < 0.5) return it;
+    changed.push(it.id);
+    return { ...it, x: b.x, y: b.y, w: b.w, h: b.h };
+  });
+  if (changed.length) doc.items = items;
+  return changed;
 }
 
 export function addItems(doc, items, by = 'human') {
@@ -349,6 +457,14 @@ export function removeItems(doc, ids, { keepChildren = false, by = 'human' } = {
   const m = byId(doc);
   const upTo = (p) => { while (p && set.has(p)) p = m.get(p)?.parent; return p; };
   doc.items = doc.items.filter((it) => !set.has(it.id)).map((it) => {
+    if (it.type === 'connector' && (set.has(it.from.id) || set.has(it.to.id))) {
+      // an end on a removed item stays where it was, as a free point
+      const p = connectorPath(it, (id) => m.get(id));
+      const n = { ...it };
+      if (set.has(it.from.id)) n.from = { x: p.a.x, y: p.a.y };
+      if (set.has(it.to.id)) n.to = { x: p.b.x, y: p.b.y };
+      return n;
+    }
     if (!it.parent || !set.has(it.parent)) return it;
     const p = upTo(it.parent);
     return p ? { ...it, parent: p } : dropKey(it, 'parent');
@@ -416,7 +532,7 @@ export function reparent(doc, ids, by = 'human') {
   const grow = new Map();
   const gs = groupsByDepth(doc);
   for (const it of doc.items) {
-    if (!moved.has(it.id)) continue;
+    if (!moved.has(it.id) || it.type === 'connector') continue;
     if (it.parent && moved.has(it.parent)) continue; // travelled with its group
     const c = center(itemBounds(it));
     let target = groupAtPoint(doc, c, new Set([it.id]), gs);

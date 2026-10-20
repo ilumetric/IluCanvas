@@ -1,12 +1,14 @@
-// Notes on the canvas: layout of their Markdown text (blocks → lines → runs,
-// word wrap measured with the real font) and drawing. Layouts are cached per
-// item object — items are immutable, so a changed note is a new object.
+// Text on the canvas — notes and shapes: layout of their Markdown text
+// (blocks → lines → runs, word wrap measured with the real font) and drawing.
+// Layouts are cached per item object — items are immutable, so a changed note
+// is a new object.
 //
 // The editor (editor.js) uses the same numbers (font, sizes, line height,
 // indents, padding), so text does not jump when you start or stop editing.
 
 import { parseMarkdown } from '../core/markdown.js';
 import { NOTE_FONT } from '../core/ops.js';
+import { shapeFrame, shapeHeightFor, darkFill } from './shapes.js';
 
 // ---- fixed colours (do not follow the style) ---------------------------------------------------
 
@@ -33,9 +35,18 @@ export const INDENT = 1.5; // em per list level
 export const QUOTE = 1; // em of quote indent
 /** Inner padding of a note, board units. */
 export const notePad = (it) => (it.color === 'none' ? 4 : Math.max(10, Math.min(40, Math.min(it.w, it.h || it.w) * 0.075)));
-export const isLight = (it) => it.color !== 'none';
-/** Base font size of a document / text note, board units. */
+/** Is the text drawn on a light background (dark ink)? */
+export const isLight = (it) => (it.type === 'shape' ? !darkFill(it) : it.color !== 'none');
+/** Base font size of a document / text note / shape, board units. */
 export const noteFont = (it) => NOTE_FONT[it.size || 'm'] * (it.scale || 1);
+/** Where the text goes, relative to the item's top-left. */
+export function textFrame(it) {
+  if (it.type === 'shape') return shapeFrame(it);
+  const p = notePad(it);
+  return { x: p, y: p, w: Math.max(10, it.w - p * 2), h: Math.max(10, it.h - p * 2) };
+}
+/** Default alignment: centred in shapes, left in notes. */
+export const alignOf = (it) => it.align || (it.type === 'shape' ? 'center' : 'left');
 
 let measureCtx = null;
 const widths = new Map();
@@ -69,34 +80,37 @@ export function layoutNote(it, family) {
   const c = cache.get(it);
   if (c && c.v === version && c.family === family) return c.layout;
   const blocks = parseMarkdown(it.text);
-  const pad = notePad(it);
-  const innerW = Math.max(10, it.w - pad * 2);
+  const frame = textFrame(it);
+  const pad = frame.x;
+  const innerW = frame.w;
+  const align = alignOf(it);
   let layout;
-  if (it.fit) {
-    const innerH = Math.max(10, it.h - pad * 2);
+  if (it.fit && it.type === 'note') {
+    const innerH = frame.h;
     const max = Math.max(8, Math.min(it.w, it.h) * 0.2);
     let lo = 4;
     let hi = max;
-    let best = flow(blocks, lo, innerW, family, it.align);
+    let best = flow(blocks, lo, innerW, family, align);
     if (best.height <= innerH) {
-      const top = flow(blocks, hi, innerW, family, it.align);
+      const top = flow(blocks, hi, innerW, family, align);
       if (top.height <= innerH) best = top;
       else {
         for (let k = 0; k < 9; k++) {
           const mid = (lo + hi) / 2;
-          const l = flow(blocks, mid, innerW, family, it.align);
+          const l = flow(blocks, mid, innerW, family, align);
           if (l.height <= innerH) { lo = mid; best = l; } else hi = mid;
         }
       }
     }
     layout = best;
-    layout.offsetY = pad + Math.max(0, (innerH - layout.height) / 2); // stickies: centred vertically
+    layout.offsetY = frame.y + Math.max(0, (innerH - layout.height) / 2); // stickies: centred vertically
   } else {
-    layout = flow(blocks, noteFont(it), innerW, family, it.align);
-    layout.offsetY = pad;
+    layout = flow(blocks, noteFont(it), innerW, family, align);
+    // shapes: centred vertically; documents: from the top
+    layout.offsetY = frame.y + (it.type === 'shape' ? Math.max(0, (frame.h - layout.height) / 2) : 0);
   }
   layout.pad = pad;
-  layout.total = layout.height + pad * 2;
+  layout.total = it.type === 'shape' ? shapeHeightFor(it, layout.height) : layout.height + frame.y * 2;
   cache.set(it, { v: version, family, layout });
   return layout;
 }
@@ -193,7 +207,8 @@ function wrap(spans, size, maxW, family, head) {
  * pixels per board unit; `textless` skips the text (it is being edited).
  */
 export function drawNote(ctx, it, { px, theme, family, textless = false }) {
-  const bg = NOTE_BG[it.color];
+  const bg = it.type === 'shape' ? null : NOTE_BG[it.color];
+  if (it.type === 'shape') { drawText(ctx, it, { px, theme, family, textless }); return; }
   const r = Math.min(it.w, it.h) * (theme.rOuter > 0 ? 0.05 : 0.012);
   if (bg) {
     // a soft drop shadow, then the paper
@@ -222,6 +237,11 @@ export function drawNote(ctx, it, { px, theme, family, textless = false }) {
     ctx.strokeRect(it.x, it.y, it.w, it.h);
     ctx.restore();
   }
+  drawText(ctx, it, { px, theme, family, textless, bg });
+}
+
+/** The text of a note or shape. */
+export function drawText(ctx, it, { px, theme, family, textless = false, bg = null }) {
   if (textless || !it.text) return;
   const L = layoutNote(it, family);
   const light = isLight(it);
@@ -307,6 +327,7 @@ export function drawNote(ctx, it, { px, theme, family, textless = false }) {
   }
   if (overflow) {
     ctx.restore();
+    if (it.type === 'shape') return;
     // a fade at the cut edge says "there is more"
     const g = ctx.createLinearGradient(0, it.y + it.h - L.F * 2, 0, it.y + it.h);
     const base = bg || theme.canvas;

@@ -1,0 +1,79 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { connectorPath, facingSide, nearestSide, distToPolyline, midpoint, pathBounds } from '../src/core/connectors.js';
+
+const boxes = {
+  a: { id: 'a', x: 0, y: 0, w: 200, h: 100 },
+  b: { id: 'b', x: 400, y: 200, w: 200, h: 100 },
+  back: { id: 'back', x: -400, y: 0, w: 200, h: 100 },
+};
+const lookup = (id) => boxes[id];
+
+/** Every step is horizontal or vertical. */
+function orthogonal(pts) {
+  for (let i = 1; i < pts.length; i++) {
+    const dx = Math.abs(pts[i].x - pts[i - 1].x);
+    const dy = Math.abs(pts[i].y - pts[i - 1].y);
+    if (dx > 0.01 && dy > 0.01) return false;
+  }
+  return true;
+}
+
+/** Does a step of the route pass through the inside of box b? */
+function crosses(pts, b) {
+  for (let i = 1; i < pts.length; i++) {
+    for (let t = 0.05; t < 1; t += 0.05) {
+      const x = pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t;
+      const y = pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t;
+      if (x > b.x + 1 && x < b.x + b.w - 1 && y > b.y + 1 && y < b.y + b.h - 1) return true;
+    }
+  }
+  return false;
+}
+
+test('sides: facing the other end, nearest to a point', () => {
+  assert.equal(facingSide(boxes.a, { x: 1000, y: 50 }), 'right');
+  assert.equal(facingSide(boxes.a, { x: 100, y: -500 }), 'top');
+  assert.equal(nearestSide(boxes.a, { x: 100, y: 95 }), 'bottom');
+});
+
+test('straight and curved connectors end on the facing sides', () => {
+  const p = connectorPath({ from: { id: 'a' }, to: { id: 'b' } }, lookup);
+  assert.deepEqual(p.a, { x: 200, y: 50 });
+  assert.deepEqual(p.b, { x: 500, y: 200 }, 'b is further below than to the right (relative to its size): its top');
+  assert.equal(p.pts.length, 2);
+  const c = connectorPath({ from: { id: 'a' }, to: { id: 'b' }, route: 'curve' }, lookup);
+  assert.equal(c.curve.length, 4);
+  assert.deepEqual(c.pts[0], c.a);
+  assert.deepEqual(c.pts[c.pts.length - 1], c.b);
+});
+
+test('elbow routes are orthogonal and go around the boxes when they turn back', () => {
+  const sides = ['top', 'right', 'bottom', 'left'];
+  for (const s1 of sides) {
+    for (const s2 of sides) {
+      for (const to of ['b', 'back']) {
+        const p = connectorPath({ from: { id: 'a', side: s1 }, to: { id: to, side: s2 }, route: 'elbow' }, lookup);
+        const label = `${s1} → ${to}.${s2}`;
+        assert.ok(orthogonal(p.pts), `${label}: orthogonal`);
+        assert.deepEqual(p.pts[0], p.a, label);
+        assert.deepEqual(p.pts[p.pts.length - 1], p.b, label);
+        assert.ok(!crosses(p.pts, boxes.a), `${label}: does not cross a ${JSON.stringify(p.pts)}`);
+        assert.ok(!crosses(p.pts, boxes[to]), `${label}: does not cross ${to} ${JSON.stringify(p.pts)}`);
+      }
+    }
+  }
+  // a back-edge from a's right side into the left side of a box behind it
+  const back = connectorPath({ from: { id: 'a', side: 'right' }, to: { id: 'back', side: 'left' }, route: 'elbow' }, lookup);
+  assert.ok(back.pts.length >= 5);
+  // free ends: a plain L
+  const free = connectorPath({ from: { x: 0, y: 0 }, to: { x: 300, y: 200 }, route: 'elbow' }, () => null);
+  assert.ok(orthogonal(free.pts));
+});
+
+test('geometry helpers', () => {
+  const pts = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }];
+  assert.equal(distToPolyline({ x: 50, y: 10 }, pts), 10);
+  assert.deepEqual(midpoint(pts), { x: 100, y: 0 });
+  assert.deepEqual(pathBounds([{ x: 5, y: 5 }, { x: 5, y: 9 }]), { x: 5, y: 5, w: 1, h: 4 });
+});

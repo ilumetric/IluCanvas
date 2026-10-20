@@ -51,6 +51,9 @@ node ilucanvas.mjs ungroup refs.ilucanvas g4k2x9q                     # images m
 node ilucanvas.mjs arrange refs.ilucanvas g4k2x9q                     # justified rows, aspect kept
 node ilucanvas.mjs note refs.ilucanvas '# Lighting\n- [ ] rim\n- [x] key' --color paper   # a document ("\n" = new line)
 node ilucanvas.mjs note refs.ilucanvas 'Warm vs cool' --group g4k2x9q                  # a sticky in a group
+node ilucanvas.mjs shape refs.ilucanvas diamond 'Approved?' --fill yellow --at 320,0   # a shape with text
+node ilucanvas.mjs connect refs.ilucanvas s1a2b3c s7f2k1q --label yes --route elbow    # an arrow between two items
+node ilucanvas.mjs connect refs.ilucanvas s7f2k1q 900,300 --end dot --dash             # to a free point
 node ilucanvas.mjs rm refs.ilucanvas i8k2m1q [--keep-children]
 node ilucanvas.mjs front|back refs.ilucanvas i8k2m1q
 node ilucanvas.mjs apply refs.ilucanvas ops.json                      # many changes, one write (below)
@@ -65,14 +68,19 @@ fields and unknown ids exit with code 2 and write nothing.
 `ls` prints:
 
 ```
-canvas "Character refs" c3k2… · 42 images · 3 groups · updated 2026-10-20T12:01:24Z by human
+canvas "Character refs" c3k2… · 42 images · 3 groups · 2 shapes · 1 connectors · updated 2026-10-20T12:01:24Z by human
 g4k2x9q  group  "Lighting"  violet  x=0 y=0 w=2400 h=1600  (12 items)
-  i8k2m1q  image  "rim.jpg"  1920×1080px  x=40 y=40 w=960 h=540  note="rim light"
   g7h1z0c  group  "Night"  blue  x=1100 y=40 w=800 h=600  (3 items)
     …
-not in a group:
-  i3x9a0b  image  "pose 2.png"  1200×1600px  x=2600 y=0 w=600 h=800
+  i8k2m1q  image  "rim.jpg"  1920×1080px  x=40 y=40 w=960 h=540  note="rim light"
+i3x9a0b  image  "pose 2.png"  1200×1600px  x=2600 y=0 w=600 h=800
+s1a2b3c  shape  rounded  "Sketch"  fill=blue  x=0 y=2000 w=200 h=120
+s7f2k1q  shape  diamond  "Approved?"  fill=yellow  x=320 y=1960 w=200 h=200
+c4n8w2p  connector  s1a2b3c → s7f2k1q.left  "send"  elbow end=arrow  grey
+bounds x=0 y=0 w=3200 h=2200
 ```
+
+Items not in a group are not indented; children are indented under their group.
 
 ## Batch operations (`apply`)
 
@@ -84,6 +92,10 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
   { "op": "newgroup", "name": "Lighting", "color": "violet", "as": "$light" },
   { "op": "note", "text": "# Lighting\nCool rim, **warm key**\n- [ ] night refs", "color": "paper", "group": "$light" },
   { "op": "note", "text": "too dark?", "color": "pink", "x": 900, "y": 40 },
+  { "op": "shape", "kind": "rounded", "text": "Sketch", "fill": "blue", "x": 0, "y": 2000, "as": "$a" },
+  { "op": "shape", "kind": "diamond", "text": "Approved?", "fill": "yellow", "x": 320, "y": 1960, "as": "$b" },
+  { "op": "connect", "from": "$a", "to": "$b", "label": "send", "route": "elbow" },
+  { "op": "connect", "from": "$b", "fromSide": "right", "to": { "x": 900, "y": 2060 }, "dash": true },
   { "op": "add", "paths": ["refs/rim.jpg", "refs/night/"], "group": "$light" },
   { "op": "add", "urls": ["https://example.com/sky.jpg"], "x": 4000, "y": 0, "max": 800 },
   { "op": "group", "ids": ["i8k2m1q", "i3x9a0b"], "name": "Poses", "as": "$poses" },
@@ -103,9 +115,11 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 |---|---|
 | `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200), `as` |
 | `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
+| `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
+| `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`straight elbow curve`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
-| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio` (`null` removes a field) |
+| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label` (`null` removes a field) |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
 | `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
 | `fit` | `id` of a group: the frame hugs its items |
@@ -117,8 +131,13 @@ Group colours: `violet blue orange green pink yellow red amber grey`. Note colou
 `yellow orange pink green blue violet grey paper none`. Note text is Markdown —
 headings, lists, `- [ ]` checklists, quotes, bold / italic / strike / `<u>`,
 `==highlight==`, `[text]{.red}` colours, links ([FORMAT.md](FORMAT.md#note-text-markdown-subset)).
+Shape fills, outlines and connector colours: `white grey black red orange yellow green blue violet pink`
+(shape `fill` also `none`).
 Coordinates are board units (1 unit = 1 CSS pixel at 100% zoom), y down.
 Moving a group moves everything inside it (nested groups too).
+Connectors follow the items at their ends; deleting an item turns the ends on it
+into free points. Their `x y w h` are bounds the tools keep up to date — move
+the items, not the connector.
 
 ## In the browser: `window.ilucanvas`
 

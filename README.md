@@ -26,6 +26,10 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 - **Notes**: one tool for stickies, documents and plain text (N, or double click
   on the board) — headings, lists, checklists you tick on the board, quotes,
   colours, highlights, links; stored as Markdown.
+- **Shapes and connectors** for diagrams: eight shapes with text (S), arrows
+  between anything (X, or drag from the dots around a hovered item) —
+  straight, elbow or curved, with heads, labels and dashes; they follow the
+  items they connect.
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
 - **PureRef:** `.pur` files open for viewing — just the pictures and their

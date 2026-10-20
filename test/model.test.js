@@ -138,3 +138,79 @@ test('notes: defaults, colours, round trip, ops', async () => {
   const n = normalize({ format: 'ilucanvas', assets: {}, items: [{ id: 'n', type: 'note', x: 0, y: 0, w: 1, h: 1, size: 'm', align: 'left', ratio: 'free', scale: 1, fit: false }] }).items[0];
   assert.deepEqual(Object.keys(n).sort(), ['color', 'h', 'id', 'text', 'type', 'w', 'x', 'y']);
 });
+
+test('shapes and connectors: ops, defaults, ends follow items, delete detaches, copy remaps', async () => {
+  const { applyOps } = await import('../src/core/ops.js');
+  const { copyItems, refreshConnectors } = await import('../src/core/model.js');
+  const d = emptyCanvas();
+  const r = await applyOps(d, [
+    { op: 'shape', kind: 'rounded', text: 'Start', x: 0, y: 0, as: '$a' },
+    { op: 'shape', kind: 'diamond', text: 'Ok?', fill: 'yellow', x: 400, y: 0, as: '$b' },
+    { op: 'connect', from: '$a', to: '$b', label: 'yes', route: 'elbow', as: '$c' },
+    { op: 'connect', from: '$b', fromSide: 'bottom', to: { x: 450, y: 600 }, end: 'dot', dash: true },
+  ]);
+  const get = (id) => d.items.find((i) => i.id === id);
+  const [a, b, c, c2] = r.created.map(get);
+  assert.equal(a.w, 200); assert.equal(a.h, 120);
+  assert.equal(b.h, 200, 'round kinds start square');
+  assert.equal(a.fill, 'blue');
+  assert.deepEqual(c.from, { id: a.id });
+  assert.equal(c.route, 'elbow');
+  assert.equal(c.end, 'arrow');
+  assert.deepEqual(c2.from, { id: b.id, side: 'bottom' });
+  assert.equal(c2.dash, true);
+  // bounds of a connector span its path: from a's right side to b's left side
+  assert.ok(c.x >= 199 && c.x + c.w <= 401, `bounds ${c.x} ${c.w}`);
+  // moving an item drags the attached ends along
+  moveItems(d, [b.id], 0, 300);
+  assert.ok(get(c.id).y + get(c.id).h > 300, 'connector bounds follow the moved shape');
+  // moving a connector moves only its free ends
+  const freeBefore = get(c2.id).to;
+  moveItems(d, [c2.id], 10, 10);
+  assert.deepEqual(get(c2.id).to, { x: freeBefore.x + 10, y: freeBefore.y + 10 });
+  assert.deepEqual(get(c2.id).from, { id: b.id, side: 'bottom' });
+  // bad input is refused
+  await assert.rejects(() => applyOps(d, [{ op: 'connect', from: a.id, to: c.id }]), /is a connector/);
+  await assert.rejects(() => applyOps(d, [{ op: 'connect', from: a.id, to: b.id, fromSide: 'middle' }]), /side must be one of/);
+  await assert.rejects(() => applyOps(d, [{ op: 'shape', kind: 'blob' }]), /kind must be one of/);
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: a.id, color: 'red' }]), /fill and stroke/);
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: c.id, to: null }]), /cannot be removed/);
+  await applyOps(d, [{ op: 'set', id: a.id, fill: 'none', stroke: 'red', text: 'Begin' }, { op: 'set', id: c.id, color: 'blue', start: 'dot' }]);
+  assert.equal(get(a.id).fill, 'none');
+  assert.equal(get(c.id).color, 'blue');
+  assert.ok(validate(d).ok, JSON.stringify(validate(d).errors));
+  assert.deepEqual(normalize(serialize(d)).items, d.items, 'round trip');
+  // copies: ends on copied items point at the copies, others at the originals
+  const map = new Map([[a.id, 'a2'], [c.id, 'c2']]);
+  const [, cc] = copyItems([get(a.id), get(c.id)], map, 0, 1000, { lookup: (id) => get(id) });
+  assert.deepEqual(cc.from, { id: 'a2' });
+  assert.deepEqual(cc.to, { id: b.id });
+  const [, lone] = copyItems([get(a.id), get(c.id)], map, 0, 0, { lookup: () => null });
+  assert.equal(lone.to.id, undefined, 'pasted elsewhere: an end on a missing item becomes a point');
+  // deleting a shape turns the ends on it into points where they were
+  const end = get(c.id).to;
+  removeItems(d, [b.id]);
+  refreshConnectors(d);
+  assert.equal(get(c.id).to.id, undefined);
+  assert.ok(Number.isFinite(get(c.id).to.x));
+  assert.equal(get(c2.id).from.id, undefined);
+  assert.ok(end.id === b.id);
+  assert.ok(validate(d).ok);
+  // validate catches ends on unknown items and on the connector itself
+  const bad = structuredClone(d);
+  bad.items.find((i) => i.id === c.id).to = { id: 'nope' };
+  bad.items.find((i) => i.id === c2.id).from = { id: c2.id };
+  const errs = validate(bad).errors.map((e) => e.msg).join(' | ');
+  assert.match(errs, /unknown item "nope"/);
+  assert.match(errs, /cannot end on itself/);
+  // normalize: an end on a missing item becomes a point; defaults are not written
+  const n = normalize({ format: 'ilucanvas', assets: {}, items: [
+    { id: 's', type: 'shape', kind: 'rect', x: 0, y: 0, w: 10, h: 10, fill: 'blue', text: '', align: 'center', size: 'm' },
+    { id: 'k', type: 'connector', from: { id: 's', side: 'nowhere' }, to: { id: 'gone' }, route: 'straight', start: 'none', end: 'arrow', color: 'grey', width: 2, parent: 's', x: 0, y: 0, w: 5, h: 5 },
+  ] }).items;
+  assert.deepEqual(Object.keys(n[0]).sort(), ['fill', 'h', 'id', 'kind', 'text', 'type', 'w', 'x', 'y']);
+  assert.deepEqual(n[1].from, { id: 's' });
+  assert.deepEqual(n[1].to, { x: 5, y: 5 });
+  assert.equal(n[1].route, undefined);
+  assert.equal(n[1].parent, undefined);
+});

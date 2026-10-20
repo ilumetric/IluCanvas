@@ -11,7 +11,7 @@ import { APP_VERSION } from '../core/version.js';
 import {
   GROUP_COLORS, serialize, byId, itemBounds, unionBounds, withChildren, removeItems, groupItems, ungroup, fitGroup,
   arrangeItems, restack, patchItems, addItems, newId, dropLayout, fitSize, reparent, childrenOf, groupsOf, validate, contentBounds,
-  pruneAssets,
+  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS,
 } from '../core/model.js';
 import { applyOps } from '../core/ops.js';
 import { isImageName } from '../core/imageinfo.js';
@@ -24,7 +24,7 @@ import { ImageCache } from './images.js';
 import { Minimap } from './minimap.js';
 import { Background, BACKGROUNDS, STYLE_BACKGROUND, tileUrl } from './background.js';
 import { Store } from './store.js';
-import { NotesUI } from './notes.js';
+import { NotesUI, KIND_ICON, ROUTE_ICON } from './notes.js';
 import { resetTextCache } from './text.js';
 import { plainText } from '../core/markdown.js';
 import * as disk from './disk.js';
@@ -132,6 +132,7 @@ function edit(label, fn) {
 
 function changed({ save = true } = {}) {
   S.rev++;
+  if (doc()) refreshConnectors(doc());
   S.board.pruneSelection();
   S.notes?.sync();
   S.notes?.render();
@@ -350,11 +351,15 @@ function renderToolbar() {
   const tb = $('toolbar');
   tb.hidden = !doc();
   const tool = (id, ic, label, key) => h(`button.tool${S.board.tool === id ? '.on' : ''}`, { type: 'button', title: `${label} (${key})`, 'aria-label': label, 'aria-pressed': String(S.board.tool === id), onclick: () => setTool(id) }, icon(ic, 20));
+  const shapeIcon = KIND_ICON[pref.get('shapeKind', 'rect')] || 'shRect';
   tb.replaceChildren(
     tool('select', 'pointer', t('tool.select'), 'V'), tool('hand', 'hand', t('tool.hand'), 'H'),
     readOnly() ? null : h('span.tool-sep'),
     readOnly() ? null : noteTool(),
+    readOnly() ? null : tool('shape', shapeIcon, t('tool.shape'), 'S'),
+    readOnly() ? null : tool('connector', 'connector', t('tool.connector'), 'X'),
   );
+  renderToolOptions();
   function noteTool() {
     // a click picks the tool; dragging the button drops a sticky on the board
     const b = tool('note', 'sticky', `${t('tool.note')} — ${t('tool.noteDrag')}`, 'N');
@@ -366,6 +371,34 @@ function renderToolbar() {
 function setTool(id) {
   S.board.setTool(id);
   renderToolbar();
+}
+
+/** Options of the current tool, in a panel beside the tool bar: shape kinds, connector routes. */
+function renderToolOptions() {
+  const box = $('toolopts');
+  const tool = S.board.tool;
+  const opt = (ic, label, on, onclick) => h(`button.tool.small${on ? '.on' : ''}`, { type: 'button', title: label, 'aria-label': label, onclick }, icon(ic, 18));
+  let items = null;
+  if (tool === 'shape') {
+    const cur = pref.get('shapeKind', 'rect');
+    items = SHAPE_KINDS.map((k) => opt(KIND_ICON[k], t(`shape.${k}`), cur === k, () => { pref.set('shapeKind', k); renderToolbar(); }));
+  } else if (tool === 'connector') {
+    const cur = pref.get('route', 'elbow');
+    items = ['straight', 'elbow', 'curve'].map((r) => opt(ROUTE_ICON[r], t(`route.${r}`), cur === r, () => { pref.set('route', r); renderToolOptions(); }));
+  }
+  if (!items || !doc()) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  box.replaceChildren(...items);
+  // next to the tool's button
+  const btn = [...$('toolbar').querySelectorAll('.tool')].find((b) => b.classList.contains('on'));
+  if (btn) {
+    const ui = currentUi();
+    const r = btn.getBoundingClientRect();
+    const tr = $('toolbar').getBoundingClientRect();
+    const bh = box.getBoundingClientRect().height;
+    box.style.left = `${(tr.right + 8) / ui}px`;
+    box.style.top = `${Math.max(8, r.top + r.height / 2 - bh / 2) / ui}px`;
+  }
 }
 
 function renderMapBar() {
@@ -904,11 +937,8 @@ function duplicateSelection() {
   const all = withChildren(d, ids);
   const map = new Map();
   for (const it of d.items) if (all.has(it.id)) map.set(it.id, newId(it.type));
-  const copies = d.items.filter((it) => all.has(it.id)).map((it) => {
-    const c = { ...it, id: map.get(it.id), x: it.x + off, y: it.y + off };
-    if (it.parent && map.has(it.parent)) c.parent = map.get(it.parent);
-    return c;
-  });
+  const m = byId(d);
+  const copies = copyItems(d.items.filter((it) => all.has(it.id)), map, off, off, { lookup: (id) => m.get(id) });
   edit('duplicate', (dd) => {
     dd.items = [...copies.filter((c) => c.type === 'group'), ...dd.items, ...copies.filter((c) => c.type !== 'group')];
   });
@@ -1122,11 +1152,9 @@ async function pasteClip(at) {
   const dx = p.x - (b.x + b.w / 2);
   const dy = p.y - (b.y + b.h / 2);
   const map = new Map(c.items.map((it) => [it.id, newId(it.type)]));
-  const copies = c.items.filter((it) => it.type !== 'image' || d.assets[it.asset] || extraAssets[it.asset]).map((it) => {
-    const n = { ...it, id: map.get(it.id), x: it.x + dx, y: it.y + dy };
-    if (it.parent) { if (map.has(it.parent)) n.parent = map.get(it.parent); else delete n.parent; }
-    return n;
-  });
+  const here = c.from === d.id ? byId(d) : null;
+  const copies = copyItems(c.items.filter((it) => it.type !== 'image' || d.assets[it.asset] || extraAssets[it.asset]), map, dx, dy, { lookup: here ? (id) => here.get(id) : null })
+    .map((n) => (n.parent && !here ? (({ parent, ...rest }) => rest)(n) : n));
   edit('paste', (dd) => {
     dd.assets = { ...dd.assets, ...extraAssets };
     dd.items = [...copies.filter((x) => x.type === 'group'), ...dd.items, ...copies.filter((x) => x.type !== 'group')];
@@ -1235,6 +1263,8 @@ function contextMenu(pt, hit, world) {
     imgs.length === 1 ? { label: t('ctx.zoomTo'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() } : { label: t('zoom.selection'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() },
     imgs.length === 1 ? { label: t('ctx.openOriginal'), icon: 'eye', onClick: () => openOriginal(imgs[0]) } : null,
     !ro && notes.length === 1 && s.length === 1 ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(notes[0].id) } : null,
+    !ro && s.length === 1 && s[0].type === 'shape' ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(s[0].id) } : null,
+    !ro && s.length === 1 && s[0].type === 'connector' ? { label: t('conn.label'), icon: 'text', hint: 'Enter', onClick: () => S.notes.editLabel(s[0].id) } : null,
     !ro && notes.length && notes.length === s.length ? { label: t('note.sticky'), icon: 'sticky', onClick: () => S.notes.setKind('sticky') } : null,
     !ro && notes.length && notes.length === s.length ? { label: t('note.doc'), icon: 'doc', onClick: () => S.notes.setKind('doc') } : null,
     !ro && notes.length && notes.length === s.length ? { label: t('note.text'), icon: 'type', onClick: () => S.notes.setKind('text') } : null,
@@ -1270,7 +1300,8 @@ function onDblClick(hit, e) {
   if (!doc()) return;
   if (hit.kind === 'label') return renameGroup(hit.id);
   const it = hit.id && byId(doc()).get(hit.id);
-  if (it?.type === 'note' && !readOnly()) return S.notes.open(it.id);
+  if ((it?.type === 'note' || it?.type === 'shape') && !readOnly()) return S.notes.open(it.id);
+  if (it?.type === 'connector' && !readOnly()) return S.notes.editLabel(it.id);
   if (hit.kind === 'item' || hit.kind === 'group') {
     if (it) S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
     return null;
@@ -1529,7 +1560,14 @@ addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'Delete': case 'Backspace': e.preventDefault(); if (!readOnly()) deleteSelection(); return;
     case 'Escape': if (S.board.tool !== 'select') setTool('select'); else S.board.select([]); closeMenu(); return;
-    case 'Enter': { const s = sel(); if (s.length === 1 && s[0].type === 'note' && !readOnly()) { e.preventDefault(); S.notes.open(s[0].id); } return; }
+    case 'Enter': {
+      const s = sel();
+      if (s.length === 1 && !readOnly()) {
+        if (s[0].type === 'note' || s[0].type === 'shape') { e.preventDefault(); S.notes.open(s[0].id); }
+        else if (s[0].type === 'connector') { e.preventDefault(); S.notes.editLabel(s[0].id); }
+      }
+      return;
+    }
     case 'ArrowLeft': e.preventDefault(); nudge(e.shiftKey ? -10 : -1, 0); return;
     case 'ArrowRight': e.preventDefault(); nudge(e.shiftKey ? 10 : 1, 0); return;
     case 'ArrowUp': e.preventDefault(); nudge(0, e.shiftKey ? -10 : -1); return;
@@ -1541,10 +1579,22 @@ addEventListener('keydown', (e) => {
     case 'F2': { const g = sel().find((it) => it.type === 'group'); if (g) { e.preventDefault(); renameGroup(g.id); } return; }
     default:
   }
+  // typing on a selected empty note or shape starts its text
+  {
+    const s = sel();
+    if (e.key.length === 1 && !readOnly() && s.length === 1 && (s[0].type === 'note' || s[0].type === 'shape') && !s[0].text) {
+      e.preventDefault();
+      S.notes.open(s[0].id);
+      document.execCommand('insertText', false, e.key);
+      return;
+    }
+  }
   if (e.shiftKey) return;
   if (k === 'v') setTool('select');
   else if (k === 'h') setTool('hand');
   else if (k === 'n' && !readOnly()) setTool('note');
+  else if (k === 's' && !readOnly()) setTool('shape');
+  else if (k === 'x' && !readOnly()) setTool('connector');
   else if (k === 'm') toggleMap();
 });
 
@@ -1599,6 +1649,10 @@ function agentApi() {
         ? `${ind}${it.id}  group  "${it.name}"  ${it.color}  ${pos(it)}`
         : it.type === 'note'
           ? `${ind}${it.id}  note  "${first(it).slice(0, 60)}"  ${it.color}${it.fit ? ' sticky' : ''}  ${pos(it)}`
+          : it.type === 'shape'
+            ? `${ind}${it.id}  shape  ${it.kind}  "${first(it).slice(0, 60)}"  fill=${it.fill}  ${pos(it)}`
+            : it.type === 'connector'
+              ? `${ind}${it.id}  connector  ${it.from.id || `(${Math.round(it.from.x)},${Math.round(it.from.y)})`} → ${it.to.id || `(${Math.round(it.to.x)},${Math.round(it.to.y)})`}${it.label ? `  "${it.label}"` : ''}  ${it.route || 'straight'}`
           : `${ind}${it.id}  ${it.type}  "${d.assets[it.asset]?.name || it.asset}"  ${pos(it)}${it.note ? `  note="${it.note}"` : ''}`);
       const out = [];
       const walk = (parent, ind) => {
@@ -1624,8 +1678,9 @@ function agentApi() {
     selection() { return selIds(); },
     zoomTo(ids = 'all') {
       need();
-      if (ids === 'all') S.board.fitAll();
-      else { const m = byId(doc()); const b = unionBounds([].concat(ids).map((id) => m.get(id)).filter(Boolean).map(itemBounds)); if (b) S.board.fitBounds(b, true, { maxZ: 8 }); }
+      // at once, not animated: an agent reads the view right after
+      if (ids === 'all') S.board.fitAll(false);
+      else { const m = byId(doc()); const b = unionBounds([].concat(ids).map((id) => m.get(id)).filter(Boolean).map(itemBounds)); if (b) S.board.fitBounds(b, false, { maxZ: 8 }); }
       return { ...S.board.view };
     },
     /** Renderer numbers: decoded images, memory, last frame time. */
@@ -1705,7 +1760,8 @@ async function start() {
         commit(label, { items, assets: assets || doc().assets, title: doc().title });
       },
       selection: () => S.notes?.render(),
-      create: (tool, where, o) => S.notes.create(where, o),
+      create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : S.notes.create(where, o)),
+      connect: (from, to) => S.notes.connect(from, to),
       toggleTask: (id, block) => S.notes.toggleTask(id, block),
       pointerDown: () => { if (S.notes.editing) S.notes.close(); },
       view: () => {

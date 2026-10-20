@@ -136,12 +136,51 @@ Every line is one paragraph (an empty line is an empty paragraph).
 | `[text](https://…)` | link (Ctrl+click opens it) |
 | `\*` | a literal character |
 
-Planned item types (not in version 1 yet): `shape`, `connector`, `stroke`, `video` — see [ROADMAP.md](ROADMAP.md).
+**shape** — a figure with text, for diagrams and flowcharts.
+
+| field | |
+|---|---|
+| `kind` | `rect rounded ellipse diamond triangle parallelogram hexagon star` |
+| `fill` | `white grey black red orange yellow green blue violet pink`, or `none` (only the outline) |
+| `stroke` | outline colour from the same list; none when left out (`grey` when `fill` is `none`) |
+| `text` | Markdown like a note's, centred inside the figure; the shape grows downwards to show all of it |
+| `size`, `scale` | text size, as for notes |
+| `align` | `left center right`; default `center` |
+
+```json
+{"id":"s7f2k1qa","type":"shape","kind":"diamond","x":320,"y":0,"w":200,"h":200,"fill":"yellow","text":"Approved?"}
+```
+
+**connector** — a line or arrow between two ends. An end is `{"id": …}` (it
+follows that item), `{"id": …, "side": "top|right|bottom|left"}` (pinned to a
+side; otherwise the side facing the other end is chosen as things move) or
+`{"x": …, "y": …}` (a free point). When an item is deleted, the ends on it
+become free points where they were.
+
+| field | |
+|---|---|
+| `from`, `to` | the ends |
+| `route` | `straight` (default), `elbow` (right angles), `curve` |
+| `start`, `end` | heads `none arrow dot`; default no start head, `arrow` at the end |
+| `color` | `white grey black red orange yellow green blue violet pink` |
+| `width` | line width in board units; default 2 |
+| `dash` | `true`: dashed |
+| `label` | text in the middle of the line |
+
+`x y w h` of a connector are its bounds, recomputed by the tools whenever its
+ends move — read them, do not edit them. Connectors never have a `parent`.
+
+```json
+{"id":"c4n8w2pd","type":"connector","from":{"id":"s1a2b3c4"},"to":{"id":"s7f2k1qa","side":"left"},"route":"elbow","end":"arrow","color":"grey","label":"yes","x":200,"y":60,"w":120,"h":40}
+```
+
+Planned item types (not in this version yet): `stroke`, `video` — see [ROADMAP.md](ROADMAP.md).
 
 ## Checks (`ilucanvas validate`)
 
 Errors: wrong `format`; an item whose `asset` is not in `assets`; a `parent`
 that is not a group; groups inside each other in a circle; duplicate ids;
+a connector end that is neither `{id}` nor `{x, y}`, or names an unknown item or the connector itself;
 `x y w h` that are not numbers, `w`/`h` ≤ 0; an asset `file` missing from the ZIP.
 Warnings: unknown item types, assets nobody uses, missing previews.
 

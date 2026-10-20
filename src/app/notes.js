@@ -1,13 +1,22 @@
-// Notes in the app: making them (the Note tool, double click), editing their
-// text, and the bar that floats over the selection — note settings, or the
-// formatting buttons while you type.
+// Notes, shapes and connectors in the app: making them (tools, double click,
+// dragging out of the tool bar), editing their text, connector labels, and
+// the bar that floats over the selection — their settings, or the formatting
+// buttons while you type.
 
-import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, NOTE_COLORS, RATIO_K } from '../core/model.js';
+import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, refreshConnectors, NOTE_COLORS, RATIO_K, SHAPE_KINDS, PAINT } from '../core/model.js';
+import { connectorPath, midpoint, ROUTES } from '../core/connectors.js';
 import { toggleTask, MARK_COLORS } from '../core/markdown.js';
 import { NoteEditor } from './editor.js';
 import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
+import { FILL, LINE_COLOR } from './shapes.js';
 import { h, icon, openMenu, promptDialog } from './ui.js';
 import { t } from './i18n.js';
+
+const KIND_ICON = { rect: 'shRect', rounded: 'shRounded', ellipse: 'shEllipse', diamond: 'shDiamond', triangle: 'shTriangle', parallelogram: 'shParallelogram', hexagon: 'shHexagon', star: 'shStar' };
+const ROUTE_ICON = { straight: 'routeStraight', elbow: 'routeElbow', curve: 'routeCurve' };
+const HEAD_ICON = { none: 'headNone', arrow: 'headArrow', dot: 'headDot' };
+const SQUARE_KINDS = new Set(['ellipse', 'diamond', 'triangle', 'star']);
+export { KIND_ICON, ROUTE_ICON };
 
 const STICKIES = NOTE_COLORS.filter((c) => c !== 'paper' && c !== 'none');
 /** A new sticky's side on screen, px. */
@@ -35,6 +44,59 @@ export class NotesUI {
   get editing() { return this.editor.id; }
 
   // ---- making notes ------------------------------------------------------------------------------
+
+  /** A shape of the current kind: a click makes one of the usual size on screen, a drag one of that size. */
+  createShape(where, { drawn = false } = {}) {
+    const z = this.board.view.z;
+    const kind = SHAPE_KINDS.includes(this.app.pref.get('shapeKind', 'rect')) ? this.app.pref.get('shapeKind', 'rect') : 'rect';
+    const [sw, sh] = SQUARE_KINDS.has(kind) ? [140, 140] : [180, 110];
+    const r = drawn ? where : { x: where.x - sw / z / 2, y: where.y - sh / z / 2, w: sw / z, h: sh / z };
+    const fill = PAINT.includes(this.app.pref.get('shapeFill', 'blue')) || this.app.pref.get('shapeFill') === 'none' ? this.app.pref.get('shapeFill', 'blue') : 'blue';
+    const s = { id: newId('shape'), type: 'shape', kind, x: r.x, y: r.y, w: r.w, h: r.h, fill, text: '' };
+    const scale = niceScale(z);
+    if (scale !== 1) s.scale = scale;
+    this.app.edit('shape', (d) => { addItems(d, [s]); reparent(d, [s.id]); });
+    this.board.select([s.id]);
+    this.app.setTool('select');
+    return s.id;
+  }
+
+  /** A connector between two ends ({ id, side? } | { x, y }), with the last used look. */
+  connect(from, to) {
+    const route = ROUTES.includes(this.app.pref.get('route', 'elbow')) ? this.app.pref.get('route', 'elbow') : 'elbow';
+    const c = { id: newId('connector'), type: 'connector', from, to, end: 'arrow', color: this.app.pref.get('lineColor', 'grey'), x: 0, y: 0, w: 1, h: 1 };
+    if (route !== 'straight') c.route = route;
+    this.app.edit('connect', (d) => { addItems(d, [c]); refreshConnectors(d); });
+    this.board.select([c.id]);
+    this.app.setTool('select');
+    return c.id;
+  }
+
+  /** A connector's label, typed in place. */
+  editLabel(id) {
+    const d = this.app.doc();
+    const c = byId(d).get(id);
+    if (!c || c.type !== 'connector' || this.app.readOnly()) return;
+    const m = byId(d);
+    const mid = midpoint(connectorPath(c, (x) => m.get(x)).pts);
+    const s = this.board.toScreen(mid.x, mid.y);
+    const st = this.board.stage.getBoundingClientRect();
+    const ui = this.board.ui;
+    const input = h('input.rename-input', { type: 'text', value: c.label || '', placeholder: t('conn.label'), spellcheck: false, style: { left: `${(st.left + s.x) / ui - 90}px`, top: `${(st.top + s.y) / ui - 15}px`, width: '180px', textAlign: 'center' } });
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      const v = input.value.trim();
+      input.remove();
+      if (ok && v !== (c.label || '')) this.app.edit('label', (dd) => patchItems(dd, { [id]: { label: v || undefined } }));
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); e.stopPropagation(); });
+    input.addEventListener('blur', () => finish(true));
+    document.body.append(input);
+    input.focus();
+    input.select();
+  }
 
   /** The sticky colour last chosen. */
   get stickyColor() {
@@ -112,7 +174,7 @@ export class NotesUI {
 
   open(id, opts) {
     const it = byId(this.app.doc()).get(id);
-    if (!it || it.type !== 'note' || this.app.readOnly()) return;
+    if (!it || (it.type !== 'note' && it.type !== 'shape') || this.app.readOnly()) return;
     this.editor.open(it, opts);
     this.render();
   }
@@ -138,7 +200,7 @@ export class NotesUI {
     const patches = {};
     for (const id of ids) {
       const it = m.get(id);
-      if (!it || it.type !== 'note' || it.fit) continue;
+      if (!it || (it.type !== 'note' && it.type !== 'shape') || it.fit) continue;
       const need = neededHeight(it, this.family);
       if (need > it.h + 0.5) patches[id] = { h: Math.ceil(need) };
     }
@@ -164,13 +226,15 @@ export class NotesUI {
   // ---- note settings --------------------------------------------------------------------------------
 
   #notes() { return this.board.selectedItems().filter((it) => it.type === 'note'); }
+  #ofType(type) { return this.board.selectedItems().filter((it) => it.type === type); }
 
-  #set(label, fn) {
-    const notes = this.#notes();
-    if (!notes.length) return;
+  #set(label, fn, type = 'note') {
+    const items = this.#ofType(type);
+    if (!items.length) return;
     this.app.edit(label, (d) => {
-      patchItems(d, Object.fromEntries(notes.map((n) => [n.id, fn(n)])));
-      this.fitHeights(d, notes.map((n) => n.id));
+      patchItems(d, Object.fromEntries(items.map((n) => [n.id, fn(n)])));
+      this.fitHeights(d, items.map((n) => n.id));
+      refreshConnectors(d);
     });
     this.sync();
     this.render();
@@ -197,10 +261,12 @@ export class NotesUI {
   render() {
     const bar = this.bar;
     const ro = this.app.readOnly();
-    const notes = this.#notes();
     const all = this.board.selectedItems();
+    const only = (type) => all.length && all.every((it) => it.type === type);
     if (this.editor.id) this.#formatBar();
-    else if (!ro && notes.length && notes.length === all.length) this.#noteBar(notes);
+    else if (!ro && only('note')) this.#noteBar(all);
+    else if (!ro && only('shape')) this.#shapeBar(all);
+    else if (!ro && only('connector')) this.#connectorBar(all);
     else { bar.hidden = true; bar.replaceChildren(); return; }
     bar.hidden = false;
     this.place();
@@ -263,6 +329,64 @@ export class NotesUI {
       this.#btn('alignCenter', t('fmt.center'), () => this.#set('align', () => ({ align: 'center' })), al === 'center'),
       this.#btn('alignRight', t('fmt.right'), () => this.#set('align', () => ({ align: 'right' })), al === 'right'));
     if (notes.length === 1) parts.push(h('span.sb-sep'), this.#btn('pencil', `${t('note.edit')} (Enter)`, () => this.open(one.id)));
+    this.bar.replaceChildren(...parts);
+  }
+
+  #paintMenu(anchor, current, onPick, { none = false, lines = false } = {}) {
+    const table = lines ? LINE_COLOR : FILL;
+    openMenu(anchor, [
+      ...(none ? [{ label: t('paint.none'), icon: 'x', checked: current === 'none' || !current, onClick: () => onPick('none') }] : []),
+      ...PAINT.map((c) => ({ label: t(`paint.${c}`), swatch: table[c], checked: current === c, onClick: () => onPick(c) })),
+    ]);
+  }
+
+  #shapeBar(shapes) {
+    const one = shapes[0];
+    const same = (k) => shapes.every((s) => (s[k] ?? null) === (one[k] ?? null));
+    const kindBtn = this.#btn(KIND_ICON[one.kind] || 'shRect', t('shape.kind'), () => openMenu(kindBtn, SHAPE_KINDS.map((k) => ({
+      label: t(`shape.${k}`), icon: KIND_ICON[k], checked: same('kind') && one.kind === k,
+      onClick: () => { this.app.pref.set('shapeKind', k); this.#set('kind', () => ({ kind: k }), 'shape'); },
+    }))));
+    const fillBtn = this.#btn(null, t('shape.fill'), () => this.#paintMenu(fillBtn, one.fill, (c) => { this.app.pref.set('shapeFill', c); this.#set('fill', () => ({ fill: c }), 'shape'); }, { none: true }));
+    fillBtn.append(h('span.sb-swatch', { class: one.fill === 'none' ? 'none' : '', style: { background: FILL[one.fill] || 'transparent' } }));
+    const strokeBtn = this.#btn(null, t('shape.stroke'), () => this.#paintMenu(strokeBtn, one.stroke || 'none', (c) => this.#set('stroke', () => ({ stroke: c === 'none' ? undefined : c }), 'shape'), { none: true, lines: true }));
+    strokeBtn.append(h('span.sb-swatch.ring', { class: one.stroke ? '' : 'none', style: { borderColor: LINE_COLOR[one.stroke] || 'transparent' } }));
+    const al = one.align || 'center';
+    const parts = [kindBtn, h('span.sb-sep'), fillBtn, strokeBtn, h('span.sb-sep')];
+    for (const s of ['s', 'm', 'l', 'xl']) parts.push(this.#btn(null, t('note.size'), () => this.#set('size', () => ({ size: s === 'm' ? undefined : s }), 'shape'), (one.size || 'm') === s && same('size'), s.toUpperCase()));
+    parts.push(h('span.sb-sep'),
+      this.#btn('alignLeft', t('fmt.left'), () => this.#set('align', () => ({ align: 'left' }), 'shape'), al === 'left'),
+      this.#btn('alignCenter', t('fmt.center'), () => this.#set('align', () => ({ align: undefined }), 'shape'), al === 'center'),
+      this.#btn('alignRight', t('fmt.right'), () => this.#set('align', () => ({ align: 'right' }), 'shape'), al === 'right'));
+    if (shapes.length === 1) parts.push(h('span.sb-sep'), this.#btn('pencil', `${t('note.edit')} (Enter)`, () => this.open(one.id)));
+    this.bar.replaceChildren(...parts);
+  }
+
+  #connectorBar(cs) {
+    const one = cs[0];
+    const route = one.route || 'straight';
+    const set = (label, fn) => this.#set(label, fn, 'connector');
+    const headBtn = (which) => {
+      const cur = which === 'start' ? one.start || 'none' : one.end || 'arrow';
+      const b = this.#btn(HEAD_ICON[cur], t(`conn.${which}`), () => openMenu(b, ['none', 'arrow', 'dot'].map((hd) => ({
+        label: t(`head.${hd}`), icon: HEAD_ICON[hd], checked: cur === hd,
+        onClick: () => set('head', () => ({ [which]: which === 'start' && hd === 'none' ? undefined : hd })),
+      }))));
+      if (which === 'start') b.classList.add('flip-x');
+      return b;
+    };
+    const colorBtn = this.#btn(null, t('conn.color'), () => this.#paintMenu(colorBtn, one.color, (c) => { this.app.pref.set('lineColor', c); set('color', () => ({ color: c })); }, { lines: true }));
+    colorBtn.append(h('span.sb-swatch', { style: { background: LINE_COLOR[one.color] || LINE_COLOR.grey } }));
+    const widthBtn = this.#btn('lineWidth', t('conn.width'), () => openMenu(widthBtn, [[1, 'thin'], [2, 'medium'], [4, 'thick'], [8, 'bold']].map(([w, n]) => ({
+      label: t(`conn.${n}`), checked: (one.width || 2) === w, onClick: () => set('width', () => ({ width: w === 2 ? undefined : w })),
+    }))));
+    const parts = [
+      ...ROUTES.map((r) => this.#btn(ROUTE_ICON[r], t(`route.${r}`), () => { this.app.pref.set('route', r); set('route', () => ({ route: r === 'straight' ? undefined : r })); }, route === r)),
+      h('span.sb-sep'), headBtn('start'), headBtn('end'),
+      h('span.sb-sep'), colorBtn, widthBtn,
+      this.#btn('dash', t('conn.dash'), () => set('dash', (c) => ({ dash: !one.dash || undefined })), !!one.dash),
+    ];
+    if (cs.length === 1) parts.push(h('span.sb-sep'), this.#btn('text', t('conn.label'), () => this.editLabel(one.id), !!one.label));
     this.bar.replaceChildren(...parts);
   }
 

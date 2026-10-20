@@ -11,8 +11,9 @@
 // browser), so the caller passes `addImages(op) → [{ asset, w, h, name }]`
 // after putting the assets into doc.assets.
 
+import { ROUTES, HEADS, SIDES } from './connectors.js';
 import {
-  NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
+  NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
   removeItems, groupItems, ungroup, fitGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
 } from './model.js';
 
@@ -33,8 +34,10 @@ const EDITABLE = {
   x: 'num', y: 'num', w: 'pos', h: 'pos', rot: 'num', name: 'str', color: 'color', note: 'str',
   flipX: 'bool', flipY: 'bool', locked: 'bool', parent: 'ref', opacity: 'num', crop: 'crop',
   text: 'text', fit: 'bool', size: 'enum', align: 'enum', ratio: 'enum', scale: 'pos',
+  kind: 'enum', fill: 'paint', stroke: 'paint',
+  from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
 };
-const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS };
+const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS, kind: SHAPE_KINDS, route: ROUTES, start: HEADS, end: HEADS };
 export const EDITABLE_KEYS = Object.keys(EDITABLE);
 
 /** A checked patch from loose input (strings from the command line, JSON from agents); `item` is the target. */
@@ -45,14 +48,28 @@ export function cleanPatch(doc, input, item = null) {
     const t = EDITABLE[k];
     need(t, `unknown field "${k}" (editable: ${EDITABLE_KEYS.join(', ')})`);
     if (t === 'text') { patch[k] = String(raw ?? '').replace(/\r\n?/g, '\n'); continue; }
+    need(t !== 'end' || (raw !== null && raw !== ''), `${k} cannot be removed: give an id or { x, y }`);
     if (raw === null || raw === '') { patch[k] = undefined; continue; }
     if (t === 'num' || t === 'pos') {
       const n = Number(raw);
       need(Number.isFinite(n) && (t === 'num' || n > 0), `${k} must be a ${t === 'pos' ? 'positive ' : ''}number`);
       patch[k] = n;
     } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
-    else if (t === 'color') {
-      const list = item?.type === 'note' ? NOTE_COLORS : GROUP_COLORS;
+    else if (t === 'paint') {
+      need(raw === 'none' || PAINT.includes(raw), `${k} must be one of ${PAINT.join(', ')}, none`);
+      patch[k] = raw === 'none' && k === 'stroke' ? undefined : raw;
+    } else if (t === 'end') {
+      const e = typeof raw === 'string' && raw.startsWith('{') ? JSON.parse(raw) : raw;
+      const end = cleanEnd(e);
+      if (end.id !== undefined) {
+        const target = byId(doc).get(end.id);
+        need(target, `${k}: unknown item "${end.id}"`);
+        need(target.type !== 'connector', `${k}: ${end.id} is a connector`);
+      }
+      patch[k] = end;
+    } else if (t === 'color') {
+      need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
+      const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' ? PAINT : GROUP_COLORS;
       need(list.includes(raw), `color must be one of ${list.join(', ')}`);
       patch[k] = raw;
     } else if (t === 'enum') {
@@ -160,6 +177,48 @@ export function newNote(doc, { text = '', color = 'yellow', fit, size, scale, al
   return n;
 }
 
+/** A new shape (default: a 200×120 blue rectangle right of everything). */
+export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, size, scale, align, x, y, w, h, group = null, by = 'human' } = {}) {
+  const s = { id: newId('shape'), type: 'shape', kind, x: 0, y: 0, w: Number(w) || 200, h: Number(h) || (kind === 'ellipse' || kind === 'diamond' || kind === 'star' || kind === 'hexagon' ? Number(w) || 200 : 120), fill, text };
+  if (stroke) s.stroke = stroke;
+  if (size && size !== 'm') s.size = size;
+  if (scale && scale !== 1) s.scale = scale;
+  if (align && align !== 'center') s.align = align;
+  placeNew(doc, s, x, y, group);
+  addItems(doc, [s], by);
+  if (s.parent) fitGroup(doc, s.parent, { by });
+  return s;
+}
+
+/** A new connector between two ends ({ id, side? } or { x, y }). */
+export function newConnector(doc, { from, to, route, start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
+  const c = { id: newId('connector'), type: 'connector', from, to, end, color, x: 0, y: 0, w: 1, h: 1 };
+  if (route && route !== 'straight') c.route = route;
+  if (start && start !== 'none') c.start = start;
+  if (width && width !== 2) c.width = width;
+  if (dash) c.dash = true;
+  if (label) c.label = label;
+  addItems(doc, [c], by);
+  refreshConnectors(doc);
+  return byId(doc).get(c.id);
+}
+
+/** x / y given, the bottom of `group`, or right of everything. */
+function placeNew(doc, it, x, y, group) {
+  const g = group ? byId(doc).get(group) : null;
+  if (x !== undefined) { it.x = Number(x); it.y = Number(y ?? 0); }
+  else if (g) {
+    const kids = unionBounds(childrenOf(doc, g.id).map(itemBounds));
+    const pad = Math.max(16, Math.round(Math.max(g.w, g.h) * 0.03));
+    it.x = g.x + pad;
+    it.y = kids ? kids.y + kids.h + pad : g.y + pad;
+  } else {
+    const b = contentBounds(doc);
+    if (b) { it.x = b.x + b.w + 120; it.y = b.y; }
+  }
+  if (g) it.parent = g.id;
+}
+
 /** A new empty group frame: at x/y, or right of everything. */
 export function newGroup(doc, { name = 'Group', color, x, y, w = 1600, h = 1000, by = 'human' } = {}) {
   const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: x ?? 0, y: y ?? 0, w: Number(w) || 1600, h: Number(h) || 1000 };
@@ -204,6 +263,36 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           if (as) named.set(as, n.id);
           created.push(n.id);
           log.push(`note ${n.id}`);
+          break;
+        }
+        case 'shape': {
+          const group = o.group ? ref(o.group) : null;
+          if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const { op, as, group: _g, ...fields } = o;
+          const s = newShape(doc, { ...cleanPatch(doc, fields, { type: 'shape' }), group, by });
+          if (as) named.set(as, s.id);
+          created.push(s.id);
+          log.push(`shape ${s.id} ${s.kind}`);
+          break;
+        }
+        case 'connect': {
+          const end = (v, side) => {
+            const r = typeof v === 'string' ? ref(v) : v;
+            if (typeof r === 'string') {
+              idsExist(doc, [r]);
+              need(byId(doc).get(r).type !== 'connector', `connect: ${r} is a connector`);
+              need(!side || SIDES.includes(side), `connect: side must be one of ${SIDES.join(' ')}`);
+              return side ? { id: r, side } : { id: r };
+            }
+            need(r && Number.isFinite(Number(r.x)) && Number.isFinite(Number(r.y)), 'connect: from / to must be an id or { x, y }');
+            return { x: Number(r.x), y: Number(r.y) };
+          };
+          const { op, as, from, to, fromSide, toSide, ...fields } = o;
+          need(from !== undefined && to !== undefined, 'connect needs from and to');
+          const c = newConnector(doc, { ...cleanPatch(doc, fields, { type: 'connector' }), from: end(from, fromSide), to: end(to, toSide), by });
+          if (as) named.set(as, c.id);
+          created.push(c.id);
+          log.push(`connector ${c.id}`);
           break;
         }
         case 'newgroup': {
@@ -292,7 +381,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           log.push(`${o.op}: ${idList(ids)}`);
           break;
         }
-        default: throw new OpError(`unknown op "${o.op}" (add, note, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
+        default: throw new OpError(`unknown op "${o.op}" (add, note, shape, connect, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
       }
     } catch (e) {
       const err = new OpError(`op #${i} (${o?.op}): ${e.message}`);
@@ -300,5 +389,6 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
       throw err;
     }
   }
+  refreshConnectors(doc);
   return { created, log };
 }
