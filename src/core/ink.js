@@ -21,6 +21,9 @@ export const INK_DEFAULTS = { pen: { color: 'white', width: 3.5 }, highlighter: 
 export const inkScale = (z) => 2 ** Math.round(Math.log2(Math.min(64, Math.max(1 / 16, 1 / z))));
 
 /** How far ink can reach from the centre line, in the stroke's own units (pressure fattens a pen). */
+/** How long a stroke's arrowhead is, in its own units. */
+export const arrowLength = (s) => s.width * (s.tool === 'highlighter' ? 1.8 : 3);
+
 export const inkReach = (s) => (s.tool === 'pen' ? s.width * 0.8 : s.width / 2 + (s.tool === 'tape' ? s.width * 0.23 : 0));
 
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -30,11 +33,11 @@ const r2 = (v) => Math.round(v * 100) / 100;
  * { x, y, w, h, vw, vh, pts, tw? } — the box hugs the ink, the points are
  * stored relative to it. Null when there are no samples.
  */
-export function strokeFrame({ tool = 'pen', width = 3.5 }, samples) {
+export function strokeFrame({ tool = 'pen', width = 3.5, end }, samples) {
   if (!samples?.length) return null;
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
   for (const s of samples) { x0 = Math.min(x0, s.x); y0 = Math.min(y0, s.y); x1 = Math.max(x1, s.x); y1 = Math.max(y1, s.y); }
-  const pad = inkReach({ tool, width }) + 1;
+  const pad = Math.max(inkReach({ tool, width }), end === 'arrow' ? arrowLength({ tool, width }) * 0.6 : 0) + 1;
   const x = Math.floor((x0 - pad) * 100) / 100;
   const y = Math.floor((y0 - pad) * 100) / 100;
   const w = r2(Math.max(1, x1 + pad - x));
@@ -67,7 +70,7 @@ export function reframe(it, changes = {}) {
   const n = { ...it, ...changes };
   n.width = changes.width ?? it.width * strokeScale(it);
   const samples = strokeSamples(it).map((q) => ({ x: it.x + q.x * sx, y: it.y + q.y * sy, p: q.p, t: q.t }));
-  const f = strokeFrame({ tool: n.tool, width: n.width }, samples);
+  const f = strokeFrame({ tool: n.tool, width: n.width, end: n.end }, samples);
   if (!f) return n;
   Object.assign(n, f);
   if (!f.tw) delete n.tw;

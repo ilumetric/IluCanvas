@@ -26,7 +26,8 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 - **Notes**: one tool for stickies, documents and plain text (N, or double click
   on the board) — headings, lists, checklists you tick on the board, quotes,
   colours, highlights, links; stored as Markdown.
-- **Shapes and connectors** for diagrams: eight shapes with text (S), arrows
+- **Shapes and connectors** for diagrams: eight shapes with text (S; outline
+  width, dashed), free lines and arrows, connectors
   between anything (X, or drag from the dots around a hovered item) —
   a Dubins path of arcs and lines (default), curved, straight or elbow, with heads, labels and dashes; they follow the
   items they connect.
@@ -41,7 +42,8 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
 - **PureRef:** `.pur` files open for viewing on IluCanvas's own widgets —
-  pictures, their groups as frames, text notes as notes; *Save as .ilucanvas* makes an editable copy. Format 2.x is verified
+  pictures, their groups as frames, text notes as notes, drawings as shapes,
+  lines and ink; *Save as .ilucanvas* makes an editable copy. Format 2.x is verified
   against a real file, 1.x follows the format description ([docs/PUREREF.md](docs/PUREREF.md)).
 - **Google Drive links:** share the file with "Anyone with the link" — your team
   opens the board by link, the file downloads to them, updates come with the

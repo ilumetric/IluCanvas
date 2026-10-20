@@ -462,6 +462,15 @@
             "right"
           ],
           "description": "center when left out."
+        },
+        "strokeWidth": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Outline width, board units; grows with the shape when left out."
+        },
+        "dash": {
+          "const": true,
+          "description": "A dashed outline."
         }
       }
     },
@@ -665,6 +674,14 @@
             "type": "number"
           },
           "description": "Stylus barrel rotation per sample, degrees."
+        },
+        "dash": {
+          "const": true,
+          "description": "Drawn dashed along its centre line."
+        },
+        "end": {
+          "const": "arrow",
+          "description": "An arrowhead at the last point (pen and highlighter)."
         }
       }
     },

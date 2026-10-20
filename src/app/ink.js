@@ -4,7 +4,7 @@
 // pressure changes thickness only, never opacity; a mouse draws an even line.
 
 import { getStroke } from './vendor/perfect-freehand.js';
-import { INK_ALPHA, strokeSamples } from '../core/ink.js';
+import { INK_ALPHA, strokeSamples, arrowLength } from '../core/ink.js';
 import { isHexColor } from '../core/model.js';
 
 /** Ink colours: Apple's dark-mode system colours, legible on a dark board. */
@@ -236,8 +236,54 @@ export function drawStroke(ctx, it, { px }) {
   ctx.save();
   ctx.translate(it.x, it.y);
   ctx.scale(it.w / (it.vw || it.w), it.h / (it.vh || it.h));
-  paint(ctx, it, path);
+  if (it.dash) dashed(ctx, it); else paint(ctx, it, path);
+  if (it.end === 'arrow') arrowHead(ctx, it);
   ctx.restore();
+}
+
+/** The arrowhead at a stroke's end, pointing the way the last stretch of it goes (not its last jitter). */
+function arrowHead(ctx, it) {
+  const p = it.pts || [];
+  const n = Math.floor(p.length / 3);
+  if (n < 2) return;
+  const len = arrowLength(it);
+  const tx = p[(n - 1) * 3];
+  const ty = p[(n - 1) * 3 + 1];
+  let k = n - 2;
+  while (k > 0 && Math.hypot(tx - p[k * 3], ty - p[k * 3 + 1]) < len * 0.7) k--;
+  const d = Math.hypot(tx - p[k * 3], ty - p[k * 3 + 1]);
+  if (!d) return;
+  const ux = (tx - p[k * 3]) / d;
+  const uy = (ty - p[k * 3 + 1]) / d;
+  const x = tx + ux * it.width * 0.5; // over the line's round end
+  const y = ty + uy * it.width * 0.5;
+  ctx.globalAlpha = INK_ALPHA[it.tool] ?? 1;
+  ctx.fillStyle = inkColor(it.color);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - ux * len - uy * len * 0.55, y - uy * len + ux * len * 0.55);
+  ctx.lineTo(x - ux * len + uy * len * 0.55, y - uy * len - ux * len * 0.55);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+/** A dashed stroke: its centre line with round dashes, the stroke's width (pressure does not show). */
+function dashed(ctx, it) {
+  const p = it.pts || [];
+  if (p.length < 6) return;
+  const line = new Path2D();
+  line.moveTo(p[0], p[1]);
+  for (let i = 3; i + 2 < p.length; i += 3) line.lineTo(p[i], p[i + 1]);
+  ctx.globalAlpha = INK_ALPHA[it.tool] ?? 1;
+  ctx.strokeStyle = inkColor(it.color);
+  ctx.lineWidth = it.width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([it.width * 1.6, it.width * 1.9]);
+  ctx.stroke(line);
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 }
 
 /** Draw a stroke being drawn: samples in board units, not finished yet. */

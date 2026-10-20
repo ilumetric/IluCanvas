@@ -15,11 +15,13 @@ import { INK_TOOLS, INK_WIDTHS, inkScale, reframe, strokeScale } from '../core/i
 import { h, icon, openMenu, promptDialog } from './ui.js';
 import { t } from './i18n.js';
 
-const KIND_ICON = { rect: 'shRect', rounded: 'shRounded', ellipse: 'shEllipse', diamond: 'shDiamond', triangle: 'shTriangle', parallelogram: 'shParallelogram', hexagon: 'shHexagon', star: 'shStar' };
+const KIND_ICON = { rect: 'shRect', rounded: 'shRounded', ellipse: 'shEllipse', diamond: 'shDiamond', triangle: 'shTriangle', parallelogram: 'shParallelogram', hexagon: 'shHexagon', star: 'shStar', line: 'routeStraight', arrow: 'connector' };
+/** Shape-tool kinds that draw a free line (a connector between two points). */
+const LINE_KINDS = new Set(['line', 'arrow']);
 const ROUTE_ICON = { straight: 'routeStraight', elbow: 'routeElbow', curve: 'routeCurve', dubins: 'routeDubins' };
 const HEAD_ICON = { none: 'headNone', arrow: 'headArrow', dot: 'headDot' };
 const SQUARE_KINDS = new Set(['ellipse', 'diamond', 'triangle', 'star']);
-export { KIND_ICON, ROUTE_ICON };
+export { KIND_ICON, ROUTE_ICON, LINE_KINDS };
 
 const STICKIES = NOTE_COLORS.filter((c) => c !== 'paper' && c !== 'none');
 /** A new sticky's side on screen, px. */
@@ -49,9 +51,11 @@ export class NotesUI {
   // ---- making notes ------------------------------------------------------------------------------
 
   /** A shape of the current kind: a click makes one of the usual size on screen, a drag one of that size. */
-  createShape(where, { drawn = false } = {}) {
+  createShape(where, { drawn = false, from = null, to = null } = {}) {
     const z = this.board.view.z;
-    const kind = SHAPE_KINDS.includes(this.app.pref.get('shapeKind', 'rect')) ? this.app.pref.get('shapeKind', 'rect') : 'rect';
+    const pick = this.app.pref.get('shapeKind', 'rect');
+    if (LINE_KINDS.has(pick)) return this.#line(pick, from || where, to);
+    const kind = SHAPE_KINDS.includes(pick) ? pick : 'rect';
     const [sw, sh] = SQUARE_KINDS.has(kind) ? [140, 140] : [180, 110];
     const r = drawn ? where : { x: where.x - sw / z / 2, y: where.y - sh / z / 2, w: sw / z, h: sh / z };
     const fill = PAINT.includes(this.app.pref.get('shapeFill', 'blue')) || this.app.pref.get('shapeFill') === 'none' ? this.app.pref.get('shapeFill', 'blue') : 'blue';
@@ -62,6 +66,19 @@ export class NotesUI {
     this.board.select([s.id]);
     this.app.setTool('select');
     return s.id;
+  }
+
+  /** A free line (an arrow: with a head) from a drag; a click makes one of a usual length on screen. */
+  #line(kind, a, b) {
+    const z = this.board.view.z;
+    const end = b && Math.hypot(b.x - a.x, b.y - a.y) * z > 8 ? b : { x: a.x + 160 / z, y: a.y };
+    const c = { id: newId('connector'), type: 'connector', from: { x: a.x, y: a.y }, to: { x: end.x, y: end.y }, end: kind === 'arrow' ? 'arrow' : 'none', color: this.app.pref.get('lineColor', 'grey'), x: 0, y: 0, w: 1, h: 1 };
+    const scale = niceScale(z);
+    if (scale !== 1) c.width = 2 * scale;
+    this.app.edit('line', (d) => { addItems(d, [c]); refreshConnectors(d); });
+    this.board.select([c.id]);
+    this.app.setTool('select');
+    return c.id;
   }
 
   /** A connector between two ends ({ id, side? } | { x, y }), with the last used look. */
@@ -384,7 +401,14 @@ export class NotesUI {
     strokeBtn.dataset.cp = 'shape-stroke';
     strokeBtn.append(h('span.sb-swatch.ring', { class: one.stroke ? '' : 'none', style: { borderColor: one.stroke ? lineColor(one.stroke) : 'transparent' } }));
     const al = one.align || 'center';
-    const parts = [kindBtn, h('span.sb-sep'), fillBtn, strokeBtn, h('span.sb-sep')];
+    const lw = this.#btn('lineWidth', t('shape.strokeWidth'), () => openMenu(lw, [
+      { label: t('shape.widthAuto'), checked: !one.strokeWidth, onClick: () => this.#set('strokeWidth', () => ({ strokeWidth: undefined }), 'shape') },
+      ...[[1, 'thin'], [2, 'medium'], [4, 'thick'], [8, 'bold'], [16, 'heavy']].map(([w, n]) => ({
+        label: t(`conn.${n}`), checked: one.strokeWidth === w, onClick: () => this.#set('strokeWidth', (s) => ({ strokeWidth: w * (s.scale || 1) }), 'shape'),
+      })),
+    ]));
+    const dash = this.#btn('dash', t('conn.dash'), () => this.#set('dash', () => ({ dash: !one.dash || undefined }), 'shape'), !!one.dash);
+    const parts = [kindBtn, h('span.sb-sep'), fillBtn, strokeBtn, lw, dash, h('span.sb-sep')];
     for (const s of ['s', 'm', 'l', 'xl']) parts.push(this.#btn(null, t('note.size'), () => this.#set('size', () => ({ size: s === 'm' ? undefined : s }), 'shape'), (one.size || 'm') === s && same('size'), s.toUpperCase()));
     parts.push(h('span.sb-sep'),
       this.#btn('alignLeft', t('fmt.left'), () => this.#set('align', () => ({ align: 'left' }), 'shape'), al === 'left'),
@@ -445,7 +469,9 @@ export class NotesUI {
     const parts = [
       ...INK_TOOLS.map((tl) => this.#btn(tl, t(`tool.${tl}`), () => restroke('tool', (k) => ({ tool: tl, nib: tl === 'pen' ? k.nib : undefined })), tool === tl)),
       h('span.sb-sep'), colorBtn,
-    ];
+      ks.every((k) => k.tool !== 'tape') ? this.#btn('dash', t('conn.dash'), () => this.#set('dash', () => ({ dash: !one.dash || undefined }), 'stroke'), !!one.dash) : null,
+      ks.every((k) => k.tool !== 'tape') ? this.#btn('headArrow', t('ink.arrow'), () => restroke('end', () => ({ end: one.end === 'arrow' ? undefined : 'arrow' })), one.end === 'arrow') : null,
+    ].filter(Boolean);
     if (tool) {
       // the presets as they look on screen at this zoom
       parts.push(h('span.sb-sep'));

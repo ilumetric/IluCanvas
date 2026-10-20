@@ -147,5 +147,4 @@ connectors as `s1 → s2 "yes"`.
 4. Video. *(done)*
 5. PureRef on our rails: a `.pur` opens as ordinary IluCanvas items — its
    groups become our groups, its text notes our notes, its drawings our strokes.
-   No PureRef-specific widgets. *(done for groups and notes; drawings wait for a
-   sample file — their format is unknown)*
+   No PureRef-specific widgets. *(done: groups, notes, drawings — shapes, lines, ink)*

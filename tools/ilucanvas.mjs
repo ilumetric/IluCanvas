@@ -59,7 +59,7 @@ Write (re-read → change → write; the open app picks the change up within sec
   front <file> <id>… | back <file> <id>…
   apply <file> <ops.json | ->           many changes in one write (see docs/AGENT.md)
   compact <file>                        rewrite the file without dead space
-  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file: images, groups, text notes
+  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file: images, groups, text notes, drawings
 
 Options
   --by agent|human   recorded in updated_by (default agent)
@@ -355,7 +355,7 @@ async function main(argv) {
     addItems(doc, items, by);
     await save({ file: target, index: null, reader: null }, doc, { add });
     const count = (type) => items.filter((it) => it.type === type).length;
-    out(`converted ${file} → ${target}: ${count('image')} images, ${count('group')} groups, ${count('note')} notes${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
+    out(`converted ${file} → ${target}: ${count('image')} images, ${count('group')} groups, ${count('note')} notes, ${count('shape') + count('stroke') + count('connector')} drawn${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
     return 0;
   }
 

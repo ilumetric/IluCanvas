@@ -410,6 +410,9 @@ const INK_DEFAULTS = { pen: { color: 'white', width: 3.5 }, highlighter: { color
 const inkScale = (z) => 2 ** Math.round(Math.log2(Math.min(64, Math.max(1 / 16, 1 / z))));
 
 /** How far ink can reach from the centre line, in the stroke's own units (pressure fattens a pen). */
+/** How long a stroke's arrowhead is, in its own units. */
+const arrowLength = (s) => s.width * (s.tool === 'highlighter' ? 1.8 : 3);
+
 const inkReach = (s) => (s.tool === 'pen' ? s.width * 0.8 : s.width / 2 + (s.tool === 'tape' ? s.width * 0.23 : 0));
 
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -419,11 +422,11 @@ const r2 = (v) => Math.round(v * 100) / 100;
  * { x, y, w, h, vw, vh, pts, tw? } — the box hugs the ink, the points are
  * stored relative to it. Null when there are no samples.
  */
-function strokeFrame({ tool = 'pen', width = 3.5 }, samples) {
+function strokeFrame({ tool = 'pen', width = 3.5, end }, samples) {
   if (!samples?.length) return null;
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
   for (const s of samples) { x0 = Math.min(x0, s.x); y0 = Math.min(y0, s.y); x1 = Math.max(x1, s.x); y1 = Math.max(y1, s.y); }
-  const pad = inkReach({ tool, width }) + 1;
+  const pad = Math.max(inkReach({ tool, width }), end === 'arrow' ? arrowLength({ tool, width }) * 0.6 : 0) + 1;
   const x = Math.floor((x0 - pad) * 100) / 100;
   const y = Math.floor((y0 - pad) * 100) / 100;
   const w = r2(Math.max(1, x1 + pad - x));
@@ -456,7 +459,7 @@ function reframe(it, changes = {}) {
   const n = { ...it, ...changes };
   n.width = changes.width ?? it.width * strokeScale(it);
   const samples = strokeSamples(it).map((q) => ({ x: it.x + q.x * sx, y: it.y + q.y * sy, p: q.p, t: q.t }));
-  const f = strokeFrame({ tool: n.tool, width: n.width }, samples);
+  const f = strokeFrame({ tool: n.tool, width: n.width, end: n.end }, samples);
   if (!f) return n;
   Object.assign(n, f);
   if (!f.tw) delete n.tw;
@@ -560,6 +563,7 @@ return {
   INK_ALPHA,
   INK_DEFAULTS,
   inkScale,
+  arrowLength,
   inkReach,
   strokeFrame,
   strokeSamples,
@@ -702,9 +706,9 @@ const ITEM_KEYS = {
   image: ['id', 'type', 'asset', 'x', 'y', 'w', 'h', 'rot', 'flipX', 'flipY', 'crop', 'parent', 'locked', 'opacity', 'note'],
   group: ['id', 'type', 'name', 'color', 'x', 'y', 'w', 'h', 'parent', 'locked', 'note'],
   note: ['id', 'type', 'x', 'y', 'w', 'h', 'rot', 'color', 'fit', 'size', 'scale', 'align', 'ratio', 'parent', 'locked', 'text'],
-  shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
+  shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'strokeWidth', 'dash', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
   connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
-  stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'x', 'y', 'w', 'h', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
+  stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'dash', 'end', 'x', 'y', 'w', 'h', 'rot', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
   video: ['id', 'type', 'provider', 'videoId', 'url', 'title', 'asset', 'x', 'y', 'w', 'h', 'rot', 'start', 'rate', 'loop', 'duration', 'parent', 'locked', 'note', 'marks'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
@@ -784,6 +788,8 @@ function normalize(raw) {
       else if (!PAINT.includes(n.fill) && n.fill !== 'none') n.fill = 'blue';
       if (isHexColor(n.stroke)) n.stroke = n.stroke.toLowerCase();
       else if (!PAINT.includes(n.stroke)) delete n.stroke;
+      if (!(n.strokeWidth > 0)) delete n.strokeWidth;
+      if (n.dash !== true) delete n.dash;
       n.text = typeof n.text === 'string' ? n.text : '';
       if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
       if (!(n.scale > 0) || n.scale === 1) delete n.scale;
@@ -819,6 +825,8 @@ function normalize(raw) {
     if (n.type === 'stroke') {
       if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
       if (n.nib !== 'italic' || n.tool !== 'pen') delete n.nib;
+      if (n.dash !== true || n.tool === 'tape') delete n.dash;
+      if (n.end !== 'arrow' || n.tool === 'tape') delete n.end;
       if (isHexColor(n.color)) n.color = n.color.toLowerCase();
       else if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
       n.width = pos(n.width, INK_DEFAULTS[n.tool].width);
@@ -1529,7 +1537,7 @@ const EDITABLE = {
   kind: 'enum', fill: 'paint', stroke: 'paint',
   from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
   tool: 'enum', nib: 'enum',
-  title: 'str', rate: 'rate', loop: 'loop', marks: 'marks',
+  title: 'str', rate: 'rate', loop: 'loop', marks: 'marks', strokeWidth: 'pos',
 };
 /** Fields that mean something else on a video (start: a time, not a connector head). */
 const VIDEO_FIELDS = { start: 'time' };
@@ -1694,9 +1702,11 @@ function newNote(doc, { text = '', color = 'yellow', fit, size, scale, align, ra
 }
 
 /** A new shape (default: a 200×120 blue rectangle right of everything). */
-function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, size, scale, align, x, y, w, h, group = null, by = 'human' } = {}) {
+function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, strokeWidth, dash, size, scale, align, x, y, w, h, group = null, by = 'human' } = {}) {
   const s = { id: newId('shape'), type: 'shape', kind, x: 0, y: 0, w: Number(w) || 200, h: Number(h) || (kind === 'ellipse' || kind === 'diamond' || kind === 'star' || kind === 'hexagon' ? Number(w) || 200 : 120), fill, text };
   if (stroke) s.stroke = stroke;
+  if (strokeWidth > 0) s.strokeWidth = Number(strokeWidth);
+  if (dash) s.dash = true;
   if (size && size !== 'm') s.size = size;
   if (scale && scale !== 1) s.scale = scale;
   if (align && align !== 'center') s.align = align;
@@ -3805,9 +3815,23 @@ function parseV2(u8, r, version) {
     groups.push({ id, name: it.name, parent: it.parent === -1 ? null : it.parent, group: groupOf(it), matrix: sceneMatrix(id), z: it.z, background: colorField(db, g.background_color), lockMode: num(g.lock_mode) });
   }
 
-  const drawingRows = tableRows('items_drawings', false);
-  for (const d of drawingRows) { const it = itemsById.get(num(d.id, d._rowid)); if (it) it.kind = 'drawing'; }
-  if (drawingRows.length) warn(`${drawingRows.length} drawing item(s) skipped (not supported)`);
+  // drawings: pen strokes in the item's own frame (its transform places them)
+  const drawings = [];
+  for (const row of tableRows('items_drawings', false)) {
+    const id = num(row.id, row._rowid);
+    const it = itemsById.get(id);
+    if (!it) { warn(`drawing ${id}: no row in "items", skipped`); continue; }
+    it.kind = 'drawing';
+    try {
+      const b = qtBytes(db, row.strokes);
+      if (b === undefined) throw new Error('not Qt stream data');
+      if (!b || !b.length) continue;
+      const strokes = readStrokes(new ByteReader(b, { base: null, label: `items_drawings.strokes (item ${id})` }));
+      drawings.push({ id, matrix: sceneMatrix(id), z: it.z, group: groupOf(it), parent: it.parent === -1 ? null : it.parent, opacity: it.opacity, strokes });
+    } catch (e) {
+      warn(`drawing ${id} skipped: ${e.message}`);
+    }
+  }
   const untyped = [...itemsById.values()].filter((it) => !it.kind).length;
   if (untyped) warn(`${untyped} item(s) of unknown type skipped`);
 
@@ -3823,10 +3847,52 @@ function parseV2(u8, r, version) {
     warnings,
     // extras
     groups,
+    drawings,
     view,
     thumbnail: thumbnail && thumbnail.length ? thumbnail : null,
     checksum: checksum || null,
   };
+}
+
+/**
+ * PureRef 2 drawings (verified on a 2.1.3 sample with freehand lines, a line,
+ * rectangles and ellipses): a QVariant of the user type
+ * "QList<GraphicsDrawItem::Stroke>": u32 count, then per stroke
+ *   u8 (100 in the sample), QColor, f64 pen width, QPainterPath
+ *   (i32 n, n × { i32 type, f64 x, f64 y }, i32 start, i32 fill rule),
+ *   QPointF where the drag started, i32 line style: 0 solid, 1 dashed, 2 an
+ *   arrow at the end of an open line (closed shapes draw solid); read from the
+ *   samples' thumbnails.
+ * Element types: 0 move, 1 line, 2 curve (control 1), 3 curve data (control 2, end).
+ */
+function readStrokes(rd) {
+  const typeId = rd.u32();
+  rd.u8v(); // is-null flag
+  const name = typeId >= 1024 ? rd.cstring() : null;
+  if (name && !/Stroke/.test(name)) rd.err(`unexpected type "${name}"`);
+  const n = rd.u32();
+  if (n > 100000) rd.err(`${n} strokes`);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const head = rd.u8v();
+    const spec = rd.i8();
+    const a = rd.u16() >> 8, r = rd.u16() >> 8, g = rd.u16() >> 8, b = rd.u16() >> 8;
+    rd.u16(); // padding
+    const hex = (v) => v.toString(16).padStart(2, '0');
+    const color = spec === 1 ? `#${hex(r)}${hex(g)}${hex(b)}` : null; // RGB; other colour specs are rare in a pen
+    const width = rd.f64();
+    const count = rd.i32();
+    if (count < 0 || count > 1000000) rd.err(`a path of ${count} elements`);
+    const elements = [];
+    for (let k = 0; k < count; k++) elements.push({ type: rd.i32(), x: rd.f64(), y: rd.f64() });
+    rd.i32(); // the path's start index
+    rd.i32(); // its fill rule
+    const start = [rd.f64(), rd.f64()];
+    const style = rd.i32();
+    if (!(width >= 0 && width < 1e6) || elements.some((e) => e.type < 0 || e.type > 3 || !Number.isFinite(e.x) || !Number.isFinite(e.y))) rd.err('stroke data does not look right');
+    out.push({ color, alpha: a / 255, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
+  }
+  return out;
 }
 
 function colorField(db, v) {
@@ -4029,6 +4095,7 @@ function parseV1(u8, r, version) {
     texts,
     warnings,
     groups: [],
+    drawings: [],
     view: { sceneRect, transform: viewTransform, scrollX, scrollY },
     thumbnail: null,
     checksum: checksum || null,
@@ -4042,11 +4109,13 @@ return {
 // ---- src/core/purdoc.js ------------------------------------------------------
 const __ilucanvas_src_core_purdoc = (() => {
 const { unionBounds, itemBounds } = __ilucanvas_src_core_model;
+const { strokeFrame } = __ilucanvas_src_core_ink;
 // A PureRef board on IluCanvas's own widgets: its images become image items,
 // its groups our group frames (nested as in PureRef), its text notes our notes
-// (text straight on the board, or a sticky when the note has a background).
-// Shared by the app (viewing a .pur) and the CLI (from-pur). Drawings are not
-// read yet: their format is unknown (docs/PUREREF.md).
+// (text straight on the board, or a sticky when the note has a background),
+// its drawings our shapes (rectangles, ellipses), lines and ink strokes
+// (dashed, or with an arrow at the end, as drawn in PureRef).
+// Shared by the app (viewing a .pur) and the CLI (from-pur).
 
 
 const hexRgb = (c) => {
@@ -4083,6 +4152,94 @@ function escapeMarkdown(text) {
 
 const FONT = 18; // our note text, size m
 
+// ---- drawings ----------------------------------------------------------------------------------
+
+const apply = (m, x, y) => ({ x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] });
+
+/** A path's elements as runs of points (curves sampled), local coordinates. */
+function pathRuns(els) {
+  const runs = [];
+  let run = null;
+  for (let i = 0; i < els.length; i++) {
+    const e = els[i];
+    if (e.type === 0) { run = [{ x: e.x, y: e.y }]; runs.push(run); continue; }
+    if (!run) { run = [{ x: e.x, y: e.y }]; runs.push(run); continue; }
+    if (e.type === 1) {
+      // straight runs in steps: the pen's smoothing would round off a corner between two far points
+      const p0 = run[run.length - 1];
+      for (let k = 1; k <= 8; k++) run.push({ x: p0.x + ((e.x - p0.x) * k) / 8, y: p0.y + ((e.y - p0.y) * k) / 8 });
+      continue;
+    }
+    if (e.type === 2 && els[i + 1]?.type === 3 && els[i + 2]?.type === 3) {
+      const p0 = run[run.length - 1];
+      const [c1, c2, p3] = [e, els[i + 1], els[i + 2]];
+      for (let k = 1; k <= 8; k++) {
+        const t = k / 8;
+        const u = 1 - t;
+        run.push({ x: u * u * u * p0.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * p3.x, y: u * u * u * p0.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * p3.y });
+      }
+      i += 2;
+    }
+  }
+  return runs;
+}
+
+/** What a PureRef pen stroke is: a rectangle, an ellipse, a straight line or freehand. */
+function strokeKind(els) {
+  const types = els.map((e) => e.type).join('');
+  if (types === '01111') {
+    const [a, , , , e] = els;
+    const axis = els.slice(1).every((p, i) => Math.abs(p.x - els[i].x) < 1e-6 || Math.abs(p.y - els[i].y) < 1e-6);
+    if (axis && Math.abs(a.x - e.x) < 1e-6 && Math.abs(a.y - e.y) < 1e-6) return 'rect';
+  }
+  if (types === '0233233233233') return 'ellipse';
+  if (types === '01') return 'line';
+  return 'freehand';
+}
+
+/** Our items for one PureRef drawing (its strokes; its transform places them). */
+function drawingItems(dr) {
+  const m = dr.matrix;
+  const sx = Math.hypot(m[0], m[1]);
+  const sy = Math.hypot(m[2], m[3]);
+  const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) || 1;
+  const rot = ((Math.atan2(m[1], m[0]) * 180) / Math.PI + 360) % 360;
+  const out = [];
+  for (const st of dr.strokes) {
+    if (!st.elements.length) continue;
+    const color = st.color || '#ffffff';
+    const width = Math.max(0.5, st.width * scale);
+    const kind = strokeKind(st.elements);
+    if (kind === 'rect' || kind === 'ellipse') {
+      const xs = st.elements.map((e) => e.x);
+      const ys = st.elements.map((e) => e.y);
+      const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      const c = apply(m, (x0 + x1) / 2, (y0 + y1) / 2);
+      const w = Math.max(1, (x1 - x0) * sx);
+      const h = Math.max(1, (y1 - y0) * sy);
+      const shape = { type: 'shape', kind, x: c.x - w / 2, y: c.y - h / 2, w, h, fill: 'none', stroke: color, strokeWidth: Math.round(width * 100) / 100, text: '' };
+      if (st.dashed) shape.dash = true;
+      if (Math.round(rot * 100) % 36000) shape.rot = Math.round(rot * 100) / 100;
+      out.push(shape);
+      continue;
+    }
+    if (kind === 'line') {
+      const a = apply(m, st.elements[0].x, st.elements[0].y);
+      const b = apply(m, st.elements[1].x, st.elements[1].y);
+      out.push({ type: 'connector', from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y }, end: st.arrow ? 'arrow' : 'none', color, width: Math.round(width * 100) / 100, ...(st.dashed ? { dash: true } : {}), x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.max(1, Math.abs(b.x - a.x)), h: Math.max(1, Math.abs(b.y - a.y)) });
+      continue;
+    }
+    const runs = pathRuns(st.elements);
+    runs.forEach((run, i) => {
+      const samples = run.map((p) => ({ ...apply(m, p.x, p.y), p: 0.5 }));
+      const end = st.arrow && i === runs.length - 1 ? 'arrow' : undefined; // the arrow tips the path's end
+      const f = strokeFrame({ tool: 'pen', width, end }, samples);
+      if (f) out.push({ type: 'stroke', tool: 'pen', color, width: Math.round(width * 100) / 100, ...(st.dashed ? { dash: true } : {}), ...(end ? { end } : {}), ...f });
+    });
+  }
+  return out;
+}
+
 /**
  * Items for a parsed PureRef board. assetOf(imageIndex) → asset id;
  * id(kind, n) → an item id ('image' | 'note' | 'group', a running number).
@@ -4113,7 +4270,9 @@ function purItems(pur, assetOf, id) {
     if (!text.trim()) continue;
     const bg = hexRgb(tx.background);
     const color = bg && bg.a >= 64 ? nearest(NOTE_RGB, bg, 'yellow') : 'none';
-    const scale = tx.scale > 0 ? tx.scale : 1;
+    // the note's font size (its HTML says it) relative to ours, times the item's scale
+    const px = Number(/font-size:\s*(\d+(?:\.\d+)?)px/.exec(tx.html || '')?.[1]) || FONT;
+    const scale = (tx.scale > 0 ? tx.scale : 1) * (px / FONT);
     const lines = text.split('\n');
     const longest = Math.max(...lines.map((l) => l.length), 1);
     const pad = color === 'none' ? 4 : 16;
@@ -4124,6 +4283,15 @@ function purItems(pur, assetOf, id) {
     if (tx.rotation) note.rot = tx.rotation;
     if (tx.group !== null && tx.group !== undefined && groupIds.has(tx.group)) note.parent = groupIds.get(tx.group);
     placed.push({ z: tx.z ?? 0, it: note });
+  }
+  n = 0;
+  for (const dr of pur.drawings || []) {
+    const parent = dr.group !== null && dr.group !== undefined && groupIds.has(dr.group) ? groupIds.get(dr.group) : null;
+    for (const it of drawingItems(dr)) {
+      it.id = id(it.type, ++n);
+      if (parent) it.parent = parent;
+      placed.push({ z: dr.z ?? 0, it });
+    }
   }
   placed.sort((a, b) => a.z - b.z);
   const items = placed.map((x) => x.it);
@@ -4533,7 +4701,7 @@ Write (re-read → change → write; the open app picks the change up within sec
   front <file> <id>… | back <file> <id>…
   apply <file> <ops.json | ->           many changes in one write (see docs/AGENT.md)
   compact <file>                        rewrite the file without dead space
-  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file: images, groups, text notes
+  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file: images, groups, text notes, drawings
 
 Options
   --by agent|human   recorded in updated_by (default agent)
@@ -4829,7 +4997,7 @@ async function main(argv) {
     addItems(doc, items, by);
     await save({ file: target, index: null, reader: null }, doc, { add });
     const count = (type) => items.filter((it) => it.type === type).length;
-    out(`converted ${file} → ${target}: ${count('image')} images, ${count('group')} groups, ${count('note')} notes${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
+    out(`converted ${file} → ${target}: ${count('image')} images, ${count('group')} groups, ${count('note')} notes, ${count('shape') + count('stroke') + count('connector')} drawn${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
     return 0;
   }
 

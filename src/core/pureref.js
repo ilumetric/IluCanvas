@@ -1001,9 +1001,23 @@ function parseV2(u8, r, version) {
     groups.push({ id, name: it.name, parent: it.parent === -1 ? null : it.parent, group: groupOf(it), matrix: sceneMatrix(id), z: it.z, background: colorField(db, g.background_color), lockMode: num(g.lock_mode) });
   }
 
-  const drawingRows = tableRows('items_drawings', false);
-  for (const d of drawingRows) { const it = itemsById.get(num(d.id, d._rowid)); if (it) it.kind = 'drawing'; }
-  if (drawingRows.length) warn(`${drawingRows.length} drawing item(s) skipped (not supported)`);
+  // drawings: pen strokes in the item's own frame (its transform places them)
+  const drawings = [];
+  for (const row of tableRows('items_drawings', false)) {
+    const id = num(row.id, row._rowid);
+    const it = itemsById.get(id);
+    if (!it) { warn(`drawing ${id}: no row in "items", skipped`); continue; }
+    it.kind = 'drawing';
+    try {
+      const b = qtBytes(db, row.strokes);
+      if (b === undefined) throw new Error('not Qt stream data');
+      if (!b || !b.length) continue;
+      const strokes = readStrokes(new ByteReader(b, { base: null, label: `items_drawings.strokes (item ${id})` }));
+      drawings.push({ id, matrix: sceneMatrix(id), z: it.z, group: groupOf(it), parent: it.parent === -1 ? null : it.parent, opacity: it.opacity, strokes });
+    } catch (e) {
+      warn(`drawing ${id} skipped: ${e.message}`);
+    }
+  }
   const untyped = [...itemsById.values()].filter((it) => !it.kind).length;
   if (untyped) warn(`${untyped} item(s) of unknown type skipped`);
 
@@ -1019,10 +1033,52 @@ function parseV2(u8, r, version) {
     warnings,
     // extras
     groups,
+    drawings,
     view,
     thumbnail: thumbnail && thumbnail.length ? thumbnail : null,
     checksum: checksum || null,
   };
+}
+
+/**
+ * PureRef 2 drawings (verified on a 2.1.3 sample with freehand lines, a line,
+ * rectangles and ellipses): a QVariant of the user type
+ * "QList<GraphicsDrawItem::Stroke>": u32 count, then per stroke
+ *   u8 (100 in the sample), QColor, f64 pen width, QPainterPath
+ *   (i32 n, n × { i32 type, f64 x, f64 y }, i32 start, i32 fill rule),
+ *   QPointF where the drag started, i32 line style: 0 solid, 1 dashed, 2 an
+ *   arrow at the end of an open line (closed shapes draw solid); read from the
+ *   samples' thumbnails.
+ * Element types: 0 move, 1 line, 2 curve (control 1), 3 curve data (control 2, end).
+ */
+function readStrokes(rd) {
+  const typeId = rd.u32();
+  rd.u8v(); // is-null flag
+  const name = typeId >= 1024 ? rd.cstring() : null;
+  if (name && !/Stroke/.test(name)) rd.err(`unexpected type "${name}"`);
+  const n = rd.u32();
+  if (n > 100000) rd.err(`${n} strokes`);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const head = rd.u8v();
+    const spec = rd.i8();
+    const a = rd.u16() >> 8, r = rd.u16() >> 8, g = rd.u16() >> 8, b = rd.u16() >> 8;
+    rd.u16(); // padding
+    const hex = (v) => v.toString(16).padStart(2, '0');
+    const color = spec === 1 ? `#${hex(r)}${hex(g)}${hex(b)}` : null; // RGB; other colour specs are rare in a pen
+    const width = rd.f64();
+    const count = rd.i32();
+    if (count < 0 || count > 1000000) rd.err(`a path of ${count} elements`);
+    const elements = [];
+    for (let k = 0; k < count; k++) elements.push({ type: rd.i32(), x: rd.f64(), y: rd.f64() });
+    rd.i32(); // the path's start index
+    rd.i32(); // its fill rule
+    const start = [rd.f64(), rd.f64()];
+    const style = rd.i32();
+    if (!(width >= 0 && width < 1e6) || elements.some((e) => e.type < 0 || e.type > 3 || !Number.isFinite(e.x) || !Number.isFinite(e.y))) rd.err('stroke data does not look right');
+    out.push({ color, alpha: a / 255, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
+  }
+  return out;
 }
 
 function colorField(db, v) {
@@ -1225,6 +1281,7 @@ function parseV1(u8, r, version) {
     texts,
     warnings,
     groups: [],
+    drawings: [],
     view: { sceneRect, transform: viewTransform, scrollX, scrollY },
     thumbnail: null,
     checksum: checksum || null,

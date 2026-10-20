@@ -5,7 +5,26 @@
 * images → image items (crop, rotation, flips, opacity, lock; the PureRef name goes to `note`);
 * groups → group frames around what is in them, nested as in PureRef; the background colour picks the nearest group colour; empty groups are dropped;
 * text notes → notes: text straight on the board (`color: none`) or, with a background, the nearest sticky colour; the text is kept literally (Markdown characters escaped); size from the note's fixed size or estimated from its text and scale;
-* drawings → not yet (their format is unknown; a sample file is needed).
+* drawings → rectangles and ellipses become shapes without a fill (PureRef's colour as `stroke`, its pen width as `strokeWidth`), a two-point line a free connector, freehand and polylines pen strokes (curves sampled). Dashed lines stay dashed (`dash` on shapes, connectors and strokes); arrows become a connector's `end: "arrow"` (a straight line) or a stroke's `end: "arrow"` (polylines, freehand).
+
+### Drawings (PureRef 2.x, verified on a 2.1.3 sample)
+
+`items_drawings.strokes` holds a QVariant of the user type `QList<GraphicsDrawItem::Stroke>`
+(stored like the other Qt values: bytes as Latin-1 text). After the type
+(`u32 1024`, `u8` null flag, C string name) come `u32` count and, per stroke:
+
+| type | meaning |
+|---|---|
+| u8 | 100 in every stroke of the sample (unknown) |
+| QColor | `i8` spec (1 = RGB), then `u16` alpha, red, green, blue, padding |
+| f64 | pen width, in the item's units |
+| QPainterPath | `i32` n, n × (`i32` type, `f64` x, `f64` y), `i32` start, `i32` fill rule; types 0 move, 1 line, 2 curve (control 1), 3 curve data (control 2, end) |
+| QPointF | where the drag started |
+| i32 | line style: 0 solid, 1 dashed, 2 an arrow at the end (open lines only; rectangles and ellipses draw solid) — read from the samples' thumbnails |
+
+The tool is not stored; the path says it: a closed 5-point axis-aligned polyline
+is a rectangle, a move + 4 cubic curves an ellipse, freehand strokes are curves.
+The item's `transform` places the drawing (the sample's: a uniform scale of 16.39).
 
 This document covers:
 

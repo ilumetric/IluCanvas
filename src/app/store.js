@@ -87,7 +87,7 @@ export class Store {
       this.purBlobs.set(id, blob);
     });
     // on our own widgets: images, group frames, notes (stable ids: the file is read again on every open)
-    doc.items = purItems(pur, (i) => `p${i + 1}`, (kind, n) => `p${kind[0]}${n}`).items;
+    doc.items = purItems(pur, (i) => `p${i + 1}`, (kind, n) => `p${({ stroke: 'k', shape: 'f' })[kind] || kind[0]}${n}`).items;
     this.kind = 'pur';
     this.readOnly = true;
     this.file = file;

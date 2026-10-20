@@ -662,7 +662,18 @@ export class Board {
         ctx.stroke();
       }
     }
-    if (this.drag?.type === 'create' && this.drag.moved) {
+    if (this.drag?.type === 'create' && this.drag.moved && this.drag.line) {
+      const a = this.toScreen(this.drag.wx, this.drag.wy);
+      const b = this.toScreen(this.drag.end.x, this.drag.end.y);
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = th.select;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (this.drag?.type === 'create' && this.drag.moved) {
       const r = this.drag.rect;
       const a = this.toScreen(r.x, r.y);
       ctx.setLineDash([5, 4]);
@@ -1061,6 +1072,19 @@ export class Board {
       d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
       this.#marqueeSelect(d);
       this.invalidateOverlay();
+    } else if (d.type === 'create' && this.tool === 'shape' && this.lineKind) {
+      // a line: Shift keeps it at a multiple of 45°
+      let ex = w.x;
+      let ey = w.y;
+      if (e.shiftKey) {
+        const ang = Math.round(Math.atan2(ey - d.wy, ex - d.wx) / (Math.PI / 4)) * (Math.PI / 4);
+        const len = Math.hypot(ex - d.wx, ey - d.wy);
+        ex = d.wx + Math.cos(ang) * len;
+        ey = d.wy + Math.sin(ang) * len;
+      }
+      d.line = true;
+      d.end = { x: ex, y: ey };
+      this.invalidateOverlay();
     } else if (d.type === 'create') {
       let rw = Math.abs(w.x - d.wx);
       let rh = Math.abs(w.y - d.wy);
@@ -1141,7 +1165,7 @@ export class Board {
       // a click makes a sticky of the usual size on screen; a drag, a note of the dragged size
       const z = this.view.z;
       const rect = d.moved && d.rect.w * z > 24 && d.rect.h * z > 24 ? d.rect : null;
-      this.cb.create?.(this.tool, rect || { x: d.wx, y: d.wy }, { drawn: !!rect });
+      this.cb.create?.(this.tool, rect || { x: d.wx, y: d.wy }, { drawn: !!rect, from: { x: d.wx, y: d.wy }, to: d.line && d.moved ? d.end : null });
       this.invalidateOverlay();
       return;
     }

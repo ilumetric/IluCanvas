@@ -28,7 +28,7 @@ import { ImageCache } from './images.js';
 import { Minimap } from './minimap.js';
 import { Background, BACKGROUNDS, STYLE_BACKGROUND, tileUrl } from './background.js';
 import { Store } from './store.js';
-import { NotesUI, KIND_ICON, ROUTE_ICON } from './notes.js';
+import { NotesUI, KIND_ICON, ROUTE_ICON, LINE_KINDS } from './notes.js';
 import { resetTextCache } from './text.js';
 import { INK_COLOR, inkColor } from './ink.js';
 import { openColorPicker, closeColorPicker } from './colorpicker.js';
@@ -508,8 +508,8 @@ function renderToolbar() {
   tb.hidden = !doc();
   const tool = (id, ic, label, key) => h(`button.tool${S.board.tool === id ? '.on' : ''}`, { type: 'button', title: `${label} (${key})`, 'aria-label': label, 'aria-pressed': String(S.board.tool === id), onclick: () => setTool(id) }, icon(ic, 20));
   const action = (ic, label, key, onclick) => h('button.tool', { type: 'button', title: `${label} (${key})`, 'aria-label': label, onclick }, icon(ic, 20));
-  const shapeIcon = KIND_ICON[pref.get('shapeKind', 'rect')] || 'shRect';
-  tb.replaceChildren(
+  const shapeIcon = 'shStar';
+  tb.replaceChildren(...[ // (null would become the text "null")
     tool('select', 'pointer', t('tool.select'), 'V'), tool('hand', 'hand', t('tool.hand'), 'H'),
     readOnly() ? null : h('span.tool-sep'),
     readOnly() ? null : noteTool(),
@@ -523,7 +523,7 @@ function renderToolbar() {
     readOnly() ? null : h('span.tool-sep'),
     readOnly() ? null : action('image', t('tool.image'), 'I', pickAndAdd),
     readOnly() ? null : action('video', t('tool.video'), 'Y', askVideo),
-  );
+  ].filter(Boolean));
   renderToolOptions();
   function noteTool() {
     // a click picks the tool; dragging the button drops a sticky on the board
@@ -534,6 +534,7 @@ function renderToolbar() {
 }
 
 function setTool(id) {
+  S.board.lineKind = LINE_KINDS.has(pref.get('shapeKind', 'rect'));
   if (id !== S.board.tool) closeColorPicker();
   S.board.setTool(id);
   renderToolbar();
@@ -541,13 +542,14 @@ function setTool(id) {
 
 /** Options of the current tool, in a panel beside the tool bar: shape kinds, connector routes. */
 function renderToolOptions() {
+  S.board.lineKind = LINE_KINDS.has(pref.get('shapeKind', 'rect'));
   const box = $('toolopts');
   const tool = S.board.tool;
   const opt = (ic, label, on, onclick) => h(`button.tool.small${on ? '.on' : ''}`, { type: 'button', title: label, 'aria-label': label, onclick }, icon(ic, 18));
   let items = null;
   if (tool === 'shape') {
     const cur = pref.get('shapeKind', 'rect');
-    items = SHAPE_KINDS.map((k) => opt(KIND_ICON[k], t(`shape.${k}`), cur === k, () => { pref.set('shapeKind', k); renderToolbar(); }));
+    items = [...SHAPE_KINDS, 'line', 'arrow'].map((k) => opt(KIND_ICON[k], t(`shape.${k}`), cur === k, () => { pref.set('shapeKind', k); renderToolbar(); }));
   } else if (tool === 'connector') {
     const cur = pref.get('connRoute', 'dubins');
     items = ROUTES.map((r) => opt(ROUTE_ICON[r], t(`route.${r}`), cur === r, () => { pref.set('connRoute', r); renderToolOptions(); }));

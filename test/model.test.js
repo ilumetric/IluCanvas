@@ -214,3 +214,19 @@ test('shapes and connectors: ops, defaults, ends follow items, delete detaches, 
   assert.equal(n[1].route, undefined);
   assert.equal(n[1].parent, undefined);
 });
+
+test('shapes: outline width and dash', async () => {
+  const { applyOps } = await import('../src/core/ops.js');
+  const d = emptyCanvas();
+  const r = await applyOps(d, [{ op: 'shape', kind: 'rect', fill: 'none', strokeWidth: 6, dash: true, as: '$s' }, { op: 'set', id: '$s', strokeWidth: 3 }]);
+  const s = d.items.find((i) => i.id === r.created[0]);
+  assert.equal(s.strokeWidth, 3);
+  assert.equal(s.dash, true);
+  await applyOps(d, [{ op: 'set', id: s.id, dash: false, strokeWidth: null }]);
+  const s2 = d.items.find((i) => i.id === s.id);
+  assert.equal(s2.dash, undefined);
+  assert.equal(s2.strokeWidth, undefined);
+  const n = normalize({ format: 'ilucanvas', assets: {}, items: [{ id: 'a', type: 'shape', kind: 'rect', x: 0, y: 0, w: 1, h: 1, fill: 'none', text: '', strokeWidth: -2, dash: 'yes' }] }).items[0];
+  assert.equal(n.strokeWidth, undefined);
+  assert.equal(n.dash, undefined);
+});

@@ -145,6 +145,8 @@ Every line is one paragraph (an empty line is an empty paragraph).
 | `kind` | `rect rounded ellipse diamond triangle parallelogram hexagon star` |
 | `fill` | `white grey black red orange yellow green blue violet pink`, a custom `#rrggbb`, or `none` (only the outline); text is light on dark fills |
 | `stroke` | outline colour from the same list or `#rrggbb`; none when left out (`grey` when `fill` is `none`) |
+| `strokeWidth` | outline width in board units; when left out it grows with the shape |
+| `dash` | `true`: a dashed outline |
 | `text` | Markdown like a note's, centred inside the figure; the shape grows downwards to show all of it |
 | `size`, `scale` | text size, as for notes |
 | `align` | `left center right`; default `center` |
@@ -184,6 +186,8 @@ ends move — read them, do not edit them. Connectors never have a `parent`.
 | `nib` | `italic` — a pen with a broad, slanted nib (stylus barrel rotation turns it); round when left out |
 | `color` | `white grey black red orange yellow green blue violet pink`, or a custom `#rrggbb` |
 | `width` | line width in the stroke's own units |
+| `dash` | `true`: drawn dashed along its centre line (pen and highlighter) |
+| `end` | `"arrow"`: an arrowhead at the stroke's last point (pen and highlighter) |
 | `pts` | the samples, flat: `x, y, pressure, x, y, pressure, …` — pressure 0…1 (0.5 for a mouse) |
 | `tw` | optional, one number per sample: the stylus barrel rotation in degrees |
 | `vw`, `vh` | the size of the box `pts` are measured in, from its top-left |

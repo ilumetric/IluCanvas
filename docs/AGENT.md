@@ -119,13 +119,13 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 |---|---|
 | `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200), `as` |
 | `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
-| `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
+| `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `strokeWidth`, `dash`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
 | `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`dubins` by default, `curve straight elbow`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `group`, `as` |
 | `video` | `url` (YouTube: watch, youtu.be, shorts, embed, live), `title`, `start` (seconds or `1:23`), `rate` (0.25…2), `loop` (`{ a, b }`), `marks` (`[{ t, label, end? }]`), `x`, `y`, `w`, `h` (default 640×360; shorts 360×640), `group`, `as` — the poster is stored in the file |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
-| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label`, strokes `tool nib color width`, videos `title start rate loop marks`; `rot` turns images, notes, shapes and strokes (`null` removes a field) |
+| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke strokeWidth dash size scale align`, connectors `from to route start end color width dash label`, strokes `tool nib color width`, videos `title start rate loop marks`; `rot` turns images, notes, shapes and strokes (`null` removes a field) |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
 | `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
 | `fit` | `id` of a group: the frame hugs its items |

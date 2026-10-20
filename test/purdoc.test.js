@@ -62,3 +62,45 @@ test('escapeMarkdown keeps every character literal', () => {
   assert.equal(plainText(escapeMarkdown(s)), s);
   assert.ok(parseMarkdown(escapeMarkdown(s)).every((b) => b.type === 'p'));
 });
+
+test('PureRef drawings: rectangles and ellipses → shapes, a line → a connector, the rest → ink', () => {
+  const ell = [[0, -10, 0], [2, -10, 5.5], [3, -5.5, 10], [3, 0, 10], [2, 5.5, 10], [3, 10, 5.5], [3, 10, 0], [2, 10, -5.5], [3, 5.5, -10], [3, 0, -10], [2, -5.5, -10], [3, -10, -5.5], [3, -10, 0]];
+  const el = (list) => list.map(([type, x, y]) => ({ type, x, y }));
+  const pur = {
+    images: [], items: [], texts: [], groups: [],
+    drawings: [{
+      id: 6, z: 3, group: null, matrix: [2, 0, 0, 2, 100, 50],
+      strokes: [
+        { color: '#2e84aa', alpha: 0.78, width: 5, elements: el([[0, 0, 0], [1, 40, 0], [1, 40, 20], [1, 0, 20], [1, 0, 0]]) },
+        { color: '#2e84aa', alpha: 0.78, width: 5, elements: el(ell) },
+        { color: '#ff0000', alpha: 1, width: 3, dashed: true, elements: el([[0, 0, 0], [1, 30, 40]]) },
+        { color: '#00ff00', alpha: 1, width: 4, elements: el([[0, 0, 0], [2, 5, 0], [3, 10, 5], [3, 10, 10]]) },
+      ],
+    }],
+  };
+  const { items } = purItems(pur, () => null, (kind, n) => `${kind}${n}`);
+  const [rect, ellipse, line, ink] = items;
+  assert.deepEqual([rect.type, rect.kind, rect.fill, rect.stroke, rect.strokeWidth], ['shape', 'rect', 'none', '#2e84aa', 10]);
+  assert.deepEqual([rect.x, rect.y, rect.w, rect.h], [100, 50, 80, 40], 'placed by the drawing transform');
+  assert.deepEqual([ellipse.kind, ellipse.x, ellipse.y, ellipse.w, ellipse.h], ['ellipse', 80, 30, 40, 40]);
+  assert.deepEqual([line.type, line.from, line.to, line.end, line.color, line.width], ['connector', { x: 100, y: 50 }, { x: 160, y: 130 }, 'none', '#ff0000', 6]);
+  assert.equal(line.dash, true, 'a dashed PureRef line stays dashed');
+  assert.equal(rect.dash, undefined);
+  assert.equal(ink.type, 'stroke');
+  assert.equal(ink.color, '#00ff00');
+  assert.equal(ink.width, 8);
+  assert.ok(ink.pts.length / 3 >= 9, 'the curve is sampled');
+  const d = normalize({ ...emptyCanvas(), items });
+  assert.ok(validate(d).ok, JSON.stringify(validate(d).errors));
+
+  // arrow style: open lines get an arrowhead at the end, closed shapes stay plain
+  const arrows = { ...pur, drawings: [{ ...pur.drawings[0], strokes: pur.drawings[0].strokes.map((s) => ({ ...s, dashed: false, arrow: true })) }] };
+  const [r2, , l2, k2] = purItems(arrows, () => null, (kind, n) => `${kind}${n}`).items;
+  assert.equal(l2.end, 'arrow');
+  assert.equal(k2.end, 'arrow');
+  assert.equal(r2.end, undefined);
+  assert.equal(r2.dash, undefined);
+  const d2 = normalize({ ...emptyCanvas(), items: [k2] });
+  assert.equal(d2.items[0].end, 'arrow', 'a stroke keeps its arrow');
+  assert.ok(validate(d2).ok, JSON.stringify(validate(d2).errors));
+});

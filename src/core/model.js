@@ -34,9 +34,9 @@ const ITEM_KEYS = {
   image: ['id', 'type', 'asset', 'x', 'y', 'w', 'h', 'rot', 'flipX', 'flipY', 'crop', 'parent', 'locked', 'opacity', 'note'],
   group: ['id', 'type', 'name', 'color', 'x', 'y', 'w', 'h', 'parent', 'locked', 'note'],
   note: ['id', 'type', 'x', 'y', 'w', 'h', 'rot', 'color', 'fit', 'size', 'scale', 'align', 'ratio', 'parent', 'locked', 'text'],
-  shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
+  shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'strokeWidth', 'dash', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
   connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
-  stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'x', 'y', 'w', 'h', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
+  stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'dash', 'end', 'x', 'y', 'w', 'h', 'rot', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
   video: ['id', 'type', 'provider', 'videoId', 'url', 'title', 'asset', 'x', 'y', 'w', 'h', 'rot', 'start', 'rate', 'loop', 'duration', 'parent', 'locked', 'note', 'marks'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
@@ -116,6 +116,8 @@ export function normalize(raw) {
       else if (!PAINT.includes(n.fill) && n.fill !== 'none') n.fill = 'blue';
       if (isHexColor(n.stroke)) n.stroke = n.stroke.toLowerCase();
       else if (!PAINT.includes(n.stroke)) delete n.stroke;
+      if (!(n.strokeWidth > 0)) delete n.strokeWidth;
+      if (n.dash !== true) delete n.dash;
       n.text = typeof n.text === 'string' ? n.text : '';
       if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
       if (!(n.scale > 0) || n.scale === 1) delete n.scale;
@@ -151,6 +153,8 @@ export function normalize(raw) {
     if (n.type === 'stroke') {
       if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
       if (n.nib !== 'italic' || n.tool !== 'pen') delete n.nib;
+      if (n.dash !== true || n.tool === 'tape') delete n.dash;
+      if (n.end !== 'arrow' || n.tool === 'tape') delete n.end;
       if (isHexColor(n.color)) n.color = n.color.toLowerCase();
       else if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
       n.width = pos(n.width, INK_DEFAULTS[n.tool].width);

@@ -86,12 +86,15 @@ export function drawShapeBody(ctx, it, { px }) {
   const dpr = devicePixelRatio || 1;
   tracePath(ctx, it.kind, it.x, it.y, it.w, it.h);
   if (it.fill && it.fill !== 'none') { ctx.fillStyle = fillColor(it.fill); ctx.fill(); }
-  const stroke = it.stroke || (it.fill === 'none' ? 'grey' : null);
+  const stroke = it.stroke || (it.fill === 'none' || it.dash || it.strokeWidth ? 'grey' : null);
   if (stroke) {
-    ctx.lineWidth = Math.max((2 * dpr) / px, Math.min(it.w, it.h) * 0.012);
+    // its own width (board units), or one that grows with the shape; never under 1.5 device px
+    ctx.lineWidth = Math.max((1.5 * dpr) / px, it.strokeWidth || Math.max((2 * dpr) / px, Math.min(it.w, it.h) * 0.012));
+    if (it.dash) ctx.setLineDash([ctx.lineWidth * 3, ctx.lineWidth * 2.2]);
     ctx.lineJoin = 'round';
     ctx.strokeStyle = lineColor(stroke);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
 }
 

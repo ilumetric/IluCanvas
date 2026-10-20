@@ -39,7 +39,7 @@ const EDITABLE = {
   kind: 'enum', fill: 'paint', stroke: 'paint',
   from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
   tool: 'enum', nib: 'enum',
-  title: 'str', rate: 'rate', loop: 'loop', marks: 'marks',
+  title: 'str', rate: 'rate', loop: 'loop', marks: 'marks', strokeWidth: 'pos',
 };
 /** Fields that mean something else on a video (start: a time, not a connector head). */
 const VIDEO_FIELDS = { start: 'time' };
@@ -204,9 +204,11 @@ export function newNote(doc, { text = '', color = 'yellow', fit, size, scale, al
 }
 
 /** A new shape (default: a 200×120 blue rectangle right of everything). */
-export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, size, scale, align, x, y, w, h, group = null, by = 'human' } = {}) {
+export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, strokeWidth, dash, size, scale, align, x, y, w, h, group = null, by = 'human' } = {}) {
   const s = { id: newId('shape'), type: 'shape', kind, x: 0, y: 0, w: Number(w) || 200, h: Number(h) || (kind === 'ellipse' || kind === 'diamond' || kind === 'star' || kind === 'hexagon' ? Number(w) || 200 : 120), fill, text };
   if (stroke) s.stroke = stroke;
+  if (strokeWidth > 0) s.strokeWidth = Number(strokeWidth);
+  if (dash) s.dash = true;
   if (size && size !== 'm') s.size = size;
   if (scale && scale !== 1) s.scale = scale;
   if (align && align !== 'center') s.align = align;
