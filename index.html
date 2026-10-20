@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru" data-style="calm">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#141516">
+  <title>IluCanvas</title>
+  <meta name="description" content="IluCanvas — бесконечная доска для референсов. Всё хранится в одном файле .ilucanvas (ZIP) на вашем диске. An infinite reference board stored in one local .ilucanvas file; AI agents edit it with a one-file CLI or window.ilucanvas.">
+  <link rel="help" type="text/plain" href="llms.txt" title="Instructions for AI agents">
+  <link rel="alternate" type="text/markdown" href="docs/AGENT.md" title="IluCanvas for AI agents">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script>
+    // style before first paint
+    (function () {
+      var s = null;
+      try { s = JSON.parse(localStorage.getItem('ilucanvas.style')); } catch (e) { /* storage disabled */ }
+      document.documentElement.setAttribute('data-style', s === 'fun' || s === 'oli' ? s : 'calm');
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Caveat:wght@600&family=Inter:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&family=Marck+Script&family=Bad+Script&display=swap">
+  <link rel="stylesheet" href="src/app/styles.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="bg" aria-hidden="true"></canvas>
+    <canvas id="scene" aria-label="Board"></canvas>
+    <canvas id="overlay" aria-hidden="true"></canvas>
+  </div>
+  <div id="welcome" hidden></div>
+  <aside id="sidebar" class="float"></aside>
+  <div id="scrim" hidden></div>
+  <nav id="toolbar" class="float" hidden></nav>
+  <header id="topbar"></header>
+  <div id="minimap" class="float" hidden><canvas aria-label="Minimap"></canvas><div class="mm-bar"></div></div>
+  <div id="toasts" aria-live="polite"></div>
+  <noscript>IluCanvas needs JavaScript (ES modules). / Для IluCanvas нужен JavaScript.</noscript>
+  <script type="module" src="src/app/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.vscode/
+# local boards for trying things out (may hold private references)
+examples/*
+!examples/README.md

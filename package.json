@@ -1,0 +1,22 @@
+{
+  "name": "ilucanvas",
+  "version": "0.1.0",
+  "description": "Infinite reference board stored in one local .ilucanvas file (a ZIP). Static site, no build step; single-file CLI for AI agents.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ilumetric/IluCanvas.git"
+  },
+  "bin": {
+    "ilucanvas": "tools/ilucanvas.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "bundle": "node tools/bundle.mjs",
+    "serve": "node tools/serve.mjs examples"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

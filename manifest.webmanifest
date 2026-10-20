@@ -1,0 +1,23 @@
+{
+  "name": "IluCanvas",
+  "short_name": "IluCanvas",
+  "description": "An infinite reference board in one local .ilucanvas file",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#141516",
+  "theme_color": "#141516",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "application/x-ilucanvas+zip": [".ilucanvas"],
+        "application/x-pureref": [".pur"]
+      },
+      "launch_type": "single-client"
+    }
+  ]
+}

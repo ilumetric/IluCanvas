@@ -1,0 +1,32 @@
+# IluCanvas
+
+> IluCanvas is an infinite reference board (like PureRef / FigJam) that runs as a static web page and keeps each board in one local file, `name.ilucanvas` — a ZIP with `canvas.json` (the scene: groups and images with positions) and the original images under `images/`. No server, no accounts. An AI agent can create and edit boards without a browser through a single-file, dependency-free Node CLI, or drive the open page through `window.ilucanvas`. The app picks up file changes made by the CLI within seconds.
+
+## Quick start
+
+Needs Node 20+ and nothing else:
+
+```bash
+curl -O https://ilumetric.github.io/IluCanvas/ilucanvas.mjs
+node ilucanvas.mjs new refs.ilucanvas --title "Character refs"
+node ilucanvas.mjs add refs.ilucanvas photos/ https://example.com/a.jpg --new-group "Lighting"
+node ilucanvas.mjs ls refs.ilucanvas
+```
+
+## Docs
+
+- [Agent guide](https://ilumetric.github.io/IluCanvas/docs/AGENT.md): CLI commands, batch ops (`apply`), `window.ilucanvas`, rules
+- [Format reference](https://ilumetric.github.io/IluCanvas/docs/FORMAT.md): the ZIP layout and every field of canvas.json
+- [JSON Schema](https://ilumetric.github.io/IluCanvas/schema/canvas.schema.json)
+- [Sharing](https://ilumetric.github.io/IluCanvas/docs/SHARING.md): Google Drive links, the API key
+- [PureRef files](https://ilumetric.github.io/IluCanvas/docs/PUREREF.md): how .pur is read; `from-pur` converts
+- [Web app](https://ilumetric.github.io/IluCanvas/): Open folder / file / link (Chrome, Edge)
+- [Single-file CLI](https://ilumetric.github.io/IluCanvas/ilucanvas.mjs): generated bundle of tools/ilucanvas.mjs
+
+## Rules
+
+- Reference items by id (`i8k2m1q` images, `g4k2x9q` groups); ids never change.
+- Re-read the board (`ls`) right before editing; prefer CLI commands / `apply` ops over editing canvas.json by hand; run `validate` after hand edits.
+- Many changes: one `apply` with a JSON array of ops (`add`, `newgroup`, `group`, `set`, `move`, `arrange`, `fit`, `rm`, `ungroup`, `front`, `back`); `"as": "$name"` names created ids.
+- The CLI records `"updated_by": "agent"`. Do not delete the human's references unless asked.
+- `.pur` files are read only: `node ilucanvas.mjs from-pur board.pur` makes an editable copy.

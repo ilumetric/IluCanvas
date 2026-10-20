@@ -1,0 +1,111 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  emptyCanvas, normalize, validate, serialize, groupItems, ungroup, removeItems, reparent, withChildren, moveItems,
+  arrangeRows, merge3, assetPath, depthOf, groupsByDepth, itemBounds,
+} from '../src/core/model.js';
+
+function sample() {
+  const d = emptyCanvas({ title: 'T' });
+  d.assets.a = { file: 'images/a.jpg', type: 'image/jpeg', w: 400, h: 300 };
+  d.items = [
+    { id: 'i1', type: 'image', asset: 'a', x: 0, y: 0, w: 400, h: 300 },
+    { id: 'i2', type: 'image', asset: 'a', x: 500, y: 0, w: 400, h: 300 },
+    { id: 'i3', type: 'image', asset: 'a', x: 2000, y: 0, w: 400, h: 300 },
+  ];
+  return d;
+}
+
+test('normalize keeps unknown fields, fixes bad values and parents', () => {
+  const d = normalize({ format: 'ilucanvas', version: 1, assets: {}, items: [
+    { id: 'x', type: 'image', asset: 'a', x: 'oops', y: 5, w: -3, h: 10, custom: 1, parent: 'nope' },
+    { id: 'x', type: 'future-thing', x: 1, y: 2, w: 3, h: 4 },
+  ], extra: { keep: true } });
+  assert.equal(d.items[0].x, 0);
+  assert.equal(d.items[0].w, 100);
+  assert.equal(d.items[0].custom, 1);
+  assert.equal(d.items[0].parent, undefined);
+  assert.notEqual(d.items[1].id, 'x', 'duplicate id replaced');
+  assert.deepEqual(d.extra, { keep: true });
+  assert.ok(validate(d).warnings.some((w) => /unknown type/.test(w.msg)));
+});
+
+test('serialize: one line per item, round trip', () => {
+  const d = sample();
+  const text = serialize(d);
+  assert.equal(text.split('\n').filter((l) => l.includes('"type":"image"')).length, 3);
+  assert.deepEqual(normalize(text).items, d.items);
+});
+
+test('groups nest: create inside a group, move together, ungroup to the parent', () => {
+  const d = sample();
+  const outer = groupItems(d, ['i1', 'i2', 'i3'], { name: 'Outer' });
+  const inner = groupItems(d, ['i1', 'i2'], { name: 'Inner' });
+  assert.equal(inner.parent, outer.id, 'made inside Outer, so it nests there');
+  assert.equal(depthOf(d, inner.id), 1);
+  assert.deepEqual(groupsByDepth(d).map((g) => g.name), ['Outer', 'Inner']);
+  assert.deepEqual([...withChildren(d, [outer.id])].sort(), [inner.id, outer.id, 'i1', 'i2', 'i3'].sort());
+  moveItems(d, [outer.id], 10, 20);
+  assert.equal(d.items.find((i) => i.id === 'i1').x, 10);
+  ungroup(d, inner.id);
+  assert.equal(d.items.find((i) => i.id === 'i1').parent, outer.id, 'children move up to the outer group');
+  removeItems(d, [outer.id]);
+  assert.equal(d.items.length, 0, 'removing a group removes what is inside');
+});
+
+test('reparent: dropped into the innermost group, which grows; cycles are refused', () => {
+  const d = sample();
+  const g = groupItems(d, ['i1'], { name: 'G' });
+  d.items = d.items.map((it) => (it.id === 'i2' ? { ...it, x: g.x + 10, y: g.y + 10 } : it));
+  reparent(d, ['i2']);
+  const i2 = d.items.find((i) => i.id === 'i2');
+  assert.equal(i2.parent, g.id);
+  const g2 = d.items.find((i) => i.id === g.id);
+  assert.ok(g2.x + g2.w >= i2.x + i2.w, 'group grew to contain it');
+  // a cycle in a file is broken on load
+  const cyc = normalize({ format: 'ilucanvas', assets: {}, items: [
+    { id: 'a', type: 'group', x: 0, y: 0, w: 10, h: 10, parent: 'b' },
+    { id: 'b', type: 'group', x: 0, y: 0, w: 10, h: 10, parent: 'a' },
+  ] });
+  assert.ok(cyc.items.some((i) => !i.parent));
+  assert.ok(validate(cyc).ok);
+});
+
+test('arrangeRows: rows of equal width, aspect kept', () => {
+  const rects = [{ id: 1, w: 400, h: 300 }, { id: 2, w: 300, h: 400 }, { id: 3, w: 800, h: 200 }, { id: 4, w: 100, h: 100 }];
+  const out = arrangeRows(rects, { width: 1000, gap: 0 });
+  for (const r of rects) {
+    const o = out.get(r.id);
+    assert.ok(Math.abs(o.w / o.h - r.w / r.h) < 1e-9, 'aspect kept');
+  }
+  assert.ok([...out.values()].every((o) => o.x >= 0 && o.x + o.w <= 1000.001));
+});
+
+test('merge3: both sides edit different items; same item → ours wins and is reported', () => {
+  const base = sample();
+  const ours = normalize(serialize(base));
+  const theirs = normalize(serialize(base));
+  ours.items = ours.items.map((i) => (i.id === 'i1' ? { ...i, x: 111 } : i.id === 'i3' ? { ...i, y: 5 } : i));
+  theirs.items = theirs.items.map((i) => (i.id === 'i2' ? { ...i, x: 222 } : i.id === 'i3' ? { ...i, y: 9 } : i));
+  theirs.items.push({ id: 'i9', type: 'image', asset: 'a', x: 0, y: 900, w: 10, h: 10 });
+  const { doc, conflicts } = merge3(base, ours, theirs);
+  const get = (id) => doc.items.find((i) => i.id === id);
+  assert.equal(get('i1').x, 111);
+  assert.equal(get('i2').x, 222);
+  assert.equal(get('i3').y, 5);
+  assert.ok(get('i9'));
+  assert.deepEqual(conflicts, ['i3']);
+});
+
+test('assetPath: safe, unique names for images/', () => {
+  const taken = new Set();
+  assert.equal(assetPath('кот: рыжий?.JPG', 'jpg', taken), 'images/кот_ рыжий_.jpg');
+  assert.equal(assetPath('кот: рыжий?.png', 'jpg', taken), 'images/кот_ рыжий_ (2).jpg');
+  assert.equal(assetPath('CON', 'png', taken), 'images/_CON.png');
+  assert.equal(assetPath('', 'png', taken), 'images/image.png');
+});
+
+test('itemBounds includes rotation', () => {
+  const b = itemBounds({ x: 0, y: 0, w: 100, h: 50, rot: 90 });
+  assert.ok(Math.abs(b.w - 50) < 1e-9 && Math.abs(b.h - 100) < 1e-9);
+});
