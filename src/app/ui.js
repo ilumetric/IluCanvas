@@ -141,14 +141,17 @@ export function openMenu(anchor, items, { align = 'left', up = false } = {}) {
   if (menu.lastChild?.classList.contains('menu-sep')) menu.lastChild.remove();
   document.body.append(menu);
   const r = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
-  const mw = menu.offsetWidth;
-  const mh = menu.offsetHeight;
+  // sizes on screen; the menu is zoomed with the interface scale, so its left/top are divided by it
+  const ui = Number(getComputedStyle(document.documentElement).getPropertyValue('--ui')) || 1;
+  const mr = menu.getBoundingClientRect();
+  const mw = mr.width;
+  const mh = mr.height;
   let x = align === 'right' ? r.right - mw : r.left;
   x = Math.max(8, Math.min(x, innerWidth - mw - 8));
   let y = up ? r.top - mh - 6 : r.bottom + (anchor instanceof Element ? 6 : 0);
   if (y + mh > innerHeight - 8) y = Math.max(8, r.top - mh - 6);
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
+  menu.style.left = `${x / ui}px`;
+  menu.style.top = `${y / ui}px`;
   openMenuNode = menu;
   menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   setTimeout(() => {

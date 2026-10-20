@@ -92,6 +92,18 @@ const RU = {
   'keys.space': 'Пробел + тянуть', 'keys.pan': 'двигать доску', 'keys.wheel': 'Колесо', 'keys.zoom': 'масштаб к курсору',
   'keys.drag': 'перетаскивание', 'keys.dupDrag': 'копия', 'keys.axis': 'только по одной оси', 'keys.dbl': 'Двойной клик',
 
+  'tool.note': 'Заметка', 'tool.noteDrag': 'клик или перетащите на доску', 'settings.ui': 'Масштаб интерфейса',
+  'note.color': 'Цвет', 'note.sticky': 'Стикер', 'note.doc': 'Документ', 'note.text': 'Текст', 'note.size': 'Размер текста', 'note.edit': 'Редактировать текст',
+  'noteColor.yellow': 'Жёлтый', 'noteColor.orange': 'Оранжевый', 'noteColor.pink': 'Розовый', 'noteColor.green': 'Зелёный', 'noteColor.blue': 'Голубой',
+  'noteColor.violet': 'Сиреневый', 'noteColor.grey': 'Серый', 'noteColor.paper': 'Бумага', 'noteColor.none': 'Без фона',
+  'fmt.left': 'По левому краю', 'fmt.center': 'По центру', 'fmt.right': 'По правому краю', 'fmt.style': 'Стиль абзаца',
+  'fmt.p': 'Текст', 'fmt.h1': 'Заголовок 1', 'fmt.h2': 'Заголовок 2', 'fmt.h3': 'Заголовок 3', 'fmt.quote': 'Цитата',
+  'fmt.bold': 'Жирный', 'fmt.italic': 'Курсив', 'fmt.underline': 'Подчёркнутый', 'fmt.strike': 'Зачёркнутый',
+  'fmt.ul': 'Список', 'fmt.ol': 'Нумерованный список', 'fmt.task': 'Чек-лист',
+  'fmt.color': 'Цвет текста', 'fmt.noColor': 'Обычный цвет', 'fmt.highlight': 'Маркер', 'fmt.noHighlight': 'Без маркера',
+  'fmt.link': 'Ссылка', 'fmt.linkUrl': 'Адрес', 'fmt.done': 'Готово',
+  'markColor.red': 'Красный', 'markColor.orange': 'Оранжевый', 'markColor.yellow': 'Жёлтый', 'markColor.green': 'Зелёный',
+  'markColor.blue': 'Синий', 'markColor.violet': 'Фиолетовый', 'markColor.pink': 'Розовый', 'markColor.grey': 'Серый',
   'demo.title': 'Демо', 'demo.group1': 'Свет', 'demo.group2': 'Цвет', 'demo.group3': 'Формы',
 };
 
@@ -187,6 +199,18 @@ const EN = {
   'keys.space': 'Space + drag', 'keys.pan': 'move the board', 'keys.wheel': 'Wheel', 'keys.zoom': 'zoom to the cursor',
   'keys.drag': 'drag', 'keys.dupDrag': 'a copy', 'keys.axis': 'one axis only', 'keys.dbl': 'Double click',
 
+  'tool.note': 'Note', 'tool.noteDrag': 'click, or drag onto the board', 'settings.ui': 'Interface scale',
+  'note.color': 'Colour', 'note.sticky': 'Sticky', 'note.doc': 'Document', 'note.text': 'Text', 'note.size': 'Text size', 'note.edit': 'Edit text',
+  'noteColor.yellow': 'Yellow', 'noteColor.orange': 'Orange', 'noteColor.pink': 'Pink', 'noteColor.green': 'Green', 'noteColor.blue': 'Blue',
+  'noteColor.violet': 'Lilac', 'noteColor.grey': 'Grey', 'noteColor.paper': 'Paper', 'noteColor.none': 'No paper',
+  'fmt.left': 'Align left', 'fmt.center': 'Centre', 'fmt.right': 'Align right', 'fmt.style': 'Paragraph style',
+  'fmt.p': 'Text', 'fmt.h1': 'Heading 1', 'fmt.h2': 'Heading 2', 'fmt.h3': 'Heading 3', 'fmt.quote': 'Quote',
+  'fmt.bold': 'Bold', 'fmt.italic': 'Italic', 'fmt.underline': 'Underline', 'fmt.strike': 'Strikethrough',
+  'fmt.ul': 'List', 'fmt.ol': 'Numbered list', 'fmt.task': 'Checklist',
+  'fmt.color': 'Text colour', 'fmt.noColor': 'Plain colour', 'fmt.highlight': 'Highlight', 'fmt.noHighlight': 'No highlight',
+  'fmt.link': 'Link', 'fmt.linkUrl': 'Address', 'fmt.done': 'Done',
+  'markColor.red': 'Red', 'markColor.orange': 'Orange', 'markColor.yellow': 'Yellow', 'markColor.green': 'Green',
+  'markColor.blue': 'Blue', 'markColor.violet': 'Violet', 'markColor.pink': 'Pink', 'markColor.grey': 'Grey',
   'demo.title': 'Demo', 'demo.group1': 'Light', 'demo.group2': 'Colour', 'demo.group3': 'Shapes',
 };
 

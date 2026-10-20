@@ -49,6 +49,8 @@ node ilucanvas.mjs move refs.ilucanvas i8k2m1q i3x9a0b --by 200,0     # or --to 
 node ilucanvas.mjs group refs.ilucanvas i8k2m1q i3x9a0b --name "Poses" --color blue
 node ilucanvas.mjs ungroup refs.ilucanvas g4k2x9q                     # images move up to its parent
 node ilucanvas.mjs arrange refs.ilucanvas g4k2x9q                     # justified rows, aspect kept
+node ilucanvas.mjs note refs.ilucanvas '# Lighting\n- [ ] rim\n- [x] key' --color paper   # a document ("\n" = new line)
+node ilucanvas.mjs note refs.ilucanvas 'Warm vs cool' --group g4k2x9q                  # a sticky in a group
 node ilucanvas.mjs rm refs.ilucanvas i8k2m1q [--keep-children]
 node ilucanvas.mjs front|back refs.ilucanvas i8k2m1q
 node ilucanvas.mjs apply refs.ilucanvas ops.json                      # many changes, one write (below)
@@ -80,6 +82,8 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 ```json
 [
   { "op": "newgroup", "name": "Lighting", "color": "violet", "as": "$light" },
+  { "op": "note", "text": "# Lighting\nCool rim, **warm key**\n- [ ] night refs", "color": "paper", "group": "$light" },
+  { "op": "note", "text": "too dark?", "color": "pink", "x": 900, "y": 40 },
   { "op": "add", "paths": ["refs/rim.jpg", "refs/night/"], "group": "$light" },
   { "op": "add", "urls": ["https://example.com/sky.jpg"], "x": 4000, "y": 0, "max": 800 },
   { "op": "group", "ids": ["i8k2m1q", "i3x9a0b"], "name": "Poses", "as": "$poses" },
@@ -98,9 +102,10 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 | op | fields |
 |---|---|
 | `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200), `as` |
+| `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
-| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop` (`null` removes a field) |
+| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio` (`null` removes a field) |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
 | `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
 | `fit` | `id` of a group: the frame hugs its items |
@@ -108,7 +113,10 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 | `ungroup` | `id` |
 | `rm` | `ids`, `keepChildren` |
 
-Colours: `violet blue orange green pink yellow red amber grey`.
+Group colours: `violet blue orange green pink yellow red amber grey`. Note colours:
+`yellow orange pink green blue violet grey paper none`. Note text is Markdown —
+headings, lists, `- [ ]` checklists, quotes, bold / italic / strike / `<u>`,
+`==highlight==`, `[text]{.red}` colours, links ([FORMAT.md](FORMAT.md#note-text-markdown-subset)).
 Coordinates are board units (1 unit = 1 CSS pixel at 100% zoom), y down.
 Moving a group moves everything inside it (nested groups too).
 

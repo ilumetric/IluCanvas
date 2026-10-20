@@ -24,6 +24,9 @@ import { ImageCache } from './images.js';
 import { Minimap } from './minimap.js';
 import { Background, BACKGROUNDS, STYLE_BACKGROUND, tileUrl } from './background.js';
 import { Store } from './store.js';
+import { NotesUI } from './notes.js';
+import { resetTextCache } from './text.js';
+import { plainText } from '../core/markdown.js';
 import * as disk from './disk.js';
 import * as remote from './remote.js';
 
@@ -83,9 +86,21 @@ function applyStyle() {
   const cs = getComputedStyle(document.documentElement);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', cs.getPropertyValue('--canvas').trim());
   S.bg?.set(currentBg(), cs.getPropertyValue('--pattern-ink').trim());
+  resetTextCache();
   S.board?.setTheme();
   drawBackground();
   S.minimap?.contentChanged();
+}
+
+const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.25, 1.5];
+function currentUi() { const v = Number(pref.get('ui', 1)); return UI_SCALES.includes(v) ? v : 1; }
+
+/** Interface scale: panels, menus, dialogs, group tags (CSS zoom on the UI layers). */
+function applyUi() {
+  const v = currentUi();
+  document.documentElement.style.setProperty('--ui', v);
+  if (S.board) { S.board.ui = v; S.board.invalidate(); }
+  S.notes?.render();
 }
 
 function drawBackground() {
@@ -118,6 +133,8 @@ function edit(label, fn) {
 function changed({ save = true } = {}) {
   S.rev++;
   S.board.pruneSelection();
+  S.notes?.sync();
+  S.notes?.render();
   S.board.invalidate();
   S.minimap.contentChanged();
   renderTopbar();
@@ -333,7 +350,17 @@ function renderToolbar() {
   const tb = $('toolbar');
   tb.hidden = !doc();
   const tool = (id, ic, label, key) => h(`button.tool${S.board.tool === id ? '.on' : ''}`, { type: 'button', title: `${label} (${key})`, 'aria-label': label, 'aria-pressed': String(S.board.tool === id), onclick: () => setTool(id) }, icon(ic, 20));
-  tb.replaceChildren(tool('select', 'pointer', t('tool.select'), 'V'), tool('hand', 'hand', t('tool.hand'), 'H'));
+  tb.replaceChildren(
+    tool('select', 'pointer', t('tool.select'), 'V'), tool('hand', 'hand', t('tool.hand'), 'H'),
+    readOnly() ? null : h('span.tool-sep'),
+    readOnly() ? null : noteTool(),
+  );
+  function noteTool() {
+    // a click picks the tool; dragging the button drops a sticky on the board
+    const b = tool('note', 'sticky', `${t('tool.note')} — ${t('tool.noteDrag')}`, 'N');
+    b.addEventListener('pointerdown', (e) => S.notes.dragFromToolbar(e));
+    return b;
+  }
 }
 
 function setTool(id) {
@@ -405,6 +432,7 @@ function setSidebar(open) {
 
 /** Before leaving the open canvas: save it, or ask. false = stay. */
 async function leaveCurrent() {
+  if (S.notes?.editing) S.notes.close();
   if (!S.store || !isDirty()) return true;
   if (S.store.writable) { await save(); return !isDirty() || confirmDialog({ title: t('leave.title'), text: t('leave.failed'), ok: t('leave.discard'), danger: true }); }
   return new Promise((resolve) => {
@@ -455,6 +483,7 @@ async function setStore(store, { active = null, link = null, view = null } = {})
   if (store.kind === 'pur') toast(t('open.pur'), { timeout: 6000, action: { label: t('top.savePur'), onClick: saveAs } });
   if (isNarrow()) S.sidebar = false;
   render();
+  growNotes();
   backgroundPreviews();
   const v = validate(store.doc, { files: store.index?.byName });
   if (!v.ok && store.kind === 'canvas') toast(t('open.invalid', { n: v.errors.length, first: `${v.errors[0].path}: ${v.errors[0].msg}` }), { kind: 'warn', timeout: 9000 });
@@ -704,6 +733,7 @@ async function poll() {
 
 /** The file changed on disk: read it again (merging local edits when there are any). */
 async function absorbOutside(dirty) {
+  if (S.notes?.editing) { S.notes.close(); dirty = isDirty(); }
   const st = S.store;
   const before = snapshot();
   const known = new Set(before.items.map((i) => i.id));
@@ -719,6 +749,22 @@ async function absorbOutside(dirty) {
   const by = st.doc.updated_by === 'agent' ? t('ext.agent') : t('ext.someone');
   toast(conflicts.length ? t('ext.merged', { by, n: conflicts.length }) : t('ext.reloaded', { by }), { kind: conflicts.length ? 'warn' : 'info', action: { label: t('top.undo'), onClick: undo } });
   backgroundPreviews();
+}
+
+/**
+ * Documents and text notes whose text is taller than their box (written by an
+ * agent, or measured with other fonts) grow — not an undo step, saved quietly.
+ */
+function growNotes() {
+  const d = doc();
+  if (!d || !S.notes) return;
+  const ids = d.items.filter((it) => it.type === 'note' && !it.fit).map((it) => it.id);
+  if (!ids.length) return;
+  if (S.notes.fitHeights(d, ids).length) {
+    S.board.invalidate();
+    S.minimap.contentChanged();
+    if (S.store.writable) { S.rev++; scheduleSave(); renderTopbar(); }
+  }
 }
 
 /** Make previews / colours for images that have none (added by the CLI, PureRef). */
@@ -967,7 +1013,8 @@ function renameGroup(id) {
     return;
   }
   const st = $('stage').getBoundingClientRect();
-  const input = h('input.rename-input', { type: 'text', value: g.name, spellcheck: false, style: { left: `${st.left + r.x}px`, top: `${st.top + r.y - 1}px`, width: `${Math.max(160, r.w + 40)}px` } });
+  const u = currentUi();
+  const input = h('input.rename-input', { type: 'text', value: g.name, spellcheck: false, style: { left: `${(st.left + r.x) / u}px`, top: `${(st.top + r.y - 1) / u}px`, width: `${Math.max(160, r.w / u + 40)}px` } });
   let done = false;
   const finish = (ok) => {
     if (done) return;
@@ -1182,10 +1229,15 @@ function contextMenu(pt, hit, world) {
     ]);
     return;
   }
+  const notes = s.filter((it) => it.type === 'note');
   const colorItems = groups.length ? GROUP_COLORS.map((c) => ({ label: t(`color.${c}`), swatch: S.board.theme.colors[c], checked: groups.every((g) => g.color === c), onClick: () => setGroupColor(c) })) : [];
   openMenu(pt, [
     imgs.length === 1 ? { label: t('ctx.zoomTo'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() } : { label: t('zoom.selection'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() },
     imgs.length === 1 ? { label: t('ctx.openOriginal'), icon: 'eye', onClick: () => openOriginal(imgs[0]) } : null,
+    !ro && notes.length === 1 && s.length === 1 ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(notes[0].id) } : null,
+    !ro && notes.length && notes.length === s.length ? { label: t('note.sticky'), icon: 'sticky', onClick: () => S.notes.setKind('sticky') } : null,
+    !ro && notes.length && notes.length === s.length ? { label: t('note.doc'), icon: 'doc', onClick: () => S.notes.setKind('doc') } : null,
+    !ro && notes.length && notes.length === s.length ? { label: t('note.text'), icon: 'type', onClick: () => S.notes.setKind('text') } : null,
     { sep: true },
     groups.length === 1 && !ro ? { label: t('group.rename'), icon: 'pencil', hint: 'F2', onClick: () => renameGroup(groups[0].id) } : null,
     !ro && s.some((it) => it.type !== 'group') ? { label: t('ctx.group'), icon: 'frame', hint: 'Ctrl+G', onClick: groupSelection } : null,
@@ -1214,12 +1266,18 @@ function contextMenu(pt, hit, world) {
   ]);
 }
 
-function onDblClick(hit) {
+function onDblClick(hit, e) {
   if (!doc()) return;
   if (hit.kind === 'label') return renameGroup(hit.id);
+  const it = hit.id && byId(doc()).get(hit.id);
+  if (it?.type === 'note' && !readOnly()) return S.notes.open(it.id);
   if (hit.kind === 'item' || hit.kind === 'group') {
-    const it = byId(doc()).get(hit.id);
     if (it) S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
+    return null;
+  }
+  if (hit.kind === 'none' && !readOnly() && S.board.tool === 'select') {
+    const r = $('stage').getBoundingClientRect();
+    S.notes.createText(S.board.toWorld(e.clientX - r.left, e.clientY - r.top));
   }
   return null;
 }
@@ -1411,6 +1469,7 @@ function openSettings() {
   const body = h('div.form', {},
     field(t('settings.style'), picks),
     field(t('settings.background'), bgs, t('settings.bgNote')),
+    field(t('settings.ui'), seg(UI_SCALES.map((v) => [v, `${Math.round(v * 100)}%`]), currentUi(), (v) => { pref.set('ui', v); applyUi(); })),
     field(t('settings.wheel'), seg([['zoom', t('settings.wheelZoom')], ['pan', t('settings.wheelPan')]], pref.get('wheel', 'zoom'), (v) => { pref.set('wheel', v); S.board.wheelMode = v; }), t('settings.wheelNote')),
     field(t('settings.autosave'), autosave),
     field(t('settings.language'), seg([['ru', 'Русский'], ['en', 'English']], getLang(), (v) => { pref.set('lang', v); setLang(v); dlg.close(); render(); openSettings(); })),
@@ -1469,7 +1528,8 @@ addEventListener('keydown', (e) => {
   }
   switch (e.key) {
     case 'Delete': case 'Backspace': e.preventDefault(); if (!readOnly()) deleteSelection(); return;
-    case 'Escape': S.board.select([]); closeMenu(); return;
+    case 'Escape': if (S.board.tool !== 'select') setTool('select'); else S.board.select([]); closeMenu(); return;
+    case 'Enter': { const s = sel(); if (s.length === 1 && s[0].type === 'note' && !readOnly()) { e.preventDefault(); S.notes.open(s[0].id); } return; }
     case 'ArrowLeft': e.preventDefault(); nudge(e.shiftKey ? -10 : -1, 0); return;
     case 'ArrowRight': e.preventDefault(); nudge(e.shiftKey ? 10 : 1, 0); return;
     case 'ArrowUp': e.preventDefault(); nudge(0, e.shiftKey ? -10 : -1); return;
@@ -1484,6 +1544,7 @@ addEventListener('keydown', (e) => {
   if (e.shiftKey) return;
   if (k === 'v') setTool('select');
   else if (k === 'h') setTool('hand');
+  else if (k === 'n' && !readOnly()) setTool('note');
   else if (k === 'm') toggleMap();
 });
 
@@ -1532,9 +1593,13 @@ function agentApi() {
     list() {
       need();
       const d = doc();
+      const pos = (it) => `x=${Math.round(it.x)} y=${Math.round(it.y)} w=${Math.round(it.w)} h=${Math.round(it.h)}`;
+      const first = (it) => plainText(it.text).split('\n').find((l) => l.trim()) || '';
       const line = (it, ind) => (it.type === 'group'
-        ? `${ind}${it.id}  group  "${it.name}"  ${it.color}  x=${Math.round(it.x)} y=${Math.round(it.y)} w=${Math.round(it.w)} h=${Math.round(it.h)}`
-        : `${ind}${it.id}  ${it.type}  "${d.assets[it.asset]?.name || it.asset}"  x=${Math.round(it.x)} y=${Math.round(it.y)} w=${Math.round(it.w)} h=${Math.round(it.h)}${it.note ? `  note="${it.note}"` : ''}`);
+        ? `${ind}${it.id}  group  "${it.name}"  ${it.color}  ${pos(it)}`
+        : it.type === 'note'
+          ? `${ind}${it.id}  note  "${first(it).slice(0, 60)}"  ${it.color}${it.fit ? ' sticky' : ''}  ${pos(it)}`
+          : `${ind}${it.id}  ${it.type}  "${d.assets[it.asset]?.name || it.asset}"  ${pos(it)}${it.note ? `  note="${it.note}"` : ''}`);
       const out = [];
       const walk = (parent, ind) => {
         for (const it of d.items) if (it.type === 'group' && (it.parent || null) === parent) { out.push(line(it, ind)); walk(it.id, `${ind}  `); }
@@ -1550,6 +1615,7 @@ function agentApi() {
       const before = snapshot();
       let r;
       try { r = await applyOps(doc(), ops, { by: 'agent', addImages: urlAdder }); } catch (e) { restore(before); throw e; }
+      S.notes.fitHeights(doc(), r.created);
       commit('agent', before);
       return r;
     },
@@ -1634,10 +1700,17 @@ async function start() {
   S.board = new Board({
     stage, scene: $('scene'), overlay: $('overlay'), images: S.images,
     cb: {
-      commit: (label, items, assets) => commit(label, { items, assets: assets || doc().assets, title: doc().title }),
-      selection: () => {},
+      commit: (label, items, assets) => {
+        if (label === 'resize') S.notes.fitHeights(doc(), [...S.board.selection]);
+        commit(label, { items, assets: assets || doc().assets, title: doc().title });
+      },
+      selection: () => S.notes?.render(),
+      create: (tool, where, o) => S.notes.create(where, o),
+      toggleTask: (id, block) => S.notes.toggleTask(id, block),
+      pointerDown: () => { if (S.notes.editing) S.notes.close(); },
       view: () => {
         drawBackground();
+        S.notes?.editor.reposition();
         S.minimap.invalidate();
         if (S.zoomLabel) S.zoomLabel.textContent = `${Math.round(S.board.view.z * 100)}%`;
         clearTimeout(S.viewTimer);
@@ -1646,11 +1719,15 @@ async function start() {
       contextMenu,
       dblclick: onDblClick,
       dropFiles: dropData,
-      insets: () => ({ left: (S.sidebar && !isNarrow() ? 292 : 0) + 64, right: 0, top: 64, bottom: 0 }),
-      drawn: () => {},
+      insets: () => { const u = currentUi(); return { left: ((S.sidebar && !isNarrow() ? 292 : 0) + 64) * u, right: 0, top: 64 * u, bottom: 0 }; },
+      drawn: () => S.notes?.place(),
     },
   });
   S.board.wheelMode = pref.get('wheel', 'zoom');
+  S.notes = new NotesUI({
+    board: S.board, doc, edit, readOnly, pref, setTool,
+  }, { layer: $('editlayer'), bar: $('selbar') });
+  applyUi();
   S.bg = new Background($('bg'));
   S.bg.onReady = drawBackground;
   S.minimap = new Minimap($('minimap').querySelector('canvas'), S.board);
@@ -1659,7 +1736,10 @@ async function start() {
   $('scrim').addEventListener('click', () => setSidebar(false));
   if (isNarrow()) S.sidebar = false;
   applyStyle();
-  document.fonts?.ready.then(() => S.board.setTheme());
+  // text is measured with the real fonts: measure again once they are in
+  const fontsIn = () => { resetTextCache(); S.board.setTheme(); growNotes(); };
+  document.fonts?.ready.then(fontsIn);
+  document.fonts?.addEventListener?.('loadingdone', fontsIn);
   render();
   window.ilucanvas = agentApi();
 

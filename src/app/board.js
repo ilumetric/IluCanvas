@@ -8,8 +8,9 @@
 // Edits replace item objects in doc.items (model.js); a finished gesture is
 // reported with the items as they were before, for undo.
 
-import { itemBounds, unionBounds, intersects, withChildren, reparent, byId, newId, groupsByDepth, groupAtPoint, outermost, GROUP_COLORS } from '../core/model.js';
+import { itemBounds, unionBounds, intersects, withChildren, reparent, byId, newId, groupsByDepth, groupAtPoint, outermost, GROUP_COLORS, RATIO_K } from '../core/model.js';
 import { LEVELS, levelFor } from './images.js';
+import { drawNote, checkAt, linkAt } from './text.js';
 
 const MIN_Z = 0.002;
 const MAX_Z = 64;
@@ -62,6 +63,8 @@ export class Board {
     this.raf = 0;
     this.anim = null;
     this.wheelMode = 'zoom';
+    this.ui = 1; // interface scale (group tags, handles)
+    this.editingId = null; // the note whose text is in the editor
     this.stats = { drawn: 0, ms: 0 };
     this.#bind();
     new ResizeObserver(() => this.invalidate()).observe(stage);
@@ -86,6 +89,7 @@ export class Board {
   setTool(tool) {
     this.tool = tool;
     this.stage.classList.toggle('tool-hand', tool === 'hand');
+    this.stage.classList.toggle('tool-create', tool === 'note');
     this.invalidateOverlay();
   }
 
@@ -284,6 +288,7 @@ export class Board {
       const b = it.rot ? itemBounds(it) : it;
       if (!intersects(b, vis)) continue;
       drawn++;
+      if (it.type === 'note') { drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId }); continue; }
       if (it.type !== 'image') { this.#drawUnknown(ctx, it, z); continue; }
       const a = this.doc.assets[it.asset];
       const px = Math.max(it.w, it.h) * k;
@@ -362,42 +367,42 @@ export class Board {
     if (wScreen < 48) return;
     const th = this.theme;
     const col = th.colors[g.color] || th.colors.grey;
-    const H = 26;
-    ctx.font = `600 13px ${th.font}`;
+    const u = this.ui;
+    const H = 26 * u;
     const name = g.name || '';
     const count = String(n);
-    ctx.font = '600 11px ' + th.font;
-    const cw = Math.max(20, ctx.measureText(count).width + 12);
-    ctx.font = `600 13px ${th.font}`;
-    const maxName = Math.max(30, wScreen - cw - 26);
+    ctx.font = `600 ${11 * u}px ${th.font}`;
+    const cw = Math.max(20 * u, ctx.measureText(count).width + 12 * u);
+    ctx.font = `600 ${13 * u}px ${th.font}`;
+    const maxName = Math.max(30 * u, wScreen - cw - 26 * u);
     let label = name;
     if (ctx.measureText(label).width > maxName) {
       while (label.length > 1 && ctx.measureText(`${label}…`).width > maxName) label = label.slice(0, -1);
       label += '…';
     }
     const tw = ctx.measureText(label).width;
-    const W = 11 + tw + 7 + cw + 4;
+    const W = (11 + 7 + 4) * u + tw + cw;
     const x = p.x;
-    const y = p.y - H - 6;
+    const y = p.y - H - 6 * u;
     const r = Math.min(th.rPill, H / 2);
     ctx.beginPath();
     if (r > 0) ctx.roundRect(x, y, W, H, r); else ctx.rect(x, y, W, H);
     ctx.fillStyle = col;
     ctx.fill();
     ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    ctx.fillRect(x, y + H - 2, W, 2);
+    ctx.fillRect(x, y + H - 2 * u, W, 2 * u);
     ctx.fillStyle = th.ink;
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, x + 11, y + H / 2 + 0.5);
+    ctx.fillText(label, x + 11 * u, y + H / 2 + 0.5);
     // the count, a darker chip
-    const cx = x + 11 + tw + 7;
+    const cx = x + 11 * u + tw + 7 * u;
     ctx.beginPath();
-    const cr = Math.min(th.rPill, 9.5);
-    if (cr > 0) ctx.roundRect(cx, y + 3.5, cw, 19, cr); else ctx.rect(cx, y + 3.5, cw, 19);
+    const cr = Math.min(th.rPill, 9.5 * u);
+    if (cr > 0) ctx.roundRect(cx, y + 3.5 * u, cw, 19 * u, cr); else ctx.rect(cx, y + 3.5 * u, cw, 19 * u);
     ctx.fillStyle = 'rgba(0,0,0,0.16)';
     ctx.fill();
     ctx.fillStyle = th.ink;
-    ctx.font = `600 11px ${th.font}`;
+    ctx.font = `600 ${11 * u}px ${th.font}`;
     ctx.textAlign = 'center';
     ctx.fillText(count, cx + cw / 2, y + H / 2 + 0.5);
     ctx.textAlign = 'start';
@@ -463,6 +468,15 @@ export class Board {
         ctx.stroke();
       }
     }
+    if (this.drag?.type === 'create' && this.drag.moved) {
+      const r = this.drag.rect;
+      const a = this.toScreen(r.x, r.y);
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = th.select;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(a.x, a.y, r.w * this.view.z, r.h * this.view.z);
+      ctx.setLineDash([]);
+    }
     if (this.drag?.type === 'marquee' && this.drag.moved) {
       const r = this.drag.rect;
       const a = this.toScreen(r.x, r.y);
@@ -487,7 +501,7 @@ export class Board {
       { id: 'nw', x: box.x, y: box.y }, { id: 'ne', x: box.x + box.w, y: box.y },
       { id: 'sw', x: box.x, y: box.y + box.h }, { id: 'se', x: box.x + box.w, y: box.y + box.h },
     ];
-    if (sel.length === 1 && sel[0].type === 'group') {
+    if (sel.length === 1 && freeResize(sel[0])) {
       hs.push({ id: 'n', x: box.x + box.w / 2, y: box.y }, { id: 's', x: box.x + box.w / 2, y: box.y + box.h },
         { id: 'w', x: box.x, y: box.y + box.h / 2 }, { id: 'e', x: box.x + box.w, y: box.y + box.h / 2 });
     }
@@ -577,8 +591,8 @@ export class Board {
     if (this.pointers.size > 2) return;
     const p = this.#local(e);
     const pan = e.button === 1 || (e.button === 0 && (this.tool === 'hand' || this.space)) || (e.pointerType === 'touch' && this.tool === 'hand');
-    if (e.button === 2) return;
-    this.stage.setPointerCapture(e.pointerId);
+    if (e.button === 2) { this.pointers.delete(e.pointerId); return; }
+    try { this.stage.setPointerCapture(e.pointerId); } catch { /* not a live pointer (synthetic event) */ }
     if (pan) {
       e.preventDefault();
       this.drag = { type: 'pan', pointer: e.pointerId, sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false };
@@ -588,7 +602,12 @@ export class Board {
     if (e.button !== 0 || !this.doc) return;
     const hit = this.hitTest(p.x, p.y);
     const w = this.toWorld(p.x, p.y);
-    const base = { pointer: e.pointerId, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, shift: e.shiftKey, alt: e.altKey, hit };
+    const base = { pointer: e.pointerId, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, hit };
+    this.cb.pointerDown?.();
+    if (this.tool === 'note' && !this.readOnly) {
+      this.drag = { ...base, type: 'create', rect: { x: w.x, y: w.y, w: 0, h: 0 } };
+      return;
+    }
     if (hit.kind === 'handle') {
       if (this.readOnly) return;
       this.drag = { ...base, type: 'resize', handle: hit.handle, ...this.#resizeStart(hit.handle) };
@@ -634,6 +653,9 @@ export class Board {
       d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
       this.#marqueeSelect(d);
       this.invalidateOverlay();
+    } else if (d.type === 'create') {
+      d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
+      this.invalidateOverlay();
     }
   }
 
@@ -658,6 +680,26 @@ export class Board {
       this.invalidate();
       return;
     }
+    if (d.type === 'create') {
+      if (cancelled) { this.invalidateOverlay(); return; }
+      // a click makes a sticky of the usual size on screen; a drag, a note of the dragged size
+      const z = this.view.z;
+      const rect = d.moved && d.rect.w * z > 24 && d.rect.h * z > 24 ? d.rect : null;
+      this.cb.create?.(this.tool, rect || { x: d.wx, y: d.wy }, { drawn: !!rect });
+      this.invalidateOverlay();
+      return;
+    }
+    if (d.type === 'move' && !d.moved && d.hit.kind === 'item' && !d.shift) {
+      // a click on a note: tick a checkbox, open a link (Ctrl)
+      const it = byId(this.doc).get(d.hit.id);
+      if (it?.type === 'note' && it.id !== this.editingId) {
+        const p = { x: d.wx, y: d.wy };
+        const box = !this.readOnly && checkAt(it, p, this.theme.font);
+        if (box) { this.cb.toggleTask?.(it.id, box.block); this.invalidateOverlay(); return; }
+        const link = d.ctrl && linkAt(it, p, this.theme.font);
+        if (link) { window.open(link, '_blank', 'noopener'); this.invalidateOverlay(); return; }
+      }
+    }
     if (d.type === 'marquee' && !d.moved) {
       // a click: on a group's body selects it, on empty space clears
       if (d.hit.kind === 'group') this.select([d.hit.id], { add: d.shift });
@@ -668,10 +710,14 @@ export class Board {
   }
 
   #hover(p) {
-    if (this.tool === 'hand' || this.space) return;
+    if (this.tool === 'hand' || this.space || this.tool === 'note') return;
     const hit = this.hitTest(p.x, p.y);
     const id = hit.kind === 'item' || hit.kind === 'label' ? hit.id : null;
-    const cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : '';
+    let cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : '';
+    if (!cursor && hit.kind === 'item') {
+      const it = byId(this.doc).get(hit.id);
+      if (it?.type === 'note' && it.id !== this.editingId && !this.readOnly && checkAt(it, this.toWorld(p.x, p.y), this.theme.font)) cursor = 'pointer';
+    }
     if (this.stage.dataset.cursor !== cursor) this.stage.dataset.cursor = cursor;
     if (id !== this.hover) { this.hover = id; this.invalidateOverlay(); }
   }
@@ -718,10 +764,10 @@ export class Board {
   #resizeStart(handle) {
     const sel = this.selectedItems();
     const b = unionBounds(sel.map(itemBounds));
-    const frameOnly = sel.length === 1 && sel[0].type === 'group';
+    const frameOnly = sel.length === 1 && freeResize(sel[0]);
     const ids = frameOnly ? new Set([sel[0].id]) : withChildren(this.doc, sel.map((s) => s.id));
     const start = new Map();
-    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h });
+    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h, scale: it.type === 'note' && !it.fit ? it.scale || 1 : null });
     const ax = handle.includes('w') ? b.x + b.w : handle.includes('e') ? b.x : null;
     const ay = handle.includes('n') ? b.y + b.h : handle.includes('s') ? b.y : null;
     return { box: b, frameOnly, start, ax, ay };
@@ -740,6 +786,16 @@ export class Board {
       if (d.handle.includes('n')) y = Math.min(w.y, y2 - minWorld * 5);
       if (d.handle.includes('s')) y2 = Math.max(w.y, y + minWorld * 5);
       const id = [...start.keys()][0];
+      const it = byId(this.doc).get(id);
+      const k = it?.type === 'note' && it.ratio ? RATIO_K[it.ratio] : 0;
+      if (k) {
+        // fixed proportions: the width leads (top/bottom handles: the height)
+        let nw = x2 - x;
+        let nh = y2 - y;
+        if (d.handle === 'n' || d.handle === 's') nw = nh / k; else nh = nw * k;
+        if (d.handle.includes('w')) x = x2 - nw; else x2 = x + nw;
+        if (d.handle.includes('n')) y = y2 - nh; else y2 = y + nh;
+      }
       patch = new Map([[id, { x, y, w: x2 - x, h: y2 - y }]]);
     } else {
       // uniform scale from the opposite corner (images keep their aspect)
@@ -751,7 +807,11 @@ export class Board {
       const minSide = Math.min(...[...start.values()].map((r) => Math.min(r.w, r.h)));
       s = Math.max(s, minWorld / Math.max(minSide, 1e-6));
       patch = new Map();
-      for (const [id, r] of start) patch.set(id, { x: ax + (r.x - ax) * s, y: ay + (r.y - ay) * s, w: r.w * s, h: r.h * s });
+      for (const [id, r] of start) {
+        const p = { x: ax + (r.x - ax) * s, y: ay + (r.y - ay) * s, w: r.w * s, h: r.h * s };
+        if (r.scale) p.scale = r.scale * s; // documents and text scale with their box here
+        patch.set(id, p);
+      }
     }
     this.doc.items = d.before.map((it) => (patch.has(it.id) ? { ...it, ...patch.get(it.id) } : it));
     this.invalidate();
@@ -810,6 +870,9 @@ export class Board {
     }
   }
 }
+
+/** Items whose box is resized on its own (8 handles) rather than scaled with the selection. */
+const freeResize = (it) => it.type === 'group' || it.type === 'note';
 
 function inItem(it, p) {
   if (!it.rot) return p.x >= it.x && p.y >= it.y && p.x <= it.x + it.w && p.y <= it.y + it.h;

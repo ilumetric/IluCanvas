@@ -10,12 +10,20 @@
 export const FORMAT = 'ilucanvas';
 export const FORMAT_VERSION = 1;
 export const GROUP_COLORS = ['violet', 'blue', 'orange', 'green', 'pink', 'yellow', 'red', 'amber', 'grey'];
-export const ITEM_TYPES = ['image', 'group'];
+export const ITEM_TYPES = ['image', 'group', 'note'];
+/** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
+export const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
+export const NOTE_SIZES = ['s', 'm', 'l', 'xl'];
+export const NOTE_RATIOS = ['free', 'square', 'a4', 'wide'];
+export const NOTE_ALIGNS = ['left', 'center', 'right'];
+/** Height / width of each ratio (free: any). */
+export const RATIO_K = { square: 1, a4: Math.SQRT2, wide: 9 / 16 };
 export const MAX_COORD = 1e9;
 
 const ITEM_KEYS = {
   image: ['id', 'type', 'asset', 'x', 'y', 'w', 'h', 'rot', 'flipX', 'flipY', 'crop', 'parent', 'locked', 'opacity', 'note'],
   group: ['id', 'type', 'name', 'color', 'x', 'y', 'w', 'h', 'parent', 'locked', 'note'],
+  note: ['id', 'type', 'x', 'y', 'w', 'h', 'rot', 'color', 'fit', 'size', 'scale', 'align', 'ratio', 'parent', 'locked', 'text'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
 const DOC_KEYS = ['format', 'version', 'id', 'title', 'created', 'updated', 'updated_by', 'generator', 'assets', 'items'];
@@ -78,6 +86,15 @@ export function normalize(raw) {
       if (typeof c !== 'object' || !(c.w > 0) || !(c.h > 0)) delete n.crop;
       else n.crop = { x: num(c.x), y: num(c.y), w: pos(c.w), h: pos(c.h) };
     }
+    if (n.type === 'note') {
+      n.text = typeof n.text === 'string' ? n.text : '';
+      if (!NOTE_COLORS.includes(n.color)) n.color = 'yellow';
+      if (n.fit !== true) delete n.fit;
+      if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
+      if (!(n.scale > 0) || n.scale === 1) delete n.scale;
+      if (!NOTE_RATIOS.includes(n.ratio) || n.ratio === 'free') delete n.ratio;
+      if (!NOTE_ALIGNS.includes(n.align) || n.align === 'left') delete n.align;
+    }
     if (n.type === 'group') {
       n.name = str(n.name) ?? 'Group';
       if (!GROUP_COLORS.includes(n.color)) n.color = 'grey';
@@ -127,6 +144,7 @@ export function validate(doc, { files = null } = {}) {
     if (ids.has(it.id)) err(`${p}.id`, `duplicate id "${it.id}"`, it.id);
     ids.add(it.id);
     if (!ITEM_TYPES.includes(it.type)) warn(`${p}.type`, `unknown type "${it.type}" (kept, not editable here)`, it.id);
+    if (it.type === 'note' && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
     if (it.type === 'image') {
       if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id);
       used.add(it.asset);

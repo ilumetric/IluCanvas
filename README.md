@@ -16,12 +16,16 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 - **References never get lost.** Saving writes only what changed (new pictures
   and `canvas.json`) and replaces the file atomically; autosave is on. If a
   write is cut off, the file is rebuilt from the records inside the ZIP.
+- **Interface scale** 80–150 % in Settings.
 - **Boards panel on the left:** *Open folder* lists every `.ilucanvas` and
   `.pur` in it, with covers; recent files; boards opened by link.
 - **Tools:** select (V) and hand (H); named, coloured group frames (Ctrl+G,
   nestable), Arrange (Shift+A), flip, rotate, original size, layer order;
   minimap; drag-and-drop and paste (Ctrl+V) of pictures, folders and images
   from other sites.
+- **Notes**: one tool for stickies, documents and plain text (N, or double click
+  on the board) — headings, lists, checklists you tick on the board, quotes,
+  colours, highlights, links; stored as Markdown.
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
 - **PureRef:** `.pur` files open for viewing — just the pictures and their

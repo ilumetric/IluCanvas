@@ -201,6 +201,7 @@
   --ctl-sm: 30px;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace;
   --left: var(--gap); /* where the floating UI starts: right of the sidebar when it is open */
+  --ui: 1; /* interface scale (Settings): CSS zoom on every UI layer below */
 }
 body.side-open { --left: calc(var(--gap) * 2 + var(--sidebar-w)); }
 
@@ -246,6 +247,8 @@ kbd {
 #stage .bg { position: absolute; inset: 0; pointer-events: none; background-repeat: repeat; }
 #stage canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
 #stage.tool-hand, #stage.panning-ready { cursor: grab; }
+#stage.tool-create { cursor: crosshair; }
+#stage[data-cursor="pointer"] { cursor: pointer; }
 #stage.panning, #stage.panning * { cursor: grabbing !important; }
 #stage[data-cursor="move"] { cursor: move; }
 #stage[data-cursor="nwse"] { cursor: nwse-resize; }
@@ -264,6 +267,62 @@ kbd {
   background: var(--input); border: 1px solid var(--select); box-shadow: 0 0 0 3px var(--select-ring);
   font-weight: 600; font-size: 13.5px; outline: none;
 }
+
+/* ---------- interface scale ---------- */
+#sidebar, #toolbar, #topbar, #minimap, #welcome, #toasts, #selbar, .dialog, .menu, .rename-input { zoom: var(--ui); }
+
+/* ---------- note editor (over the canvas, scaled with the board) ---------- */
+#editlayer { position: fixed; inset: 0; z-index: 15; pointer-events: none; overflow: hidden; }
+.note-editor {
+  position: absolute; left: 0; top: 0; transform-origin: 0 0; box-sizing: border-box;
+  pointer-events: auto; outline: none; overflow: hidden;
+  padding: var(--pad); font-family: var(--family); font-size: var(--F); line-height: var(--line);
+  color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; caret-color: currentColor;
+  -webkit-font-smoothing: antialiased; corner-shape: round;
+}
+.note-editor[data-light="0"] { overflow: visible; }
+.note-editor > div, .note-editor p, .note-editor blockquote > div { margin: 0; min-height: calc(var(--line) * 1em); }
+.note-editor h1, .note-editor h2, .note-editor h3 { margin: 0.45em 0 0.15em; font-weight: 700; line-height: var(--line); }
+.note-editor h1 { font-size: 1.75em; }
+.note-editor h2 { font-size: 1.4em; }
+.note-editor h3 { font-size: 1.18em; }
+.note-editor > :first-child { margin-top: 0; }
+.note-editor b, .note-editor strong { font-weight: 700; }
+.note-editor ul, .note-editor ol { margin: 0; padding-left: var(--indent); }
+.note-editor li { margin: 0; }
+.note-editor ul ul { list-style: circle; }
+.note-editor ul.tasks { list-style: none; }
+.note-editor ul.tasks > li { position: relative; }
+.note-editor ul.tasks > li::before {
+  content: ""; position: absolute; box-sizing: border-box; cursor: pointer;
+  left: calc(var(--indent) * -0.55 - 0.41em); top: calc((var(--line) * 1em - 0.82em) / 2);
+  width: 0.82em; height: 0.82em; border-radius: 0.18em; border: 0.1em solid currentColor; opacity: 0.55;
+}
+.note-editor ul.tasks > li[data-checked="true"]::before {
+  opacity: 1; border-color: #2b8a3e; background: #2b8a3e url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2.4 5.2 4.3 7 7.7 3' fill='none' stroke='white' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 100% no-repeat;
+}
+.note-editor ul.tasks > li[data-checked="true"] { color: color-mix(in srgb, currentColor 50%, transparent); }
+.note-editor blockquote { margin: 0 0 0 0.1em; padding-left: 0.74em; border-left: 0.16em solid color-mix(in srgb, currentColor 30%, transparent); }
+.note-editor a { color: #1c6fd1; text-decoration: underline; }
+.note-editor[data-light="0"] a { color: #74c0fc; }
+.note-editor mark { color: inherit; }
+
+/* a sticky dragged out of the tool bar */
+.note-ghost {
+  position: fixed; left: 0; top: 0; z-index: 3000; pointer-events: none;
+  border-radius: 4px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  opacity: 0.94; transition: opacity 0.12s;
+}
+.note-ghost.off { opacity: 0.4; }
+body.dragging-note, body.dragging-note * { cursor: grabbing !important; }
+
+/* the bar over the selection: note settings, text formatting */
+#selbar { z-index: 22; left: 0; top: 0; display: flex; align-items: center; gap: 2px; padding: 4px; }
+#selbar .icon-btn { width: 32px; height: 32px; }
+#selbar .icon-btn.sb-text { width: auto; min-width: 32px; padding: 0 9px; gap: 4px; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; }
+#selbar .sb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; flex: 0 0 1px; }
+.sb-swatch { width: 18px; height: 18px; border-radius: var(--r-pill); box-shadow: inset 0 0 0 1.5px rgba(0, 0, 0, 0.18); }
+.sb-swatch.none { background: transparent !important; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
 
 /* ---------- floating panels ---------- */
 .float {
@@ -506,14 +565,14 @@ body:not(.side-open) #sidebar { display: none; }
 
 /* ---------- dialogs ---------- */
 .dialog {
-  width: min(520px, calc(100vw - 24px)); max-height: calc(100dvh - 32px);
+  width: min(520px, calc((100vw - 24px) / var(--ui))); max-height: calc((100dvh - 32px) / var(--ui));
   padding: 0; border: 1px solid var(--border); border-radius: var(--r-outer);
   background: var(--dialog); color: var(--text); box-shadow: var(--shadow-lg);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .dialog[open] { animation: pop-in 0.32s var(--spring); }
 .dialog:not([open]) { display: none; }
-.dialog.wide { width: min(680px, calc(100vw - 24px)); }
+.dialog.wide { width: min(680px, calc((100vw - 24px) / var(--ui))); }
 .dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 @keyframes pop-in { from { opacity: 0; transform: translateY(10px) scale(0.96); } }
 .dlg-head { display: flex; align-items: center; gap: 8px; padding: 16px 12px 6px 24px; }
@@ -600,7 +659,7 @@ body:not(.side-open) #sidebar { display: none; }
 
 /* ---------- menus ---------- */
 .menu {
-  position: fixed; z-index: 2000; min-width: 220px; max-width: 320px; max-height: 70vh; overflow-y: auto;
+  position: fixed; z-index: 2000; min-width: 220px; max-width: 320px; max-height: calc(70vh / var(--ui)); overflow-y: auto;
   padding: 6px; border-radius: var(--r-outer); background: var(--menu);
   border: 1px solid var(--border); box-shadow: var(--shadow-lg);
   animation: menu-in 0.18s var(--spring);
@@ -624,7 +683,7 @@ body:not(.side-open) #sidebar { display: none; }
 #toasts {
   position: fixed; z-index: 3000; bottom: 18px; left: 50%; transform: translateX(-50%);
   display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; pointer-events: none;
-  width: min(480px, calc(100vw - 24px));
+  width: min(480px, calc((100vw - 24px) / var(--ui)));
 }
 .toast {
   pointer-events: auto; display: flex; align-items: center; gap: 10px;

@@ -103,8 +103,40 @@ drawn below images; outer groups below inner ones. Moving or deleting a group
 takes everything inside it along; ungrouping moves the items up to the group's
 own parent.
 
-Planned item types (not in version 1 yet): `note` (sticky notes), `stroke`
-(pencil drawing), `widget`.
+**note** — text on the board: a sticky, a document or plain text. They differ
+only by colour and size; the text is Markdown (below).
+
+| field | |
+|---|---|
+| `text` | Markdown, every line one paragraph |
+| `color` | stickies `yellow orange pink green blue violet grey`; `paper` (a document); `none` (text straight on the board) |
+| `fit` | `true`: the text grows / shrinks to fill the card (stickies). Otherwise the font size is fixed and the note grows downwards to show all its text |
+| `size` | `s m l xl` — 14 / 18 / 28 / 44 board units (not for `fit` notes); default `m` |
+| `scale` | multiplies `size` (text made when zoomed out, notes scaled with a selection); default 1 |
+| `align` | `left center right` (the whole note); default `left` |
+| `ratio` | `free square a4 wide` — keeps the proportions when resizing; default `free` |
+
+```json
+{"id":"n3k9x2aa","type":"note","x":0,"y":0,"w":240,"h":240,"color":"yellow","fit":true,"text":"Rim light\n- [ ] find refs"}
+```
+
+### Note text (Markdown subset)
+
+Every line is one paragraph (an empty line is an empty paragraph).
+
+| | |
+|---|---|
+| `# ` `## ` `### ` | headings |
+| `- item` (`*`, `+`) · `1. item` | bullet / numbered list; 2 spaces of indent per level |
+| `- [ ] task` · `- [x] done` | checklist (clickable on the board) |
+| `> text` | quote |
+| `**bold**` `*italic*` `_italic_` `~~strike~~` `<u>underline</u>` | marks |
+| `==text==` | yellow highlight |
+| `[text]{.red}` · `[text]{.hl-green}` · `[text]{.blue .hl-yellow}` | text colour / highlight colour: `red orange yellow green blue violet pink grey` |
+| `[text](https://…)` | link (Ctrl+click opens it) |
+| `\*` | a literal character |
+
+Planned item types (not in version 1 yet): `shape`, `connector`, `stroke`, `video` — see [ROADMAP.md](ROADMAP.md).
 
 ## Checks (`ilucanvas validate`)
 

@@ -12,7 +12,7 @@
 // after putting the assets into doc.assets.
 
 import {
-  GROUP_COLORS, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
+  NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
   removeItems, groupItems, ungroup, fitGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
 } from './model.js';
 
@@ -32,22 +32,33 @@ export function idsExist(doc, ids) {
 const EDITABLE = {
   x: 'num', y: 'num', w: 'pos', h: 'pos', rot: 'num', name: 'str', color: 'color', note: 'str',
   flipX: 'bool', flipY: 'bool', locked: 'bool', parent: 'ref', opacity: 'num', crop: 'crop',
+  text: 'text', fit: 'bool', size: 'enum', align: 'enum', ratio: 'enum', scale: 'pos',
 };
+const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS };
 export const EDITABLE_KEYS = Object.keys(EDITABLE);
 
-/** A checked patch from loose input (strings from the command line, JSON from agents). */
-export function cleanPatch(doc, input) {
+/** A checked patch from loose input (strings from the command line, JSON from agents); `item` is the target. */
+export function cleanPatch(doc, input, item = null) {
   const patch = {};
   for (const [k, raw] of Object.entries(input)) {
+    if (raw === undefined) continue;
     const t = EDITABLE[k];
     need(t, `unknown field "${k}" (editable: ${EDITABLE_KEYS.join(', ')})`);
+    if (t === 'text') { patch[k] = String(raw ?? '').replace(/\r\n?/g, '\n'); continue; }
     if (raw === null || raw === '') { patch[k] = undefined; continue; }
     if (t === 'num' || t === 'pos') {
       const n = Number(raw);
       need(Number.isFinite(n) && (t === 'num' || n > 0), `${k} must be a ${t === 'pos' ? 'positive ' : ''}number`);
       patch[k] = n;
     } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
-    else if (t === 'color') { need(GROUP_COLORS.includes(raw), `color must be one of ${GROUP_COLORS.join(', ')}`); patch[k] = raw; }
+    else if (t === 'color') {
+      const list = item?.type === 'note' ? NOTE_COLORS : GROUP_COLORS;
+      need(list.includes(raw), `color must be one of ${list.join(', ')}`);
+      patch[k] = raw;
+    } else if (t === 'enum') {
+      need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
+      patch[k] = raw;
+    }
     else if (t === 'ref') {
       const g = byId(doc).get(raw);
       need(g && g.type === 'group', `parent "${raw}" is not a group`);
@@ -97,6 +108,58 @@ export function placeImages(doc, list, { group = null, at = null, max = 1200, by
   return items;
 }
 
+/** Text size of notes in board units, per `size`. */
+export const NOTE_FONT = { s: 14, m: 18, l: 28, xl: 44 };
+
+/**
+ * Rough height of a note's text without a font engine (CLI, agents): the app
+ * measures properly and grows documents that are too short.
+ */
+export function estimateNoteHeight(text, w, { size = 'm', color = 'yellow', scale = 1 } = {}) {
+  const f = (NOTE_FONT[size] || 18) * (scale || 1);
+  const pad = color === 'none' ? 4 : Math.max(10, Math.min(40, w * 0.075));
+  const perLine = Math.max(1, Math.floor((w - pad * 2) / (f * 0.55)));
+  let lines = 0;
+  for (const raw of String(text).split('\n')) {
+    const heading = raw.match(/^(#{1,3}) /);
+    const k = heading ? [0, 1.75, 1.4, 1.18][heading[1].length] : 1;
+    lines += Math.max(1, Math.ceil(raw.length / (perLine / k))) * k;
+  }
+  return Math.ceil(lines * f * 1.35 + pad * 2);
+}
+
+/**
+ * A new note. Defaults: a 240×240 sticky; `color: 'paper'` makes a document
+ * (A4, text does not shrink), `color: 'none'` plain text. Placed at x/y, at
+ * the bottom of `group`, or right of everything.
+ */
+export function newNote(doc, { text = '', color = 'yellow', fit, size, scale, align, ratio, x, y, w, h, group = null, by = 'human' } = {}) {
+  const doc_ = color === 'paper';
+  const plain = color === 'none';
+  const n = { id: newId('note'), type: 'note', x: 0, y: 0, w: Number(w) || (doc_ ? 600 : plain ? 400 : 240), h: 0, color, text };
+  if (fit ?? (!doc_ && !plain)) n.fit = true;
+  if (size && size !== 'm') n.size = size;
+  if (scale && scale !== 1) n.scale = scale;
+  if (align && align !== 'left') n.align = align;
+  if (ratio && ratio !== 'free') n.ratio = ratio; else if (doc_ && !w && !h) n.ratio = 'a4';
+  n.h = Number(h) || Math.round(n.fit ? n.w : Math.max(n.ratio ? n.w * RATIO_K[n.ratio] : 0, estimateNoteHeight(text, n.w, { size, color, scale })));
+  const g = group ? byId(doc).get(group) : null;
+  if (x !== undefined) { n.x = Number(x); n.y = Number(y ?? 0); }
+  else if (g) {
+    const kids = unionBounds(childrenOf(doc, g.id).map(itemBounds));
+    const pad = Math.max(16, Math.round(Math.max(g.w, g.h) * 0.03));
+    n.x = g.x + pad;
+    n.y = kids ? kids.y + kids.h + pad : g.y + pad;
+  } else {
+    const b = contentBounds(doc);
+    if (b) { n.x = b.x + b.w + 120; n.y = b.y; }
+  }
+  if (g) n.parent = g.id;
+  addItems(doc, [n], by);
+  if (g) fitGroup(doc, g.id, { by });
+  return n;
+}
+
 /** A new empty group frame: at x/y, or right of everything. */
 export function newGroup(doc, { name = 'Group', color, x, y, w = 1600, h = 1000, by = 'human' } = {}) {
   const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: x ?? 0, y: y ?? 0, w: Number(w) || 1600, h: Number(h) || 1000 };
@@ -133,6 +196,16 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           log.push(`added ${items.length} image(s): ${idList(items.map((it) => it.id))}`);
           break;
         }
+        case 'note': {
+          const group = o.group ? ref(o.group) : null;
+          if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const { op, as, group: _g, ...fields } = o;
+          const n = newNote(doc, { ...cleanPatch(doc, fields, { type: 'note' }), group, by });
+          if (as) named.set(as, n.id);
+          created.push(n.id);
+          log.push(`note ${n.id}`);
+          break;
+        }
         case 'newgroup': {
           const g = newGroup(doc, { ...o, by });
           if (o.as) named.set(o.as, g.id);
@@ -161,7 +234,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
             break;
           }
           idsExist(doc, [id]);
-          patchItems(doc, { [id]: cleanPatch(doc, fields) }, by);
+          patchItems(doc, { [id]: cleanPatch(doc, fields, byId(doc).get(id)) }, by);
           log.push(`set ${id}`);
           break;
         }
@@ -219,7 +292,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           log.push(`${o.op}: ${idList(ids)}`);
           break;
         }
-        default: throw new OpError(`unknown op "${o.op}" (add, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
+        default: throw new OpError(`unknown op "${o.op}" (add, note, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
       }
     } catch (e) {
       const err = new OpError(`op #${i} (${o?.op}): ${e.message}`);

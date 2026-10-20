@@ -18,6 +18,7 @@ import { readEntry } from '../src/core/zip.js';
 import { crc32 } from '../src/core/crc32.js';
 import { imageInfo, isImageName } from '../src/core/imageinfo.js';
 import { parsePureRef } from '../src/core/pureref.js';
+import { plainText } from '../src/core/markdown.js';
 
 const HELP = `IluCanvas ${APP_VERSION} — infinite reference board in one .ilucanvas file (format v${FORMAT_VERSION})
 A .ilucanvas file is a ZIP: canvas.json (the scene) + images/ (originals) + thumbs/.
@@ -38,6 +39,9 @@ Write (re-read → change → write; the open app picks the change up within sec
         default place: right of everything (or at the bottom of --group)
   set <file> <id|canvas> key=value…     ${EDITABLE_KEYS.join(' ')}; canvas: title
   move <file> <id>… (--by DX,DY | --to X,Y)
+  note <file> "text" [--color C] [--at X,Y] [--group ID] [--w W] [--size s|m|l|xl]
+                                        a note; Markdown text ("\\n" = new line); colours: yellow orange
+                                        pink green blue violet grey (stickies), paper (document), none (text)
   rm <file> <id>… [--keep-children]     a group goes with its images unless --keep-children
   group <file> <id>… [--name N] [--color ${GROUP_COLORS.join('|')}]
   ungroup <file> <group-id>
@@ -267,6 +271,11 @@ function lsText(doc, only = null) {
     for (const it of doc.items) {
       if (it.type === 'group' || (it.parent || null) !== parent) continue;
       if (it.type === 'image') img(it, ind);
+      else if (it.type === 'note') {
+        const first = plainText(it.text).split('\n').find((l) => l.trim()) || '';
+        const more = it.text.split('\n').length - 1;
+        lines.push(`${ind}${it.id}  note  "${first.slice(0, 60)}"${more ? ` (+${more} lines)` : ''}  ${it.color}${it.fit ? ' sticky' : ''}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
+      }
       else lines.push(`${ind}${it.id}  ${it.type}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
     }
   };
@@ -452,6 +461,13 @@ async function main(argv) {
       case 'ungroup': need(pos[0], 'ungroup: which group?'); ops = [{ op: 'ungroup', id: pos[0] }]; break;
       case 'arrange': need(pos.length, 'arrange: a group id or item ids'); ops = [{ op: 'arrange', ids: pos, width: opt.width, gap: opt.gap }]; break;
       case 'front': case 'back': need(pos.length, `${cmd}: which ids?`); ops = [{ op: cmd, ids: pos }]; break;
+      case 'note': {
+        need(pos.length === 1, 'note: usage: note <file> "text" [--color C] [--at X,Y] [--group ID]');
+        const at = opt.at ? pair(opt.at, '--at') : null;
+        // a literal "\n" in a shell argument is a new line
+        ops = [{ op: 'note', text: pos[0].replace(/\\n/g, '\n'), color: opt.color || 'yellow', x: at?.[0], y: at?.[1], group: opt.group, w: opt.w ? Number(opt.w) : undefined, size: opt.size }];
+        break;
+      }
       case 'apply': {
         const src = pos.shift();
         need(src, 'apply: ops.json or - (stdin)');

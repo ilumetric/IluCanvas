@@ -109,3 +109,32 @@ test('itemBounds includes rotation', () => {
   const b = itemBounds({ x: 0, y: 0, w: 100, h: 50, rot: 90 });
   assert.ok(Math.abs(b.w - 50) < 1e-9 && Math.abs(b.h - 100) < 1e-9);
 });
+
+test('notes: defaults, colours, round trip, ops', async () => {
+  const { applyOps } = await import('../src/core/ops.js');
+  const d = emptyCanvas();
+  const r = await applyOps(d, [
+    { op: 'note', text: 'Sticky', as: '$s' },
+    { op: 'note', text: '# Doc\nline', color: 'paper', x: 0, y: 0 },
+    { op: 'note', text: 'label', color: 'none', size: 'xl', scale: 2 },
+    { op: 'set', id: '$s', color: 'pink', align: 'center' },
+  ]);
+  const [s, doc, label] = r.created.map((id) => d.items.find((i) => i.id === id));
+  assert.equal(s.fit, true);
+  assert.equal(s.color, 'pink');
+  assert.equal(s.align, 'center');
+  assert.equal(doc.ratio, 'a4');
+  assert.ok(Math.abs(doc.h - doc.w * Math.SQRT2) < 1);
+  assert.equal(label.fit, undefined);
+  assert.equal(label.scale, 2);
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: s.id, color: 'paper2' }]), /color must be one of/);
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: s.id, size: 'huge' }]), /size must be one of/);
+  // a group cannot take a note colour
+  const g = groupItems(d, [s.id], { name: 'G' });
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: g.id, color: 'paper' }]), /color must be one of/);
+  assert.ok(validate(d).ok);
+  assert.deepEqual(normalize(serialize(d)).items, d.items);
+  // defaults are not written
+  const n = normalize({ format: 'ilucanvas', assets: {}, items: [{ id: 'n', type: 'note', x: 0, y: 0, w: 1, h: 1, size: 'm', align: 'left', ratio: 'free', scale: 1, fit: false }] }).items[0];
+  assert.deepEqual(Object.keys(n).sort(), ['color', 'h', 'id', 'text', 'type', 'w', 'x', 'y']);
+});

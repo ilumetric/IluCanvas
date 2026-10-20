@@ -27,6 +27,7 @@ node ilucanvas.mjs ls refs.ilucanvas
 
 - Reference items by id (`i8k2m1q` images, `g4k2x9q` groups); ids never change.
 - Re-read the board (`ls`) right before editing; prefer CLI commands / `apply` ops over editing canvas.json by hand; run `validate` after hand edits.
-- Many changes: one `apply` with a JSON array of ops (`add`, `newgroup`, `group`, `set`, `move`, `arrange`, `fit`, `rm`, `ungroup`, `front`, `back`); `"as": "$name"` names created ids.
+- Many changes: one `apply` with a JSON array of ops (`add`, `note`, `newgroup`, `group`, `set`, `move`, `arrange`, `fit`, `rm`, `ungroup`, `front`, `back`); `"as": "$name"` names created ids.
+- Notes (stickies, documents, plain text) hold Markdown: `node ilucanvas.mjs note refs.ilucanvas '# Title\n- [ ] todo' --color paper`.
 - The CLI records `"updated_by": "agent"`. Do not delete the human's references unless asked.
 - `.pur` files are read only: `node ilucanvas.mjs from-pur board.pur` makes an editable copy.
