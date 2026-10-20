@@ -3,19 +3,20 @@
 // the bar that floats over the selection — their settings, or the formatting
 // buttons while you type.
 
-import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, refreshConnectors, NOTE_COLORS, RATIO_K, SHAPE_KINDS, PAINT } from '../core/model.js';
+import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, refreshConnectors, NOTE_COLORS, RATIO_K, SHAPE_KINDS, PAINT, isHexColor } from '../core/model.js';
 import { connectorPath, midpoint, ROUTES } from '../core/connectors.js';
 import { toggleTask, MARK_COLORS } from '../core/markdown.js';
 import { NoteEditor } from './editor.js';
 import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
 import { FILL, LINE_COLOR } from './shapes.js';
-import { INK_COLOR } from './ink.js';
+import { INK_COLOR, inkColor } from './ink.js';
+import { openColorPicker } from './colorpicker.js';
 import { INK_TOOLS, INK_WIDTHS, inkScale, reframe, strokeScale } from '../core/ink.js';
 import { h, icon, openMenu, promptDialog } from './ui.js';
 import { t } from './i18n.js';
 
 const KIND_ICON = { rect: 'shRect', rounded: 'shRounded', ellipse: 'shEllipse', diamond: 'shDiamond', triangle: 'shTriangle', parallelogram: 'shParallelogram', hexagon: 'shHexagon', star: 'shStar' };
-const ROUTE_ICON = { straight: 'routeStraight', elbow: 'routeElbow', curve: 'routeCurve' };
+const ROUTE_ICON = { straight: 'routeStraight', elbow: 'routeElbow', curve: 'routeCurve', dubins: 'routeDubins' };
 const HEAD_ICON = { none: 'headNone', arrow: 'headArrow', dot: 'headDot' };
 const SQUARE_KINDS = new Set(['ellipse', 'diamond', 'triangle', 'star']);
 export { KIND_ICON, ROUTE_ICON };
@@ -65,7 +66,8 @@ export class NotesUI {
 
   /** A connector between two ends ({ id, side? } | { x, y }), with the last used look. */
   connect(from, to) {
-    const route = ROUTES.includes(this.app.pref.get('route', 'elbow')) ? this.app.pref.get('route', 'elbow') : 'elbow';
+    const pick = this.app.pref.get('connRoute', 'dubins');
+    const route = ROUTES.includes(pick) ? pick : 'dubins';
     const c = { id: newId('connector'), type: 'connector', from, to, end: 'arrow', color: this.app.pref.get('lineColor', 'grey'), x: 0, y: 0, w: 1, h: 1 };
     if (route !== 'straight') c.route = route;
     this.app.edit('connect', (d) => { addItems(d, [c]); refreshConnectors(d); });
@@ -384,7 +386,7 @@ export class NotesUI {
       label: t(`conn.${n}`), checked: (one.width || 2) === w, onClick: () => set('width', () => ({ width: w === 2 ? undefined : w })),
     }))));
     const parts = [
-      ...ROUTES.map((r) => this.#btn(ROUTE_ICON[r], t(`route.${r}`), () => { this.app.pref.set('route', r); set('route', () => ({ route: r === 'straight' ? undefined : r })); }, route === r)),
+      ...ROUTES.map((r) => this.#btn(ROUTE_ICON[r], t(`route.${r}`), () => { this.app.pref.set('connRoute', r); set('route', () => ({ route: r === 'straight' ? undefined : r })); }, route === r)),
       h('span.sb-sep'), headBtn('start'), headBtn('end'),
       h('span.sb-sep'), colorBtn, widthBtn,
       this.#btn('dash', t('conn.dash'), () => set('dash', (c) => ({ dash: !one.dash || undefined })), !!one.dash),
@@ -393,15 +395,40 @@ export class NotesUI {
     this.bar.replaceChildren(...parts);
   }
 
+  /** A custom colour for the selected strokes: shown live while dragging, one undo step per colour chosen. */
+  #customInk(anchor) {
+    const ids = new Set(this.#ofType('stroke').map((k) => k.id));
+    const d0 = this.app.doc();
+    if (!ids.size || !d0) return;
+    let before = d0.items;
+    const first = d0.items.find((it) => ids.has(it.id));
+    openColorPicker(anchor, inkColor(first.color), (hex, done) => {
+      const d = this.app.doc();
+      if (!d) return;
+      if (!done) {
+        d.items = d.items.map((it) => (ids.has(it.id) ? { ...it, color: hex } : it));
+        this.board.invalidate();
+        return;
+      }
+      d.items = before;
+      this.#set('color', () => ({ color: hex }), 'stroke');
+      before = d.items;
+    }, { key: 'stroke-color', place: 'below' });
+  }
+
   /** Selected strokes: tool, colour, width (a new width or tool measures the stroke's frame again). */
   #strokeBar(ks) {
     const one = ks[0];
     const z = this.board.view.z;
     const restroke = (label, changes) => this.#set(label, (k) => { const n = reframe(k, changes(k)); return { ...n, tw: n.tw, nib: n.nib }; }, 'stroke');
-    const colorBtn = this.#btn(null, t('ink.color'), () => openMenu(colorBtn, PAINT.map((c) => ({
-      label: t(`paint.${c}`), swatch: INK_COLOR[c], checked: ks.every((k) => k.color === c), onClick: () => this.#set('color', () => ({ color: c }), 'stroke'),
-    }))));
-    colorBtn.append(h('span.sb-swatch', { style: { background: INK_COLOR[one.color] || INK_COLOR.white } }));
+    const colorBtn = this.#btn(null, t('ink.color'), () => openMenu(colorBtn, [
+      ...PAINT.map((c) => ({
+        label: t(`paint.${c}`), swatch: INK_COLOR[c], checked: ks.every((k) => k.color === c), onClick: () => this.#set('color', () => ({ color: c }), 'stroke'),
+      })),
+      { label: t('color.custom'), icon: 'pipette', checked: ks.every((k) => isHexColor(k.color)), onClick: () => this.#customInk(colorBtn) },
+    ]));
+    colorBtn.dataset.cp = 'stroke-color';
+    colorBtn.append(h('span.sb-swatch', { style: { background: inkColor(one.color) } }));
     const tool = ks.every((k) => k.tool === one.tool) ? one.tool : null;
     const parts = [
       ...INK_TOOLS.map((tl) => this.#btn(tl, t(`tool.${tl}`), () => restroke('tool', (k) => ({ tool: tl, nib: tl === 'pen' ? k.nib : undefined })), tool === tl)),

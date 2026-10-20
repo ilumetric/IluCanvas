@@ -511,9 +511,10 @@
         "route": {
           "enum": [
             "elbow",
-            "curve"
+            "curve",
+            "dubins"
           ],
-          "description": "straight when left out."
+          "description": "straight when left out; the tools make Dubins paths by default."
         },
         "start": {
           "enum": [
@@ -587,18 +588,27 @@
           "description": "Pens only; round when left out."
         },
         "color": {
-          "enum": [
-            "white",
-            "grey",
-            "black",
-            "red",
-            "orange",
-            "yellow",
-            "green",
-            "blue",
-            "violet",
-            "pink"
-          ]
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "grey",
+                "black",
+                "red",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "violet",
+                "pink"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$"
+            }
+          ],
+          "description": "A palette name or a custom #rrggbb."
         },
         "width": {
           "type": "number",

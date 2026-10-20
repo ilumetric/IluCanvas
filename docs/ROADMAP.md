@@ -66,7 +66,7 @@ One type covers all three uses; they differ by colour and size only:
 - Ends attach to items (`id` + optional `side` `top right bottom left`, or
   auto: the nearest side) or are free points (`{"x":…, "y":…}`); attached
   ends follow their items.
-- `route`: `straight elbow curve`; heads: `none arrow dot`; colour, width,
+- `route`: `straight elbow curve dubins` (dubins by default); heads: `none arrow dot`; colour, width,
   dash, a label in the middle.
 - A toolbar tool, and in select mode hovering an item shows four dots to drag
   a connector from (FigJam). Deleting an item turns its connector ends into
@@ -95,7 +95,8 @@ Behaviour from GuitarCanvas (`E:\Git\GuitarCanvas\src\core\ink.ts`), storage our
 - **Eraser**: removes whole strokes it touches (object eraser); the stylus
   back end erases too.
 - Palette: the ten fixed colours shared with shapes and connectors (Apple
-  dark-mode shades; no custom wheel — fixed colours, as agreed); 5 width
+  dark-mode shades) plus a custom colour picker (HSV wheel, hex, eyedropper,
+  recent colours; stored as `#rrggbb`); 5 width
   presets per tool, as sizes on screen (drawn zoomed out, ink is wider); every
   tool remembers its own colour / width / nib (browser preference).
 - Input: coalesced pointer events, touch ignored while a pen is down (palm

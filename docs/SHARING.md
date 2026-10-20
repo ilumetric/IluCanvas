@@ -22,6 +22,12 @@ in their boards bar under *From links*. When you save a new version, an amber
 dot appears there and the **Sync** button turns amber; it downloads the new
 version.
 
+To keep downloaded boards as ordinary files on disk instead (Chrome / Edge):
+**Settings → Boards from links → Choose folder…**. New downloads go there under
+the file's own name, a sync replaces that file, and boards downloaded earlier
+move there on their next sync. Removing such a board from the list leaves its
+file in the folder. The browser asks for access to the folder once per session.
+
 Alternative without links: share the Drive *folder* with the team. With Google
 Drive for desktop, they open that folder in IluCanvas (*Open folder*) and see
 every board in it, always up to date — no API key needed.

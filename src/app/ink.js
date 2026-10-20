@@ -5,12 +5,15 @@
 
 import { getStroke } from './vendor/perfect-freehand.js';
 import { INK_ALPHA, strokeSamples } from '../core/ink.js';
+import { isHexColor } from '../core/model.js';
 
 /** Ink colours: Apple's dark-mode system colours, legible on a dark board. */
 export const INK_COLOR = {
   white: '#ffffff', grey: '#98989d', black: '#1c1c1e', red: '#ff453a', orange: '#ff9f0a',
   yellow: '#ffd60a', green: '#30d158', blue: '#0a84ff', violet: '#bf5af2', pink: '#ff375f',
 };
+/** A stroke's colour on screen: a palette name or its own #rrggbb. */
+export const inkColor = (c) => INK_COLOR[c] || (isHexColor(c) ? c : INK_COLOR.white);
 
 const THINNING = 0.55;
 const FREEHAND = {
@@ -213,7 +216,7 @@ function cachedPath(it) {
 /** Paint a stroke `s` (fields tool, nib, color, width) through `path`, in the current transform. */
 function paint(ctx, s, path) {
   ctx.globalAlpha = INK_ALPHA[s.tool] ?? 1;
-  ctx.fillStyle = INK_COLOR[s.color] || INK_COLOR.white;
+  ctx.fillStyle = inkColor(s.color);
   ctx.fill(path);
   if (s.tool === 'pen' && s.nib === 'italic') {
     // the nib's minor axis: a thin outline rounds the ribbon

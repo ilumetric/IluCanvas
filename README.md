@@ -28,11 +28,12 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   colours, highlights, links; stored as Markdown.
 - **Shapes and connectors** for diagrams: eight shapes with text (S), arrows
   between anything (X, or drag from the dots around a hovered item) —
-  straight, elbow or curved, with heads, labels and dashes; they follow the
+  a Dubins path of arcs and lines (default), curved, straight or elbow, with heads, labels and dashes; they follow the
   items they connect.
 - **Ink**: pen (P) with pressure and an italic nib, highlighter (Shift+P),
   washi tape (T) and an eraser (E) that removes whole strokes; a stylus
-  draws, its back end erases, fingers pan. Ten fixed colours.
+  draws, its back end erases, fingers pan. Ten fixed colours and a colour
+  picker (wheel, hex, eyedropper, recent colours).
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
 - **PureRef:** `.pur` files open for viewing — just the pictures and their
@@ -45,6 +46,13 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   the open page; the app picks up file changes within a couple of seconds.
 - Installs as an app (Chrome / Edge → *Install*): `.ilucanvas` and `.pur` then
   open with a double click, and it works offline.
+- **Safari, iPad and Apple Pencil:** without file access (Safari, Firefox) boards
+  are kept in the browser's own storage, save themselves and download as
+  `.ilucanvas` files (on iPad: to Files); opening a file copies it in. The
+  Pencil draws with pressure, a resting palm is ignored, fingers pan and pinch,
+  a long press opens the menu, a double tap edits. On iPad, *Add to Home Screen*
+  so Safari keeps the boards (it may clear a website's storage after weeks
+  without a visit).
 
 ## For agents
 

@@ -103,3 +103,20 @@ test('stroke op, set, normalize, validate, list', async () => {
   const bad = { ...emptyCanvas(), items: [{ id: newId('stroke'), type: 'stroke', tool: 'pen', x: 0, y: 0, w: 1, h: 1, pts: [1, 2] }] };
   assert.match(validate(bad).errors.map((e) => e.msg).join(), /x, y, pressure/);
 });
+
+test('ink takes a custom #rrggbb colour too', async () => {
+  const d = emptyCanvas();
+  const r = await applyOps(d, [{ op: 'stroke', points: [[0, 0], [50, 50]], color: '#FF8800' }]);
+  const k = d.items.find((i) => i.id === r.created[0]);
+  assert.equal(k.color, '#ff8800');
+  await applyOps(d, [{ op: 'set', id: k.id, color: '#0a84ff' }]);
+  assert.equal(d.items[0].color, '#0a84ff');
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: k.id, color: '#12345' }]), /or #rrggbb/);
+  // only ink: a connector keeps to the palette
+  await applyOps(d, [{ op: 'connect', from: k.id, to: { x: 300, y: 0 }, as: '$c' }]);
+  const c = d.items.find((i) => i.type === 'connector');
+  assert.equal(c.route, 'dubins', 'new connectors are Dubins paths');
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: c.id, color: '#ff0000' }]), /color must be one of/);
+  assert.equal(normalize({ format: 'ilucanvas', assets: {}, items: [{ id: 'k', type: 'stroke', x: 0, y: 0, w: 1, h: 1, color: '#ABCDEF', pts: [] }] }).items[0].color, '#abcdef');
+  assert.ok(validate(d).ok);
+});

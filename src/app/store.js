@@ -11,6 +11,11 @@ import { imageInfo, IMAGE_TYPES } from '../core/imageinfo.js';
 import { parsePureRef } from '../core/pureref.js';
 import { work } from './images.js';
 
+/** Previews are WebP; where the browser cannot write WebP (Safari) JPEG or PNG — named by what they are. */
+const THUMB_EXT = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png' };
+const thumbPath = (id, type) => `thumbs/${id}.${THUMB_EXT[type] || 'webp'}`;
+const thumbType = (path) => ({ jpg: 'image/jpeg', png: 'image/png' })[String(path).split('.').pop()] || 'image/webp';
+
 export class Store {
   constructor() {
     this.source = null; // disk.js source
@@ -109,7 +114,7 @@ export class Store {
       const t = this.thumbs.get(id);
       if (t) return t.blob;
       const e = a.thumb && this.index?.byName.get(a.thumb);
-      return e ? entryBlob(this.reader, e, 'image/webp') : null;
+      return e ? entryBlob(this.reader, e, thumbType(a.thumb)) : null;
     }
     const p = this.pending.get(id);
     if (p) return p.blob;
@@ -146,7 +151,7 @@ export class Store {
       const known = this.doc.assets[id] || assets[id];
       if (!known) {
         const name = b.name || `pasted-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.${r.ext}`;
-        assets[id] = { file: assetPath(name, r.ext, taken), type: r.type, w: r.w, h: r.h, bytes: r.bytes, sha256: r.sha256, thumb: `thumbs/${id}.webp`, color: r.color, name, source: b.source || null, added: now() };
+        assets[id] = { file: assetPath(name, r.ext, taken), type: r.type, w: r.w, h: r.h, bytes: r.bytes, sha256: r.sha256, thumb: thumbPath(id, r.thumbType), color: r.color, name, source: b.source || null, added: now() };
         this.pending.set(id, { blob: b, crc: r.crc });
         this.thumbs.set(id, { blob: r.thumb, crc: r.thumbCrc });
       }
@@ -169,7 +174,7 @@ export class Store {
         this.thumbs.set(id, { blob: r.thumb, crc: r.thumbCrc });
         const a = this.doc.assets[id];
         if (!a) continue;
-        this.doc.assets = { ...this.doc.assets, [id]: { ...a, thumb: `thumbs/${id}.webp`, color: r.color, w: a.w || r.w, h: a.h || r.h } };
+        this.doc.assets = { ...this.doc.assets, [id]: { ...a, thumb: thumbPath(id, r.thumbType), color: r.color, w: a.w || r.w, h: a.h || r.h } };
         n++;
       } catch {
         (this.failedPreview ||= new Set()).add(id);
@@ -203,8 +208,9 @@ export class Store {
       const t = this.thumbs.get(id);
       if (t && a.thumb && (!this.index?.byName.has(a.thumb) || !inFile)) add.set(a.thumb, { data: t.blob, crc: t.crc });
       else if (t && !a.thumb) {
-        this.doc.assets = { ...this.doc.assets, [id]: { ...a, thumb: `thumbs/${id}.webp` } };
-        add.set(`thumbs/${id}.webp`, { data: t.blob, crc: t.crc });
+        const path = thumbPath(id, t.blob.type);
+        this.doc.assets = { ...this.doc.assets, [id]: { ...a, thumb: path } };
+        add.set(path, { data: t.blob, crc: t.crc });
       }
     }
     // previews generated for assets whose thumb entry is missing from the file
@@ -240,7 +246,7 @@ export class Store {
     const res = await dest.write(plan, this.file);
     // the file as it is now
     let file;
-    if (dest.kind === 'fsa') file = await dest.getFile();
+    if (dest.kind === 'fsa' || dest.kind === 'local') file = await dest.getFile(); // a fresh File: the old one may not read after a write
     else {
       const parts = plan.chunks.map((c) => (c.range ? this.file.slice(c.range[0], c.range[0] + c.range[1]) : c));
       file = new Blob(plan.mode === 'full' ? parts : [this.file.slice(0, plan.at), ...parts]);

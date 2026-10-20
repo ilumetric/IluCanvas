@@ -5,10 +5,10 @@
 // sides (`top right bottom left`; without `side`, the side facing the other
 // end) — or { x, y }, a free point. Attached ends follow their items.
 //
-//   route  straight | elbow | curve
+//   route  straight | elbow | curve | dubins
 //   start / end  none | arrow | dot      (heads)
 
-export const ROUTES = ['straight', 'elbow', 'curve'];
+export const ROUTES = ['straight', 'elbow', 'curve', 'dubins'];
 export const HEADS = ['none', 'arrow', 'dot'];
 export const SIDES = ['top', 'right', 'bottom', 'left'];
 const DIR = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
@@ -82,7 +82,115 @@ export function connectorPath(c, lookup) {
     return { a, b, dirA, dirB, curve: [a, c1, c2, b], pts: flattenCubic(a, c1, c2, b, 24) };
   }
   if (route === 'elbow') return { a, b, dirA, dirB, pts: elbow(a, b, dirA, dirB, ba, bb) };
+  if (route === 'dubins') {
+    // leaves `a` along its side's normal, arrives at `b` moving into its side
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    const rho = Math.max(8, Math.min(64, d / 5));
+    return { a, b, dirA, dirB, pts: dubins(a, Math.atan2(dirA.y, dirA.x), b, Math.atan2(-dirB.y, -dirB.x), rho) };
+  }
   return { a, b, dirA, dirB, pts: [a, b] };
+}
+
+// ---- Dubins path -------------------------------------------------------------------------------
+// The shortest way between two points with headings for something that can
+// only turn with radius ≥ rho: two arcs and a line, or three arcs (L = turn
+// toward larger angles, R = smaller, S = straight). After A. Walker's dubins.c.
+
+const TAU = Math.PI * 2;
+const mod2pi = (x) => x - TAU * Math.floor(x / TAU);
+
+/** [t, p, q] segment lengths (in units of rho) of each kind of path, or null when it does not exist. */
+const DUBINS = {
+  LSL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = 2 + d * d - 2 * cab + 2 * d * (sa - sb);
+    if (p2 < 0) return null;
+    const t1 = Math.atan2(cb - ca, d + sa - sb);
+    return [mod2pi(t1 - alpha), Math.sqrt(p2), mod2pi(beta - t1)];
+  },
+  RSR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = 2 + d * d - 2 * cab + 2 * d * (sb - sa);
+    if (p2 < 0) return null;
+    const t1 = Math.atan2(ca - cb, d - sa + sb);
+    return [mod2pi(alpha - t1), Math.sqrt(p2), mod2pi(t1 - beta)];
+  },
+  LSR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = -2 + d * d + 2 * cab + 2 * d * (sa + sb);
+    if (p2 < 0) return null;
+    const p = Math.sqrt(p2);
+    const t0 = Math.atan2(-ca - cb, d + sa + sb) - Math.atan2(-2, p);
+    return [mod2pi(t0 - alpha), p, mod2pi(t0 - beta)];
+  },
+  RSL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = -2 + d * d + 2 * cab - 2 * d * (sa + sb);
+    if (p2 < 0) return null;
+    const p = Math.sqrt(p2);
+    const t0 = Math.atan2(ca + cb, d - sa - sb) - Math.atan2(2, p);
+    return [mod2pi(alpha - t0), p, mod2pi(beta - t0)];
+  },
+  RLR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const c = (6 - d * d + 2 * cab + 2 * d * (sa - sb)) / 8;
+    if (Math.abs(c) > 1) return null;
+    const p = mod2pi(TAU - Math.acos(c));
+    const t = mod2pi(alpha - Math.atan2(ca - cb, d - sa + sb) + p / 2);
+    return [t, p, mod2pi(alpha - beta - t + p)];
+  },
+  LRL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const c = (6 - d * d + 2 * cab + 2 * d * (sb - sa)) / 8;
+    if (Math.abs(c) > 1) return null;
+    const p = mod2pi(TAU - Math.acos(c));
+    const t = mod2pi(-alpha - Math.atan2(ca - cb, d + sa - sb) + p / 2);
+    return [t, p, mod2pi(beta - alpha - t + p)];
+  },
+};
+
+/** A Dubins path from a (heading h0) to b (heading h1) as a polyline; arcs every ~8°. */
+export function dubins(a, h0, b, h1, rho) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const D = Math.hypot(dx, dy);
+  if (D < 1e-6 || !(rho > 0)) return [a, b];
+  const th = mod2pi(Math.atan2(dy, dx));
+  const alpha = mod2pi(h0 - th);
+  const beta = mod2pi(h1 - th);
+  const v = { d: D / rho, alpha, beta, sa: Math.sin(alpha), sb: Math.sin(beta), ca: Math.cos(alpha), cb: Math.cos(beta), cab: Math.cos(alpha - beta) };
+  let best = null;
+  for (const [kind, f] of Object.entries(DUBINS)) {
+    const seg = f(v);
+    if (!seg) continue;
+    const len = seg[0] + seg[1] + seg[2];
+    if (!best || len < best.len) best = { kind, seg, len };
+  }
+  if (!best) return [a, b];
+  // walk the three segments
+  const pts = [{ x: a.x, y: a.y }];
+  let x = a.x;
+  let y = a.y;
+  let h = h0;
+  for (let i = 0; i < 3; i++) {
+    const turn = best.kind[i];
+    const t = best.seg[i];
+    if (turn === 'S') {
+      x += Math.cos(h) * t * rho;
+      y += Math.sin(h) * t * rho;
+      pts.push({ x, y });
+      continue;
+    }
+    const sgn = turn === 'L' ? 1 : -1;
+    const steps = Math.max(1, Math.ceil(t / 0.14));
+    const x0 = x;
+    const y0 = y;
+    const h0s = h;
+    for (let k = 1; k <= steps; k++) {
+      const u = (t * k) / steps;
+      const hh = h0s + sgn * u;
+      x = x0 + sgn * rho * (Math.sin(hh) - Math.sin(h0s));
+      y = y0 - sgn * rho * (Math.cos(hh) - Math.cos(h0s));
+      pts.push({ x, y });
+    }
+    h = h0s + sgn * t;
+  }
+  pts[pts.length - 1] = { x: b.x, y: b.y }; // exact end (rounding)
+  return pts.filter((p, i) => i === 0 || Math.abs(p.x - pts[i - 1].x) > 1e-3 || Math.abs(p.y - pts[i - 1].y) > 1e-3);
 }
 
 const STUB = 24;

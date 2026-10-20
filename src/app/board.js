@@ -660,15 +660,17 @@ export class Board {
   /** What is under a screen point: { kind: 'handle' | 'label' | 'item' | 'group' | 'none', id?, handle? } */
   hitTest(sx, sy, { handles = true } = {}) {
     if (!this.doc) return { kind: 'none' };
+    // a finger or a pencil is less precise than a mouse: bigger targets
+    const k = this.coarse ? 2 : 1;
     if (handles && !this.readOnly) {
       const sel = this.selectedItems();
       if (sel.length === 1 && sel[0].type === 'connector') {
-        for (const hd of this.#endHandles(sel[0])) if (Math.hypot(sx - hd.x, sy - hd.y) <= HANDLE + 2) return { kind: 'end', id: sel[0].id, end: hd.end };
+        for (const hd of this.#endHandles(sel[0])) if (Math.hypot(sx - hd.x, sy - hd.y) <= (HANDLE + 2) * k) return { kind: 'end', id: sel[0].id, end: hd.end };
       }
       const box = this.#selectionBox(sel);
-      if (box) for (const hd of this.#handles(box, sel)) if (Math.abs(sx - hd.x) <= HANDLE && Math.abs(sy - hd.y) <= HANDLE) return { kind: 'handle', handle: hd.id };
+      if (box) for (const hd of this.#handles(box, sel)) if (Math.abs(sx - hd.x) <= HANDLE * k && Math.abs(sy - hd.y) <= HANDLE * k) return { kind: 'handle', handle: hd.id };
       const dotItem = this.#dotItem();
-      if (dotItem) for (const d of this.#dots(dotItem)) if (Math.hypot(sx - d.x, sy - d.y) <= 9) return { kind: 'dot', id: d.id, side: d.side };
+      if (dotItem) for (const d of this.#dots(dotItem)) if (Math.hypot(sx - d.x, sy - d.y) <= 9 * k) return { kind: 'dot', id: d.id, side: d.side };
     }
     for (let i = this.labelRects.length - 1; i >= 0; i--) {
       const r = this.labelRects[i];
@@ -677,7 +679,7 @@ export class Board {
     const p = this.toWorld(sx, sy);
     const items = this.doc.items;
     const m = byId(this.doc);
-    const reach = 7 / this.view.z;
+    const reach = (7 * k) / this.view.z;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.type === 'group') continue;
@@ -722,20 +724,30 @@ export class Board {
       if (this.hover && !this.drag) { this.hover = null; this.invalidateOverlay(); }
     });
     st.addEventListener('wheel', (e) => this.#wheel(e), { passive: false });
+    // a mouse double click (fingers and pencils: #tap)
     st.addEventListener('dblclick', (e) => {
+      if (this.lastType && this.lastType !== 'mouse') return;
       const r = st.getBoundingClientRect();
       this.cb.dblclick?.(this.hitTest(e.clientX - r.left, e.clientY - r.top, { handles: false }), e);
     });
     st.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (this.drag?.type === 'pan' && this.drag.moved) return;
-      const r = st.getBoundingClientRect();
-      const hit = this.hitTest(e.clientX - r.left, e.clientY - r.top, { handles: false });
-      const id = hit.id;
-      if (id && !this.selection.has(id)) this.select([id]);
-      if (!id && hit.kind === 'none') this.select([]);
-      this.cb.contextMenu?.({ x: e.clientX, y: e.clientY }, hit, this.toWorld(e.clientX - r.left, e.clientY - r.top));
+      if (this.lastType && this.lastType !== 'mouse' && performance.now() - (this.pressedAt || 0) < 1500) return; // a long press handles it
+      this.#context(e.clientX, e.clientY);
     });
+    // Safari: a trackpad pinch comes as gesture events (other browsers: Ctrl + wheel); on an
+    // iPad they come along with the touches, which zoom by themselves. Never zoom the page.
+    const gesture = (e) => {
+      e.preventDefault();
+      if (e.type === 'gesturestart') { this.gesture = { z: this.view.z }; return; }
+      if (e.type === 'gestureend') { this.gesture = null; return; }
+      if (!this.gesture || this.pointers.size || this.pinch || performance.now() - (this.ctrlWheelAt || 0) < 300) return;
+      const p = this.#local(e);
+      this.zoomAt(p.x, p.y, (this.gesture.z * e.scale) / this.view.z);
+    };
+    for (const t of ['gesturestart', 'gesturechange', 'gestureend']) st.addEventListener(t, gesture, { passive: false });
+    document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
     addEventListener('keydown', (e) => {
       if (e.code === 'Space' && !e.repeat && !isTyping(e.target)) { this.space = true; this.stage.classList.add('panning-ready'); if (e.target === document.body) e.preventDefault(); }
     });
@@ -759,11 +771,35 @@ export class Board {
 
   #local(e) { const r = this.stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
+  /** The context menu for a screen point (right click; a long press with a finger or a pencil). */
+  #context(clientX, clientY) {
+    const r = this.stage.getBoundingClientRect();
+    const hit = this.hitTest(clientX - r.left, clientY - r.top, { handles: false });
+    const id = hit.id;
+    if (id && !this.selection.has(id)) this.select([id]);
+    if (!id && hit.kind === 'none') this.select([]);
+    this.cb.contextMenu?.({ x: clientX, y: clientY }, hit, this.toWorld(clientX - r.left, clientY - r.top));
+  }
+
+  /** A finger / pencil tap that did not move: two quick ones in one place are a double click. */
+  #tap(e, p) {
+    const now = performance.now();
+    const last = this.lastTap;
+    this.lastTap = { t: now, x: p.x, y: p.y };
+    if (!last || now - last.t > 350 || Math.hypot(p.x - last.x, p.y - last.y) > 24) return;
+    this.lastTap = null;
+    this.cb.dblclick?.(this.hitTest(p.x, p.y, { handles: false }), e);
+  }
+
   #down(e) {
     this.anim = null;
     // palm rejection: while a stylus is on the board, fingers do nothing
     if (e.pointerType === 'touch' && this.penDown !== undefined && this.penDown !== null) return;
     if (e.pointerType === 'pen') this.penSeen = true;
+    this.lastType = e.pointerType;
+    this.coarse = e.pointerType !== 'mouse';
+    this.pressedAt = performance.now();
+    clearTimeout(this.pressTimer);
     if (document.activeElement && isTyping(document.activeElement)) document.activeElement.blur();
     this.pointers.set(e.pointerId, this.#local(e));
     if (this.pointers.size === 2) { this.#startPinch(); return; }
@@ -774,6 +810,22 @@ export class Board {
     const pan = e.button === 1 || (e.button === 0 && (this.tool === 'hand' || this.space)) || fingerPans;
     if (e.button === 2) { this.pointers.delete(e.pointerId); return; }
     try { this.stage.setPointerCapture(e.pointerId); } catch { /* not a live pointer (synthetic event) */ }
+    // a finger or a pencil held still: the context menu (iPad has no right click)
+    if (e.pointerType !== 'mouse' && e.button === 0 && !DRAWS.has(this.tool)) {
+      const id = e.pointerId;
+      const at = { x: e.clientX, y: e.clientY };
+      this.pressTimer = setTimeout(() => {
+        const d = this.drag;
+        if (!d || d.pointer !== id || d.moved || this.pinch) return;
+        if (d.before) this.doc.items = d.before;
+        this.drag = null;
+        this.stage.classList.remove('panning');
+        this.pointers.delete(id);
+        try { this.stage.releasePointerCapture(id); } catch { /* released */ }
+        this.invalidate();
+        this.#context(at.x, at.y);
+      }, 550);
+    }
     if (pan) {
       e.preventDefault();
       this.drag = { type: 'pan', pointer: e.pointerId, sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false };
@@ -794,6 +846,8 @@ export class Board {
       } else {
         const brush = { ...(this.cb.brush?.(this.tool) || {}), tool: this.tool };
         this.drag = { type: 'ink', pointer: e.pointerId, sx: p.x, sy: p.y, moved: false, brush, samples: [{ x: w.x, y: w.y, p: pressureOf(e), t: twistOf(e) }], cx: e.clientX, cy: e.clientY };
+        // a pencil may touch down with no pressure yet: the first move tells
+        if (e.pointerType === 'pen' && !(e.pressure > 0)) this.drag.p0 = true;
       }
       this.invalidateOverlay();
       return;
@@ -845,7 +899,7 @@ export class Board {
     const d = this.drag;
     if (!d || d.pointer !== e.pointerId) {
       if (this.tool === 'eraser' && e.pointerType !== 'touch' && !e.buttons) { this.cursorPt = p; this.invalidateOverlay(); }
-      if (e.pointerType === 'mouse' && !e.buttons) this.#hover(p);
+      if (e.pointerType === 'mouse' && !e.buttons) { this.coarse = false; this.#hover(p); }
       return;
     }
     if (d.type === 'ink') { this.#inkMove(e, d); return; }
@@ -861,6 +915,7 @@ export class Board {
     if (!d.moved && Math.hypot(p.x - d.sx, p.y - d.sy) < DRAG_START) return;
     const first = !d.moved;
     d.moved = true;
+    clearTimeout(this.pressTimer);
     if (d.type === 'pan') {
       this.setView({ x: d.vx + p.x - d.sx, y: d.vy + p.y - d.sy, z: this.view.z });
       return;
@@ -899,6 +954,7 @@ export class Board {
   }
 
   #up(e, cancelled = false) {
+    clearTimeout(this.pressTimer);
     this.pointers.delete(e.pointerId);
     if (e.pointerId === this.penDown) this.penDown = null;
     if (this.pinch) { if (this.pointers.size < 2) this.pinch = null; return; }
@@ -909,9 +965,12 @@ export class Board {
     try { this.stage.releasePointerCapture(e.pointerId); } catch { /* released */ }
     if (d.type === 'ink') {
       this.invalidateOverlay();
-      if (!cancelled) this.cb.stroke?.(d.brush, d.samples);
+      // the system may cancel a pencil mid-stroke (a palm, a gesture): keep what was drawn
+      if (!cancelled || d.samples.length > 2) this.cb.stroke?.(d.brush, d.samples);
       return;
     }
+    // a finger / pencil tap: two make a double click
+    if (!cancelled && !d.moved && e.pointerType !== 'mouse' && (d.type === 'move' || d.type === 'marquee' || d.type === 'noop')) this.#tap(e, { x: d.sx, y: d.sy });
     if (d.type === 'erase') {
       if (e.pointerType !== 'mouse') this.cursorPt = null;
       this.invalidateOverlay();
@@ -992,6 +1051,7 @@ export class Board {
       d.samples.push({ x: w.x, y: w.y, p: pressureOf(s), t: twistOf(s) });
       added = true;
     }
+    if (d.p0 && d.samples.length > 1) { d.samples[0].p = d.samples[1].p; d.p0 = false; }
     if (added) { d.moved = true; this.invalidateOverlay(); }
   }
 
@@ -1139,6 +1199,7 @@ export class Board {
   }
 
   #startPinch() {
+    clearTimeout(this.pressTimer);
     if (this.drag?.type === 'move' && this.drag.moved) this.doc.items = this.drag.before;
     this.drag = null;
     const [a, b] = [...this.pointers.values()];
@@ -1159,6 +1220,7 @@ export class Board {
 
   #wheel(e) {
     e.preventDefault();
+    if (e.ctrlKey) this.ctrlWheelAt = performance.now();
     this.anim = null;
     const p = this.#local(e);
     const lines = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;

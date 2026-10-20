@@ -105,18 +105,27 @@ export function drawConnector(ctx, c, lookup, { px, theme, family, path: given =
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   if (c.dash) ctx.setLineDash([lw * 3, lw * 2.2]);
-  // the line stops short of an arrow's tip so it does not poke through
-  const pts = path.pts.map((p) => ({ ...p }));
-  const trim = (end, at, from) => {
-    if (end !== 'arrow' || pts.length < 2) return;
-    const a = pts[at];
-    const b = pts[from];
-    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-    const k = Math.min(head * 0.8, d * 0.5) / d;
-    pts[at] = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+  // the line stops short of an arrow's tip so it does not poke through (cut along the path: arcs have short steps)
+  let pts = path.pts.map((p) => ({ ...p }));
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  const cut = (list, len) => {
+    const p = list.slice();
+    let left = len;
+    while (p.length > 2) {
+      const d = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y);
+      if (d > left) break;
+      left -= d;
+      p.shift();
+    }
+    const d = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y) || 1;
+    const k = Math.min(left, d * 0.95) / d;
+    p[0] = { x: p[0].x + (p[1].x - p[0].x) * k, y: p[0].y + (p[1].y - p[0].y) * k };
+    return p;
   };
-  trim(c.end || 'arrow', pts.length - 1, pts.length - 2);
-  trim(c.start, 0, 1);
+  const len = Math.min(head * 0.8, total * 0.4);
+  if (pts.length >= 2 && (c.end || 'arrow') === 'arrow') pts = cut(pts.reverse(), len).reverse();
+  if (pts.length >= 2 && c.start === 'arrow') pts = cut(pts, len);
   ctx.beginPath();
   if (path.curve) {
     const [a, c1, c2, b] = path.curve;

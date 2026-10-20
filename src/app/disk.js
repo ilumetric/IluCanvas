@@ -6,10 +6,17 @@
 //            the browser's swap file and replace the file atomically on close.
 //   server — tools/serve.mjs on localhost (development, embedded browsers).
 //   cache  — a downloaded copy in the browser's private storage (shared links); read only.
-//   memory — a canvas not saved yet, or a file opened without the API; read only.
-// Remembered folders and recent files (their handles) live in IndexedDB.
+//   memory — a canvas not saved yet, or a PureRef file opened without the API; read only.
+//   local  — a canvas kept in this browser's private storage (OPFS): Safari, Firefox.
+// Remembered folders and recent files (their handles) live in IndexedDB, and so
+// does the folder for boards downloaded from links (settings: linksDir).
 
-export const fsaSupported = () => typeof window !== 'undefined' && 'showOpenFilePicker' in window && 'showDirectoryPicker' in window;
+import { opfsSupported, opfsAtomic, opfsDir, opfsWrite, opfsRemove, opfsList } from './opfs.js';
+import { readZip, blobReader } from '../core/zip.js';
+import { readTitle } from '../core/canvasfile.js';
+
+/** File System Access (Chrome, Edge). ?nofsa tries the app as Safari / Firefox see it. */
+export const fsaSupported = () => typeof window !== 'undefined' && 'showOpenFilePicker' in window && 'showDirectoryPicker' in window && !/[?&]nofsa\b/.test(location.search);
 export const CANVAS_RE = /\.ilucanvas$/i;
 export const PUR_RE = /\.pur$/i;
 export const isBoardFile = (name) => CANVAS_RE.test(name) || PUR_RE.test(name);
@@ -61,6 +68,98 @@ export function memorySource(name, blob = null) {
   };
 }
 
+// ---- boards kept in this browser (OPFS) ---------------------------------------------------------
+// Where the File System Access API is missing (Safari, Firefox) boards live in
+// the browser's private storage, boards/<key>~<n>.ilucanvas, and are downloaded
+// as files. Saves go in place (append mode) unless the browser writes through a
+// swap file. A rewrite from the start (compaction) goes to <key>~<n+1> and the
+// old file is removed once the new one is complete: a crash in between leaves
+// both, and the newest complete one wins.
+
+const BOARDS = ['boards'];
+const LOCAL_RE = /^([a-z0-9]+)~(\d+)\.ilucanvas$/;
+
+/** Boards in this browser: [{ key, gen, name, handle, title, mtime, size }], newest first. */
+export async function localBoards() {
+  if (!opfsSupported()) return [];
+  const byKey = new Map();
+  for (const f of await opfsList(...BOARDS)) {
+    const m = f.name.match(LOCAL_RE);
+    if (!m) continue;
+    if (!byKey.has(m[1])) byKey.set(m[1], []);
+    byKey.get(m[1]).push({ key: m[1], gen: Number(m[2]), name: f.name, handle: f.handle });
+  }
+  const out = [];
+  for (const list of byKey.values()) {
+    list.sort((a, b) => b.gen - a.gen);
+    let pick = null;
+    for (const e of list) {
+      try {
+        const file = await e.handle.getFile();
+        const index = await readZip(blobReader(file), { recover: false });
+        pick = { ...e, file, index };
+        break;
+      } catch { /* incomplete: an older one */ }
+    }
+    if (pick) {
+      for (const e of list) if (e.gen !== pick.gen) await opfsRemove(BOARDS, e.name).catch(() => {});
+    } else {
+      // none reads cleanly (cut off mid-save): the newest; opening it rebuilds its directory
+      try { pick = { ...list[0], file: await list[0].handle.getFile() }; } catch { continue; }
+    }
+    let title = null;
+    try { title = await readTitle(blobReader(pick.file)); } catch { /* none */ }
+    out.push({ key: pick.key, gen: pick.gen, name: pick.name, handle: pick.handle, title: title || 'Canvas', mtime: pick.file.lastModified, size: pick.file.size });
+  }
+  return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+/** A board kept in this browser as a source the store reads and saves. */
+export function localSource(entry) {
+  const src = {
+    kind: 'local', name: `${entry.title || 'Canvas'}.ilucanvas`, path: null, writable: true, atomic: opfsAtomic(), key: entry.key, entry,
+    async getFile() { return (await (await opfsDir(...BOARDS)).getFileHandle(entry.name)).getFile(); },
+    async stat() { try { const f = await src.getFile(); return { mtime: f.lastModified, size: f.size }; } catch { return null; } },
+    async write(plan, base) {
+      const chunks = plan.chunks.map((c) => (c.range ? base.slice(c.range[0], c.range[0] + c.range[1]) : c));
+      let f;
+      if (plan.mode === 'full' && !src.atomic && (await src.stat())?.size) {
+        // in place, a rewrite from 0 would overwrite what it copies: a new file, then the old one goes
+        const next = `${entry.key}~${entry.gen + 1}.ilucanvas`;
+        f = await opfsWrite(BOARDS, next, 0, chunks, { keep: false });
+        const old = entry.name;
+        entry.gen += 1;
+        entry.name = next;
+        await opfsRemove(BOARDS, old);
+      } else f = await opfsWrite(BOARDS, entry.name, plan.at, chunks, { keep: plan.mode !== 'full' });
+      return { mtime: f.lastModified, size: f.size };
+    },
+  };
+  return src;
+}
+
+/** A new, empty board in this browser (the store's first save writes it). */
+export function newLocalEntry(title) {
+  const key = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 10);
+  return { key, gen: 0, name: `${key}~0.ilucanvas`, title };
+}
+
+/** Copy a .ilucanvas file into this browser: its entry (with the board's title). */
+export async function importLocal(file) {
+  const entry = newLocalEntry(file.name.replace(/\.ilucanvas$/i, ''));
+  const f = await opfsWrite(BOARDS, entry.name, 0, [file], { keep: false });
+  try { entry.title = (await readTitle(blobReader(f))) || entry.title; } catch { /* keep the file name */ }
+  return entry;
+}
+
+export async function removeLocal(entry) {
+  await opfsRemove(BOARDS, entry.name);
+}
+
+export async function localUsage() {
+  try { const e = await navigator.storage.estimate(); return { used: e.usage || 0, quota: e.quota || 0, persisted: await navigator.storage.persisted?.() }; } catch { return null; }
+}
+
 // ---- pickers ------------------------------------------------------------------------------
 
 const TYPES = [
@@ -79,6 +178,11 @@ export async function pickSaveFile(suggestedName = 'Canvas.ilucanvas') {
 
 export async function pickFolder() {
   return window.showDirectoryPicker({ id: 'ilucanvas-lib', mode: 'readwrite' });
+}
+
+/** The folder boards from links are downloaded into (Settings). */
+export async function pickLinksFolder() {
+  return window.showDirectoryPicker({ id: 'ilucanvas-links', mode: 'readwrite' });
 }
 
 /** Open files without the API (Firefox, Safari): read only. */
@@ -200,15 +304,19 @@ const DB = 'ilucanvas';
 let dbp = null;
 function db() {
   dbp ||= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
+    const req = indexedDB.open(DB, 2);
     req.onupgradeneeded = () => {
       const d = req.result;
-      d.createObjectStore('recent', { keyPath: 'key' });
-      d.createObjectStore('folders', { keyPath: 'key' });
-      d.createObjectStore('links', { keyPath: 'key' });
-      d.createObjectStore('views', { keyPath: 'id' });
+      // v1: recent, folders, links, views; v2: settings (handles that do not fit localStorage)
+      for (const [name, keyPath] of [['recent', 'key'], ['folders', 'key'], ['links', 'key'], ['views', 'id'], ['settings', 'key']]) {
+        if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath });
+      }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // let a newer version in another tab upgrade the database
+      req.result.onversionchange = () => { req.result.close(); dbp = null; };
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
   return dbp;

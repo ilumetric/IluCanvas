@@ -77,3 +77,29 @@ test('geometry helpers', () => {
   assert.deepEqual(midpoint(pts), { x: 100, y: 0 });
   assert.deepEqual(pathBounds([{ x: 5, y: 5 }, { x: 5, y: 9 }]), { x: 5, y: 5, w: 1, h: 4 });
 });
+
+test('dubins: arcs and a line from one heading to the other, ending exactly on the target', async () => {
+  const { dubins } = await import('../src/core/connectors.js');
+  for (let i = 0; i < 300; i++) {
+    const a = { x: Math.random() * 800 - 400, y: Math.random() * 800 - 400 };
+    const b = { x: Math.random() * 800 - 400, y: Math.random() * 800 - 400 };
+    const h0 = Math.random() * 7;
+    const h1 = Math.random() * 7;
+    const rho = 8 + Math.random() * 56;
+    const pts = dubins(a, h0, b, h1, rho);
+    assert.deepEqual(pts[0], a);
+    assert.deepEqual(pts[pts.length - 1], b);
+    // the walk itself arrives at b: the last step is one arc step, not a jump
+    const l = pts[pts.length - 1];
+    const m = pts[pts.length - 2];
+    assert.ok(Math.hypot(l.x - m.x, l.y - m.y) <= rho * 0.15 + 1e-6 || pts.length <= 3, `last step ${Math.hypot(l.x - m.x, l.y - m.y)} rho ${rho}`);
+  }
+  const p = connectorPath({ from: { id: 'a', side: 'right' }, to: { id: 'b', side: 'top' }, route: 'dubins' }, lookup);
+  assert.deepEqual(p.a, { x: 200, y: 50 });
+  assert.deepEqual(p.b, { x: 500, y: 200 });
+  assert.ok(p.pts.length > 5, 'arcs are sampled');
+  // leaves to the right, arrives moving down into the top side
+  assert.ok(p.pts[1].x > p.pts[0].x && Math.abs(p.pts[1].y - p.pts[0].y) < 2);
+  const n = p.pts.length;
+  assert.ok(p.pts[n - 1].y > p.pts[n - 2].y && Math.abs(p.pts[n - 1].x - p.pts[n - 2].x) < 2);
+});

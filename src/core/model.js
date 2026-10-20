@@ -18,6 +18,8 @@ export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stro
 export const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
 /** Fixed colours of shapes, connectors and ink (they do not follow the style). */
 export const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
+/** A custom colour (ink can have one besides the PAINT names). */
+export const isHexColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 /** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
 export const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
 export const NOTE_SIZES = ['s', 'm', 'l', 'xl'];
@@ -130,7 +132,8 @@ export function normalize(raw) {
     if (n.type === 'stroke') {
       if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
       if (n.nib !== 'italic' || n.tool !== 'pen') delete n.nib;
-      if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
+      if (isHexColor(n.color)) n.color = n.color.toLowerCase();
+      else if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
       n.width = pos(n.width, INK_DEFAULTS[n.tool].width);
       n.vw = pos(n.vw, n.w);
       n.vh = pos(n.vh, n.h);

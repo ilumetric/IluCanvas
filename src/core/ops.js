@@ -14,7 +14,7 @@
 import { ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } from './ink.js';
 import {
-  NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
+  NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
   removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
 } from './model.js';
 
@@ -71,8 +71,9 @@ export function cleanPatch(doc, input, item = null) {
       patch[k] = end;
     } else if (t === 'color') {
       need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
+      if (item?.type === 'stroke' && isHexColor(raw)) { patch[k] = raw.toLowerCase(); continue; }
       const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' || item?.type === 'stroke' ? PAINT : GROUP_COLORS;
-      need(list.includes(raw), `color must be one of ${list.join(', ')}`);
+      need(list.includes(raw), `color must be one of ${list.join(', ')}${item?.type === 'stroke' ? ', or #rrggbb' : ''}`);
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
@@ -193,7 +194,7 @@ export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke,
 }
 
 /** A new connector between two ends ({ id, side? } or { x, y }). */
-export function newConnector(doc, { from, to, route, start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
+export function newConnector(doc, { from, to, route = 'dubins', start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
   const c = { id: newId('connector'), type: 'connector', from, to, end, color, x: 0, y: 0, w: 1, h: 1 };
   if (route && route !== 'straight') c.route = route;
   if (start && start !== 'none') c.start = start;

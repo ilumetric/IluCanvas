@@ -119,7 +119,7 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 | `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200), `as` |
 | `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
 | `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
-| `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`straight elbow curve`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
+| `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`dubins` by default, `curve straight elbow`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `group`, `as` |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
@@ -136,7 +136,7 @@ Group colours: `violet blue orange green pink yellow red amber grey`. Note colou
 headings, lists, `- [ ]` checklists, quotes, bold / italic / strike / `<u>`,
 `==highlight==`, `[text]{.red}` colours, links ([FORMAT.md](FORMAT.md#note-text-markdown-subset)).
 Shape fills, outlines, connector and ink colours: `white grey black red orange yellow green blue violet pink`
-(shape `fill` also `none`).
+(shape `fill` also `none`; ink also any `#rrggbb`).
 Coordinates are board units (1 unit = 1 CSS pixel at 100% zoom), y down.
 Moving a group moves everything inside it (nested groups too).
 Connectors follow the items at their ends; deleting an item turns the ends on it

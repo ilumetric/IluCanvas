@@ -25,10 +25,10 @@ const __ilucanvas_src_core_connectors = (() => {
 // sides (`top right bottom left`; without `side`, the side facing the other
 // end) — or { x, y }, a free point. Attached ends follow their items.
 //
-//   route  straight | elbow | curve
+//   route  straight | elbow | curve | dubins
 //   start / end  none | arrow | dot      (heads)
 
-const ROUTES = ['straight', 'elbow', 'curve'];
+const ROUTES = ['straight', 'elbow', 'curve', 'dubins'];
 const HEADS = ['none', 'arrow', 'dot'];
 const SIDES = ['top', 'right', 'bottom', 'left'];
 const DIR = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
@@ -102,7 +102,115 @@ function connectorPath(c, lookup) {
     return { a, b, dirA, dirB, curve: [a, c1, c2, b], pts: flattenCubic(a, c1, c2, b, 24) };
   }
   if (route === 'elbow') return { a, b, dirA, dirB, pts: elbow(a, b, dirA, dirB, ba, bb) };
+  if (route === 'dubins') {
+    // leaves `a` along its side's normal, arrives at `b` moving into its side
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    const rho = Math.max(8, Math.min(64, d / 5));
+    return { a, b, dirA, dirB, pts: dubins(a, Math.atan2(dirA.y, dirA.x), b, Math.atan2(-dirB.y, -dirB.x), rho) };
+  }
   return { a, b, dirA, dirB, pts: [a, b] };
+}
+
+// ---- Dubins path -------------------------------------------------------------------------------
+// The shortest way between two points with headings for something that can
+// only turn with radius ≥ rho: two arcs and a line, or three arcs (L = turn
+// toward larger angles, R = smaller, S = straight). After A. Walker's dubins.c.
+
+const TAU = Math.PI * 2;
+const mod2pi = (x) => x - TAU * Math.floor(x / TAU);
+
+/** [t, p, q] segment lengths (in units of rho) of each kind of path, or null when it does not exist. */
+const DUBINS = {
+  LSL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = 2 + d * d - 2 * cab + 2 * d * (sa - sb);
+    if (p2 < 0) return null;
+    const t1 = Math.atan2(cb - ca, d + sa - sb);
+    return [mod2pi(t1 - alpha), Math.sqrt(p2), mod2pi(beta - t1)];
+  },
+  RSR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = 2 + d * d - 2 * cab + 2 * d * (sb - sa);
+    if (p2 < 0) return null;
+    const t1 = Math.atan2(ca - cb, d - sa + sb);
+    return [mod2pi(alpha - t1), Math.sqrt(p2), mod2pi(t1 - beta)];
+  },
+  LSR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = -2 + d * d + 2 * cab + 2 * d * (sa + sb);
+    if (p2 < 0) return null;
+    const p = Math.sqrt(p2);
+    const t0 = Math.atan2(-ca - cb, d + sa + sb) - Math.atan2(-2, p);
+    return [mod2pi(t0 - alpha), p, mod2pi(t0 - beta)];
+  },
+  RSL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const p2 = -2 + d * d + 2 * cab - 2 * d * (sa + sb);
+    if (p2 < 0) return null;
+    const p = Math.sqrt(p2);
+    const t0 = Math.atan2(ca + cb, d - sa - sb) - Math.atan2(2, p);
+    return [mod2pi(alpha - t0), p, mod2pi(beta - t0)];
+  },
+  RLR: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const c = (6 - d * d + 2 * cab + 2 * d * (sa - sb)) / 8;
+    if (Math.abs(c) > 1) return null;
+    const p = mod2pi(TAU - Math.acos(c));
+    const t = mod2pi(alpha - Math.atan2(ca - cb, d - sa + sb) + p / 2);
+    return [t, p, mod2pi(alpha - beta - t + p)];
+  },
+  LRL: ({ d, sa, sb, ca, cb, cab, alpha, beta }) => {
+    const c = (6 - d * d + 2 * cab + 2 * d * (sb - sa)) / 8;
+    if (Math.abs(c) > 1) return null;
+    const p = mod2pi(TAU - Math.acos(c));
+    const t = mod2pi(-alpha - Math.atan2(ca - cb, d + sa - sb) + p / 2);
+    return [t, p, mod2pi(beta - alpha - t + p)];
+  },
+};
+
+/** A Dubins path from a (heading h0) to b (heading h1) as a polyline; arcs every ~8°. */
+function dubins(a, h0, b, h1, rho) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const D = Math.hypot(dx, dy);
+  if (D < 1e-6 || !(rho > 0)) return [a, b];
+  const th = mod2pi(Math.atan2(dy, dx));
+  const alpha = mod2pi(h0 - th);
+  const beta = mod2pi(h1 - th);
+  const v = { d: D / rho, alpha, beta, sa: Math.sin(alpha), sb: Math.sin(beta), ca: Math.cos(alpha), cb: Math.cos(beta), cab: Math.cos(alpha - beta) };
+  let best = null;
+  for (const [kind, f] of Object.entries(DUBINS)) {
+    const seg = f(v);
+    if (!seg) continue;
+    const len = seg[0] + seg[1] + seg[2];
+    if (!best || len < best.len) best = { kind, seg, len };
+  }
+  if (!best) return [a, b];
+  // walk the three segments
+  const pts = [{ x: a.x, y: a.y }];
+  let x = a.x;
+  let y = a.y;
+  let h = h0;
+  for (let i = 0; i < 3; i++) {
+    const turn = best.kind[i];
+    const t = best.seg[i];
+    if (turn === 'S') {
+      x += Math.cos(h) * t * rho;
+      y += Math.sin(h) * t * rho;
+      pts.push({ x, y });
+      continue;
+    }
+    const sgn = turn === 'L' ? 1 : -1;
+    const steps = Math.max(1, Math.ceil(t / 0.14));
+    const x0 = x;
+    const y0 = y;
+    const h0s = h;
+    for (let k = 1; k <= steps; k++) {
+      const u = (t * k) / steps;
+      const hh = h0s + sgn * u;
+      x = x0 + sgn * rho * (Math.sin(hh) - Math.sin(h0s));
+      y = y0 - sgn * rho * (Math.cos(hh) - Math.cos(h0s));
+      pts.push({ x, y });
+    }
+    h = h0s + sgn * t;
+  }
+  pts[pts.length - 1] = { x: b.x, y: b.y }; // exact end (rounding)
+  return pts.filter((p, i) => i === 0 || Math.abs(p.x - pts[i - 1].x) > 1e-3 || Math.abs(p.y - pts[i - 1].y) > 1e-3);
 }
 
 const STUB = 24;
@@ -256,6 +364,7 @@ return {
   facingSide,
   nearestSide,
   connectorPath,
+  dubins,
   flattenCubic,
   distToPolyline,
   midpoint,
@@ -431,6 +540,8 @@ const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke'];
 const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
 /** Fixed colours of shapes, connectors and ink (they do not follow the style). */
 const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
+/** A custom colour (ink can have one besides the PAINT names). */
+const isHexColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 /** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
 const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
 const NOTE_SIZES = ['s', 'm', 'l', 'xl'];
@@ -543,7 +654,8 @@ function normalize(raw) {
     if (n.type === 'stroke') {
       if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
       if (n.nib !== 'italic' || n.tool !== 'pen') delete n.nib;
-      if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
+      if (isHexColor(n.color)) n.color = n.color.toLowerCase();
+      else if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
       n.width = pos(n.width, INK_DEFAULTS[n.tool].width);
       n.vw = pos(n.vw, n.w);
       n.vh = pos(n.vh, n.h);
@@ -1147,6 +1259,7 @@ return {
   ITEM_TYPES,
   SHAPE_KINDS,
   PAINT,
+  isHexColor,
   NOTE_COLORS,
   NOTE_SIZES,
   NOTE_RATIOS,
@@ -1207,7 +1320,7 @@ return {
 const __ilucanvas_src_core_ops = (() => {
 const { ROUTES, HEADS, SIDES } = __ilucanvas_src_core_connectors;
 const { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } = __ilucanvas_src_core_ink;
-const { NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems, removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent } = __ilucanvas_src_core_model;
+const { NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems, removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent } = __ilucanvas_src_core_model;
 // Batch operations on a canvas — the one vocabulary agents use, both in the
 // CLI (`ilucanvas apply`) and in the open app (`window.ilucanvas.apply`).
 //
@@ -1275,8 +1388,9 @@ function cleanPatch(doc, input, item = null) {
       patch[k] = end;
     } else if (t === 'color') {
       need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
+      if (item?.type === 'stroke' && isHexColor(raw)) { patch[k] = raw.toLowerCase(); continue; }
       const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' || item?.type === 'stroke' ? PAINT : GROUP_COLORS;
-      need(list.includes(raw), `color must be one of ${list.join(', ')}`);
+      need(list.includes(raw), `color must be one of ${list.join(', ')}${item?.type === 'stroke' ? ', or #rrggbb' : ''}`);
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
@@ -1397,7 +1511,7 @@ function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, size, 
 }
 
 /** A new connector between two ends ({ id, side? } or { x, y }). */
-function newConnector(doc, { from, to, route, start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
+function newConnector(doc, { from, to, route = 'dubins', start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
   const c = { id: newId('connector'), type: 'connector', from, to, end, color, x: 0, y: 0, w: 1, h: 1 };
   if (route && route !== 'straight') c.route = route;
   if (start && start !== 'none') c.start = start;
@@ -2170,6 +2284,7 @@ const { normalize, serialize, FORMAT } = __ilucanvas_src_core_model;
 //   preview.webp        a small cover picture of the board, for file lists
 //   images/<name>.<ext> the original image files, byte for byte, under their own names
 //   thumbs/<asset>.webp previews (≤ 512 px) so a board opens without decoding originals
+//                       (.jpg / .png where the browser cannot write WebP: Safari)
 //
 // Saving never rewrites what did not change. A save is a "plan": a file offset
 // and the chunks to write there (Uint8Array | Blob | { range: [offset, length] }
@@ -4047,7 +4162,7 @@ Write (re-read → change → write; the open app picks the change up within sec
   move <file> <id>… (--by DX,DY | --to X,Y)
   shape <file> <kind> ["text"] [--fill C] [--stroke C] [--at X,Y] [--w W] [--h H] [--group ID]
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
-  connect <file> <from> <to> [--label L] [--route straight|elbow|curve] [--start/--end none|arrow|dot]
+  connect <file> <from> <to> [--label L] [--route dubins|curve|straight|elbow] [--start/--end none|arrow|dot]
                                         from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
   stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic] [--group ID]
                                         freehand ink through the points (X,Y,PRESSURE also works)
@@ -4441,7 +4556,7 @@ async function main(argv) {
         break;
       }
       case 'connect': {
-        need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route straight|elbow|curve] [--start H] [--end H] [--color C] [--dash]');
+        need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route dubins|curve|straight|elbow] [--start H] [--end H] [--color C] [--dash]');
         const end = (v) => (/^-?[\d.]+\s*,\s*-?[\d.]+$/.test(v) ? (([x, y]) => ({ x, y }))(pair(v, 'point')) : v);
         ops = [{ op: 'connect', from: end(pos[0]), to: end(pos[1]), label: opt.label, route: opt.route, start: opt.start, end: opt.end, color: opt.color, dash: opt.dash ? true : undefined, width: opt.width ? Number(opt.width) : undefined }];
         break;

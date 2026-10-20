@@ -41,7 +41,7 @@ Write (re-read → change → write; the open app picks the change up within sec
   move <file> <id>… (--by DX,DY | --to X,Y)
   shape <file> <kind> ["text"] [--fill C] [--stroke C] [--at X,Y] [--w W] [--h H] [--group ID]
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
-  connect <file> <from> <to> [--label L] [--route straight|elbow|curve] [--start/--end none|arrow|dot]
+  connect <file> <from> <to> [--label L] [--route dubins|curve|straight|elbow] [--start/--end none|arrow|dot]
                                         from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
   stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic] [--group ID]
                                         freehand ink through the points (X,Y,PRESSURE also works)
@@ -435,7 +435,7 @@ async function main(argv) {
         break;
       }
       case 'connect': {
-        need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route straight|elbow|curve] [--start H] [--end H] [--color C] [--dash]');
+        need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route dubins|curve|straight|elbow] [--start H] [--end H] [--color C] [--dash]');
         const end = (v) => (/^-?[\d.]+\s*,\s*-?[\d.]+$/.test(v) ? (([x, y]) => ({ x, y }))(pair(v, 'point')) : v);
         ops = [{ op: 'connect', from: end(pos[0]), to: end(pos[1]), label: opt.label, route: opt.route, start: opt.start, end: opt.end, color: opt.color, dash: opt.dash ? true : undefined, width: opt.width ? Number(opt.width) : undefined }];
         break;

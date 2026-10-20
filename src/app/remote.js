@@ -1,11 +1,14 @@
 // Shared links: someone puts a .ilucanvas / .pur file on Google Drive (or
 // Dropbox, or any server that allows cross-origin downloads), shares a link,
 // and others open it here. The file is downloaded into the browser's private
-// storage (OPFS) and opened from there, read only. "Sync" checks whether the
-// file behind the link changed and downloads the new version.
+// storage (OPFS) or into a folder the user picked in Settings, and opened from
+// there, read only. "Sync" checks whether the file behind the link changed and
+// downloads the new version.
 //
 // Google Drive does not let web pages download files directly; its API does,
 // for files shared "Anyone with the link", with an API key (Settings).
+
+import { opfsDir as opfsFolder, opfsStream } from './opfs.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3/files/';
 
@@ -68,16 +71,35 @@ export async function remoteMeta(l, apiKey) {
   return version ? { name, size: Number(r.headers.get('content-length')) || 0, modified: r.headers.get('last-modified'), version } : null;
 }
 
-async function opfsDir() {
-  const root = await navigator.storage.getDirectory();
-  return root.getDirectoryHandle('links', { create: true });
+const opfsDir = () => opfsFolder('links');
+
+// where a downloaded copy lives ("place"): { opfsName } in the browser's storage,
+// or { dir, fileName } in a folder the user picked (dir: a directory handle)
+
+const safeName = (name) => String(name || 'canvas.ilucanvas').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 120) || 'canvas.ilucanvas';
+
+async function exists(dir, name) {
+  try { await dir.getFileHandle(name); return true; } catch { return false; }
+}
+
+/** A file name in dir that is not taken yet: "Refs.ilucanvas", "Refs (2).ilucanvas", … */
+async function freeName(dir, name) {
+  if (!(await exists(dir, name))) return name;
+  const m = name.match(/^(.*?)(\.[^.]*)?$/);
+  for (let i = 2; i < 1000; i++) {
+    const n = `${m[1]} (${i})${m[2] || ''}`;
+    if (!(await exists(dir, n))) return n;
+  }
+  return `${m[1]}-${Date.now()}${m[2] || ''}`;
 }
 
 /**
- * Download the file behind a link into OPFS. Returns { file: File, name, opfsName, meta }.
+ * Download the file behind a link. Returns { file: File, place, meta }.
+ * to: { dir, fileName? } writes into that folder (fileName: overwrite this file —
+ * the next version of the same link; a new name otherwise); without it, into OPFS.
  * onProgress(received, total).
  */
-export async function downloadLink(l, apiKey, { onProgress, signal, key } = {}) {
+export async function downloadLink(l, apiKey, { onProgress, signal, key, to = null } = {}) {
   let r;
   let meta = null;
   if (l.kind === 'gdrive') {
@@ -93,32 +115,57 @@ export async function downloadLink(l, apiKey, { onProgress, signal, key } = {}) 
     meta = { name: decodeURIComponent(new URL(r.url).pathname.split('/').pop() || 'canvas'), size: Number(r.headers.get('content-length')) || 0, version: r.headers.get('etag') || r.headers.get('last-modified') || null, modified: r.headers.get('last-modified') };
   }
   const total = Number(r.headers.get('content-length')) || meta?.size || 0;
-  try { await navigator.storage.persist?.(); } catch { /* best effort */ }
-  const dir = await opfsDir();
-  const opfsName = `${(key || linkKey(l)).replace(/[^\w.-]+/g, '_').slice(0, 80)}-${Date.now()}`;
-  const fh = await dir.getFileHandle(opfsName, { create: true });
-  const w = await fh.createWritable();
+  let dir;
+  let name;
+  let place;
+  if (to?.dir) {
+    dir = to.dir;
+    name = to.fileName || (await freeName(dir, safeName(meta?.name)));
+    place = { dir, fileName: name };
+  } else {
+    try { await navigator.storage.persist?.(); } catch { /* best effort */ }
+    dir = await opfsDir();
+    name = `${(key || linkKey(l)).replace(/[^\w.-]+/g, '_').slice(0, 80)}-${Date.now()}`;
+    place = { opfsName: name };
+  }
+  const isNew = !(await exists(dir, name));
   let got = 0;
   const counter = new TransformStream({
     transform(chunk, ctl) { got += chunk.byteLength; onProgress?.(got, total); ctl.enqueue(chunk); },
   });
+  const body = r.body.pipeThrough(counter);
+  let file;
   try {
-    await r.body.pipeThrough(counter).pipeTo(w, { signal });
+    if (to?.dir) {
+      // the writable goes to a swap file and replaces the file on close: an interrupted
+      // sync leaves the previous version in place
+      const fh = await dir.getFileHandle(name, { create: true });
+      await body.pipeTo(await fh.createWritable(), { signal });
+      file = await fh.getFile();
+    } else file = await opfsStream(['links'], name, body, { signal }); // works in Safari too
   } catch (e) {
-    await dir.removeEntry(opfsName).catch(() => {});
+    if (isNew) await dir.removeEntry(name).catch(() => {});
     throw e;
   }
-  return { file: await fh.getFile(), opfsName, meta: { ...meta, size: got } };
+  return { file, place, meta: { ...meta, size: got } };
 }
 
-export async function openCached(opfsName) {
-  const dir = await opfsDir();
-  return (await dir.getFileHandle(opfsName)).getFile();
+/** The downloaded copy at a place (throws NotFoundError when it is gone). */
+export async function openStored(place) {
+  if (place.dir) return (await place.dir.getFileHandle(place.fileName)).getFile();
+  return (await (await opfsDir()).getFileHandle(place.opfsName)).getFile();
 }
 
-export async function removeCached(opfsName) {
-  if (!opfsName) return;
-  try { await (await opfsDir()).removeEntry(opfsName); } catch { /* gone */ }
+/** Delete a copy in the browser's storage. Files in the user's folder stay: they are the user's. */
+export async function removeStored(place) {
+  if (!place?.opfsName) return;
+  try { await (await opfsDir()).removeEntry(place.opfsName); } catch { /* gone */ }
+}
+
+/** Is this place in that folder (so a sync overwrites the same file)? */
+export async function sameFolder(place, dir) {
+  if (!place?.dir || !dir) return false;
+  try { return await place.dir.isSameEntry(dir); } catch { return false; }
 }
 
 /** Browser storage used / available, for the settings dialog. */

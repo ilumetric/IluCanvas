@@ -11,11 +11,12 @@ import { APP_VERSION } from '../core/version.js';
 import {
   GROUP_COLORS, serialize, byId, itemBounds, unionBounds, withChildren, removeItems, groupItems, ungroup, fitGroup,
   arrangeItems, restack, patchItems, addItems, newId, dropLayout, fitSize, reparent, childrenOf, groupsOf, validate, contentBounds,
-  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, groupAround,
+  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, isHexColor, groupAround,
 } from '../core/model.js';
 import { applyOps, newStroke } from '../core/ops.js';
 import { INK_WIDTHS, INK_DEFAULTS, inkScale } from '../core/ink.js';
 import { listText } from '../core/describe.js';
+import { ROUTES } from '../core/connectors.js';
 import { isImageName } from '../core/imageinfo.js';
 import { deadBytes, readPreview } from '../core/canvasfile.js';
 import { blobReader } from '../core/zip.js';
@@ -28,13 +29,18 @@ import { Background, BACKGROUNDS, STYLE_BACKGROUND, tileUrl } from './background
 import { Store } from './store.js';
 import { NotesUI, KIND_ICON, ROUTE_ICON } from './notes.js';
 import { resetTextCache } from './text.js';
-import { INK_COLOR } from './ink.js';
+import { INK_COLOR, inkColor } from './ink.js';
+import { openColorPicker, closeColorPicker } from './colorpicker.js';
 import * as disk from './disk.js';
 import * as remote from './remote.js';
+import { opfsSupported } from './opfs.js';
+import { IOS } from './images.js';
 
 const $ = (id) => document.getElementById(id);
 const REPO_URL = 'https://github.com/ilumetric/IluCanvas';
 const STYLES = ['fun', 'calm', 'oli'];
+/** No File System Access (Safari, Firefox): boards live in the browser's storage and download as files. */
+const inBrowser = () => !disk.fsaSupported() && opfsSupported();
 
 // ---- preferences (this browser only, never canvas data) -------------------------------------
 
@@ -59,11 +65,13 @@ const S = {
   saveAgain: false,
   saveTimer: 0,
   saveError: null,
-  active: null, // { kind: 'file' | 'link' | 'new' | 'server', key, path }
+  active: null, // { kind: 'file' | 'link' | 'new' | 'server' | 'local', key, path }
+  local: [], // boards kept in this browser: { key, gen, name, handle, title, mtime, size, path }
   link: null, // the link record of the open canvas
   folders: [], // { key, handle, name, granted, files: [{ path, name, handle }] }
   recent: [],
   links: [],
+  linksDir: null, // the folder boards from links are downloaded into (Settings); null: the browser's storage
   covers: new Map(),
   sidebar: pref.get('sidebar', innerWidth > 860),
   showMap: pref.get('minimap', true),
@@ -233,7 +241,7 @@ function renderSidebar() {
     icon(ic), h('span.grow.ellipsis', {}, label), kbd ? h('kbd', {}, kbd) : null);
   const nav = h('nav.side-nav', {},
     item('filePlus', t('side.new'), newCanvas),
-    S.server ? null : item('folder', t('side.openFolder'), openFolder, { disabled: !disk.fsaSupported() }),
+    S.server || inBrowser() ? null : item('folder', t('side.openFolder'), openFolder, { disabled: !disk.fsaSupported() }),
     item('file', t('side.openFile'), openFile, { kbd: 'Ctrl O' }),
     item('link', t('side.openLink'), openLinkDialog));
 
@@ -279,6 +287,19 @@ function renderSidebar() {
     scroll.append(sec);
   }
 
+  // boards kept in this browser (Safari, Firefox)
+  if (inBrowser() || S.local.length) {
+    const sec = h('div.side-section', {}, h('div.side-label', {}, icon('save', 15), h('span', {}, t('side.local'))));
+    if (!S.local.length) sec.append(h('div.side-hint', {}, t('side.localEmpty')));
+    for (const e of S.local) {
+      sec.append(boardRow({
+        title: e.title, sub: `${(e.size / 1048576).toFixed(1)} MB · ${new Date(e.mtime).toLocaleDateString()}`, active: activeKey === e.path, entry: e,
+        onOpen: () => openLocal(e), onRemove: () => deleteLocal(e), removeTitle: t('local.delete'),
+      }));
+    }
+    scroll.append(sec);
+  }
+
   // recent files
   const inFolders = new Set(S.folders.flatMap((f) => f.files.map((x) => `${f.name}/${x.path}`)));
   const recent = S.recent.filter((r) => !inFolders.has(r.path)).slice(0, 8);
@@ -290,7 +311,7 @@ function renderSidebar() {
       onOpen: () => openHandle(r.handle, { key: r.key, path: r.path }), onRemove: async () => { await disk.idbDel('recent', r.key); await refreshRecent(); },
     }));
   }
-  if (recent.length || (!S.folders.length && !S.links.length)) scroll.append(rec);
+  if (recent.length || (!S.folders.length && !S.links.length && !inBrowser())) scroll.append(rec);
 
   const foot = h('div.side-foot', {},
     item('settings', t('side.settings'), openSettings),
@@ -339,9 +360,11 @@ function renderTopbar() {
     if (S.link) {
       right.append(h(`button.btn${S.link.update ? '.warn' : ''}`, { type: 'button', onclick: () => syncLink(S.link, true) }, icon('refresh', 16), t('link.sync')));
     } else if (S.store.writable) {
+      if (S.store.source?.kind === 'local') right.append(h('button.icon-btn', { type: 'button', title: t('local.download'), 'aria-label': t('local.download'), onclick: downloadCopy }, icon('download')));
       right.append(h('button.btn.primary', { type: 'button', disabled: !isDirty() && !S.saveError, onclick: () => save(), title: 'Ctrl+S' }, icon('save', 16), t('top.save')));
     } else {
-      right.append(h('button.btn.primary', { type: 'button', onclick: () => saveAs(), title: 'Ctrl+Shift+S' }, icon(disk.fsaSupported() ? 'save' : 'download', 16), S.store.kind === 'pur' ? t('top.savePur') : disk.fsaSupported() ? t('top.saveAs') : t('top.download')));
+      const keep = !disk.fsaSupported() && inBrowser();
+      right.append(h('button.btn.primary', { type: 'button', onclick: () => saveAs(), title: 'Ctrl+Shift+S' }, icon(disk.fsaSupported() || keep ? 'save' : 'download', 16), S.store.kind === 'pur' ? t('top.savePur') : disk.fsaSupported() ? t('top.saveAs') : keep ? t('top.keep') : t('top.download')));
     }
   }
   bar.replaceChildren(left, right);
@@ -376,6 +399,7 @@ function renderToolbar() {
 }
 
 function setTool(id) {
+  if (id !== S.board.tool) closeColorPicker();
   S.board.setTool(id);
   renderToolbar();
 }
@@ -390,14 +414,14 @@ function renderToolOptions() {
     const cur = pref.get('shapeKind', 'rect');
     items = SHAPE_KINDS.map((k) => opt(KIND_ICON[k], t(`shape.${k}`), cur === k, () => { pref.set('shapeKind', k); renderToolbar(); }));
   } else if (tool === 'connector') {
-    const cur = pref.get('route', 'elbow');
-    items = ['straight', 'elbow', 'curve'].map((r) => opt(ROUTE_ICON[r], t(`route.${r}`), cur === r, () => { pref.set('route', r); renderToolOptions(); }));
+    const cur = pref.get('connRoute', 'dubins');
+    items = ROUTES.map((r) => opt(ROUTE_ICON[r], t(`route.${r}`), cur === r, () => { pref.set('connRoute', r); renderToolOptions(); }));
   } else if (INK_WIDTHS[tool]) items = inkOptions(tool);
   if (!items || !doc()) { box.hidden = true; box.replaceChildren(); return; }
   box.hidden = false;
-  box.classList.toggle('row', !!INK_WIDTHS[tool]);
+  box.classList.toggle('ink', !!INK_WIDTHS[tool]);
   box.replaceChildren(...items);
-  // next to the tool's button
+  // next to the tool's button, inside the window
   const btn = [...$('toolbar').querySelectorAll('.tool')].find((b) => b.classList.contains('on'));
   if (btn) {
     const ui = currentUi();
@@ -405,7 +429,7 @@ function renderToolOptions() {
     const tr = $('toolbar').getBoundingClientRect();
     const bh = box.getBoundingClientRect().height;
     box.style.left = `${(tr.right + 8) / ui}px`;
-    box.style.top = `${Math.max(8, r.top + r.height / 2 - bh / 2) / ui}px`;
+    box.style.top = `${Math.max(8, Math.min(innerHeight - bh - 8, r.top + r.height / 2 - bh / 2)) / ui}px`;
   }
 }
 
@@ -415,7 +439,7 @@ function brush(tool) {
   const p = pref.get(`ink.${tool}`, {}) || {};
   return {
     tool,
-    color: PAINT.includes(p.color) ? p.color : def.color,
+    color: PAINT.includes(p.color) || isHexColor(p.color) ? p.color : def.color,
     width: INK_WIDTHS[tool]?.includes(p.width) ? p.width : def.width,
     nib: tool === 'pen' && p.nib === 'italic' ? 'italic' : undefined,
   };
@@ -437,15 +461,28 @@ function inkOptions(tool) {
       btn('tool.small', t('ink.italic'), b.nib === 'italic', () => setBrush(tool, { nib: 'italic' }), h('span.nib-italic')),
       h('span.opt-sep'));
   }
-  INK_WIDTHS[tool].forEach((w, i) => parts.push(btn('tool.small', `${t('ink.width')} ${w}`, b.width === w, () => setBrush(tool, { width: w }), h('span.ink-dot', { style: { width: `${4 + i * 2.5}px`, height: `${4 + i * 2.5}px` } }))));
+  // widths: lines of the preset's thickness, one per row
+  INK_WIDTHS[tool].forEach((w, i) => parts.push(btn('tool.small.wide', `${t('ink.width')} ${w}`, b.width === w, () => setBrush(tool, { width: w }), h('span.ink-line', { style: { height: `${1.5 + i * 1.5}px` } }))));
   parts.push(h('span.opt-sep'));
-  for (const c of PAINT) parts.push(btn('ink-swatch', t(`paint.${c}`), b.color === c, () => setBrush(tool, { color: c }), h('span', { style: { background: INK_COLOR[c] } })));
+  for (const c of PAINT) parts.push(btn('ink-swatch', t(`paint.${c}`), b.color === c, () => { closeColorPicker(); setBrush(tool, { color: c }); }, h('span', { style: { background: INK_COLOR[c] } })));
+  // a custom colour: a rainbow ring, filled with the colour once one is picked
+  const custom = isHexColor(b.color);
+  const well = btn('ink-swatch.custom', t('color.custom'), custom, (e) => openColorPicker(e.currentTarget, custom ? b.color : inkColor(b.color), (hex) => setBrush(tool, { color: hex }), { key: `ink-${tool}`, beside: $('toolopts') }),
+    h('span', { style: custom ? { background: b.color } : {} }));
+  well.dataset.cp = `ink-${tool}`;
+  parts.push(well);
   return parts;
 }
 
-/** A finished stroke from the board: added (one undo step); drawn over a group, it joins it. */
+/** The brush a stroke starts with: its width as drawn now (presets are sizes on screen at this zoom). */
+function strokeBrush(tool) {
+  const b = brush(tool);
+  return { ...b, width: b.width * inkScale(S.board.view.z) };
+}
+
+/** A finished stroke from the board (its brush from strokeBrush, so it ends as wide as it was drawn): added (one undo step); drawn over a group, it joins it. */
 function addStroke(b, samples) {
-  const width = b.width * inkScale(S.board.view.z);
+  const width = b.width;
   if (b.tool === 'tape') {
     // a tape needs some length to show its torn ends
     let len = 0;
@@ -504,11 +541,11 @@ function renderWelcome() {
     h('h1', {}, 'IluCanvas'),
     h('p.empty-sub', {}, t('welcome.sub')),
     h('div.tiles', {},
-      tile('filePlus', t('side.new'), t('welcome.new'), newCanvas),
-      tile('folder', t('side.openFolder'), t('welcome.folder'), openFolder),
+      tile('filePlus', t('side.new'), inBrowser() ? t('welcome.newLocal') : t('welcome.new'), newCanvas),
+      inBrowser() ? null : tile('folder', t('side.openFolder'), t('welcome.folder'), openFolder),
       tile('file', t('side.openFile'), t('welcome.file'), openFile),
       tile('link', t('side.openLink'), t('welcome.link'), openLinkDialog)),
-    disk.fsaSupported() ? null : h('p.note.warn', {}, icon('alert', 15), h('span', {}, t('welcome.noFsa'))),
+    disk.fsaSupported() ? null : h(`p.note${inBrowser() ? '' : '.warn'}`, {}, icon(inBrowser() ? 'save' : 'alert', 15), h('span', {}, inBrowser() ? t('welcome.local') : t('welcome.noFsa'))),
     h('a.agent-line', { href: 'llms.txt', target: '_blank', rel: 'noopener' }, icon('terminal', 14), h('span', {}, t('welcome.agents')), h('code', {}, 'llms.txt'))].filter(Boolean));
 }
 
@@ -596,10 +633,11 @@ async function openHandle(handle, { key, path } = {}) {
 
 async function openFile() {
   if (!disk.fsaSupported()) {
-    try {
-      const f = await disk.pickFileFallback();
-      await openSource(disk.memorySource(f.name, f), { active: { kind: 'file', key: `mem:${f.name}` }, readOnly: true });
-    } catch { /* cancelled */ }
+    let f;
+    // iOS greys out files whose type it does not know: no filter there
+    try { f = await disk.pickFileFallback(IOS ? '' : undefined); } catch { return; }
+    if (inBrowser() && !/\.pur$/i.test(f.name)) return importToBrowser(f);
+    await openSource(disk.memorySource(f.name, f), { active: { kind: 'file', key: `mem:${f.name}` }, readOnly: true });
     return;
   }
   let handles;
@@ -690,6 +728,14 @@ async function newCanvas() {
       await scanFolder(folder, true);
       return;
     }
+    if (inBrowser()) {
+      try { await navigator.storage.persist?.(); } catch { /* best effort */ }
+      const src = disk.localSource(disk.newLocalEntry(title));
+      await store.save({ target: src });
+      await setStore(store, { active: { kind: 'local', key: `local:${src.key}` } });
+      await refreshLocal();
+      return;
+    }
     if (disk.fsaSupported()) {
       let handle = null;
       try { handle = await disk.pickSaveFile(`${title}.ilucanvas`); } catch { /* cancelled: an unsaved canvas */ }
@@ -753,7 +799,7 @@ async function save() {
 async function saveAs() {
   const st = S.store;
   if (!st) return;
-  if (!disk.fsaSupported()) return downloadCopy();
+  if (!disk.fsaSupported()) return inBrowser() && st.source?.kind !== 'local' ? keepInBrowser() : downloadCopy();
   let handle;
   try { handle = await disk.pickSaveFile(`${safeName(st.doc.title)}.ilucanvas`); } catch { return; }
   const busy = toast(t('save.writing'), { timeout: 0 });
@@ -775,6 +821,65 @@ async function saveAs() {
   } finally { busy.close(); render(); }
 }
 
+// ---- boards kept in this browser (no File System Access: Safari, Firefox) ----------------------------
+
+async function refreshLocal() {
+  S.local = (await disk.localBoards().catch(() => [])).map((e) => ({ ...e, path: `local:${e.key}` }));
+  renderSidebar();
+  loadCovers(S.local);
+}
+
+function openLocal(e) {
+  return openSource(disk.localSource(e), { active: { kind: 'local', key: e.path || `local:${e.key}` } });
+}
+
+/** A .ilucanvas file picked without the API: copied into the browser and opened there, editable. */
+async function importToBrowser(file) {
+  if (!(await leaveCurrent())) return;
+  const busy = toast(t('local.importing', { name: file.name }), { timeout: 0 });
+  try {
+    try { await navigator.storage.persist?.(); } catch { /* best effort */ }
+    const e = await disk.importLocal(file);
+    await refreshLocal();
+    busy.close();
+    await openLocal(S.local.find((x) => x.key === e.key) || { ...e, path: `local:${e.key}` });
+    toast(t('local.imported'), { kind: 'ok', timeout: 7000 });
+  } catch (err) {
+    toast(t('open.failed', { msg: err.message }), { kind: 'error', timeout: 8000 });
+  } finally { busy.close(); }
+}
+
+/** What is open (PureRef, a link, a new board), kept in this browser and editable from now on. */
+async function keepInBrowser() {
+  const st = S.store;
+  if (!st) return;
+  const busy = toast(t('save.writing'), { timeout: 0 });
+  try {
+    try { await navigator.storage.persist?.(); } catch { /* best effort */ }
+    const src = disk.localSource(disk.newLocalEntry(st.doc.title));
+    await st.save({ target: src, preview: await makePreview() });
+    S.savedRev = S.rev;
+    S.saveError = null;
+    S.link = null;
+    S.active = { kind: 'local', key: `local:${src.key}` };
+    S.board.readOnly = false;
+    await refreshLocal();
+    toast(t('local.kept'), { kind: 'ok', timeout: 6000 });
+  } catch (e) {
+    toast(t('save.failed', { msg: e.message }), { kind: 'error', timeout: 8000 });
+  } finally { busy.close(); render(); }
+}
+
+async function deleteLocal(e) {
+  if (!(await confirmDialog({ title: t('local.delete'), text: t('local.deleteText', { name: e.title }), ok: t('local.delete'), danger: true }))) return;
+  if (S.active?.key === e.path) {
+    S.savedRev = S.rev; // it goes anyway: nothing to save
+    await closeCanvas();
+  }
+  await disk.removeLocal(e);
+  await refreshLocal();
+}
+
 async function downloadCopy() {
   const st = S.store;
   if (!st) return;
@@ -784,14 +889,27 @@ async function downloadCopy() {
 
 const safeName = (s) => String(s || 'Canvas').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'Canvas';
 
-/** A small cover of the board for file lists (preview.webp). */
+/**
+ * A canvas to draw on and its file: OffscreenCanvas, or a page canvas where there
+ * is none (older Safari). blob(type, quality) → Blob.
+ */
+function canvas2d(w, h) {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const c = new OffscreenCanvas(w, h);
+    return Object.assign(c, { blob: (type, quality) => c.convertToBlob({ type, quality }) });
+  }
+  const c = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  return Object.assign(c, { blob: (type, quality) => new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error('canvas'))), type, quality)) });
+}
+
+/** A small cover of the board for file lists (preview.webp; none where the browser cannot write WebP — Safari). */
 async function makePreview() {
   const d = doc();
   const b = d && contentBounds(d);
-  if (!b || typeof OffscreenCanvas === 'undefined') return null;
+  if (!b) return null;
   const W = 480;
   const H = 300;
-  const c = new OffscreenCanvas(W, H);
+  const c = canvas2d(W, H);
   const ctx = c.getContext('2d');
   const th = S.board.theme;
   ctx.fillStyle = th.canvas;
@@ -809,7 +927,10 @@ async function makePreview() {
     if (bmp) ctx.drawImage(bmp, bb.x, bb.y, bb.w, bb.h);
     else { ctx.fillStyle = d.assets[it.asset]?.color || '#555'; ctx.fillRect(bb.x, bb.y, bb.w, bb.h); }
   }
-  try { return await c.convertToBlob({ type: 'image/webp', quality: 0.7 }); } catch { return null; }
+  try {
+    const blob = await c.blob('image/webp', 0.7);
+    return blob.type === 'image/webp' ? blob : null; // the old cover stays
+  } catch { return null; }
 }
 
 // ---- outside changes (agents, other apps) ------------------------------------------------------------------
@@ -1182,10 +1303,10 @@ async function copySelection({ cut = false } = {}) {
 
 async function toPng(blob) {
   const bmp = await createImageBitmap(blob);
-  const c = new OffscreenCanvas(bmp.width, bmp.height);
+  const c = canvas2d(bmp.width, bmp.height);
   c.getContext('2d').drawImage(bmp, 0, 0);
   bmp.close();
-  return c.convertToBlob({ type: 'image/png' });
+  return c.blob('image/png');
 }
 
 async function pasteClip(at) {
@@ -1248,7 +1369,7 @@ function canvasMenu() {
     { label: t('menu.rename'), icon: 'pencil', disabled: readOnly(), onClick: async () => { const v = await promptDialog({ title: t('menu.rename'), value: doc().title }); if (v !== null && v.trim()) edit('title', (d) => { d.title = v.trim(); }); } },
     { label: t('menu.addImages'), icon: 'images', disabled: readOnly(), onClick: pickAndAdd },
     { sep: true },
-    { label: t('top.saveAs'), icon: 'save', hint: 'Ctrl+Shift+S', onClick: saveAs, disabled: !disk.fsaSupported() },
+    inBrowser() ? (st?.source?.kind === 'local' ? null : { label: t('top.keep'), icon: 'save', onClick: keepInBrowser }) : { label: t('top.saveAs'), icon: 'save', hint: 'Ctrl+Shift+S', onClick: saveAs, disabled: !disk.fsaSupported() },
     { label: t('menu.download'), icon: 'download', onClick: downloadCopy },
     { label: t('menu.exportAll'), icon: 'upload', onClick: () => exportImages(doc().items) },
     st?.writable && dead > 1024 * 1024 ? { label: t('menu.compact', { mb: (dead / 1048576).toFixed(1) }), icon: 'zip', onClick: compact } : null,
@@ -1410,19 +1531,35 @@ async function openLinkDialog() {
   setTimeout(() => input.focus());
 }
 
-async function downloadInto(l, record) {
+// A link's downloaded copy lives in the browser's storage (rec.opfsName) or in the
+// folder picked in Settings (rec.dir + rec.fileName; a sync overwrites that file).
+const linkPlace = (rec) => (rec.dir ? { dir: rec.dir, fileName: rec.fileName } : { opfsName: rec.opfsName });
+const placeFields = (p) => ({ opfsName: p.opfsName || null, dir: p.dir || null, fileName: p.fileName || null });
+
+/** The folder for downloads if one is set and may be written (asks the user: call it first thing after a click). */
+async function linksTarget() {
+  const dir = S.linksDir;
+  if (!dir) return null;
+  if (await disk.ensurePermission(dir, 'readwrite')) return dir;
+  toast(t('linksDir.fallback', { name: dir.name }), { kind: 'warn', timeout: 9000 });
+  return null;
+}
+
+async function downloadInto(l, record, dir) {
+  const to = dir ? { dir, fileName: (await remote.sameFolder(record, dir)) ? record.fileName : null } : null;
   const prog = toast(t('link.downloading', { p: 0 }), { timeout: 0 });
   try {
-    const r = await remote.downloadLink(l, apiKey(), { key: record?.key, onProgress: (got, total) => prog.set(total ? t('link.downloading', { p: Math.round((got / total) * 100) }) : t('link.downloadingMb', { mb: (got / 1048576).toFixed(1) })) });
+    const r = await remote.downloadLink(l, apiKey(), { key: record?.key, to, onProgress: (got, total) => prog.set(total ? t('link.downloading', { p: Math.round((got / total) * 100) }) : t('link.downloadingMb', { mb: (got / 1048576).toFixed(1) })) });
     return r;
   } finally { prog.close(); }
 }
 
 async function addLink(l, url) {
+  const dir = await linksTarget();
   let r;
-  try { r = await downloadInto(l); } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 10000 }); return; }
+  try { r = await downloadInto(l, null, dir); } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 10000 }); return; }
   const name = r.meta?.name || 'canvas.ilucanvas';
-  const rec = { key: remote.linkKey(l), url, ...l, name, title: name.replace(/\.(ilucanvas|pur)$/i, ''), opfsName: r.opfsName, version: r.meta?.version || null, modified: r.meta?.modified || null, size: r.meta?.size || 0, at: Date.now(), checkedAt: Date.now(), update: false };
+  const rec = { key: remote.linkKey(l), url, ...l, name, title: name.replace(/\.(ilucanvas|pur)$/i, ''), ...placeFields(r.place), version: r.meta?.version || null, modified: r.meta?.modified || null, size: r.meta?.size || 0, at: Date.now(), checkedAt: Date.now(), update: false };
   await disk.idbPut('links', rec);
   S.links = [rec, ...S.links.filter((x) => x.key !== rec.key)];
   await openLink(rec);
@@ -1430,19 +1567,24 @@ async function addLink(l, url) {
 
 function linkSource(rec) {
   return {
-    kind: 'cache', name: rec.name, path: rec.url, writable: false,
-    getFile: () => remote.openCached(rec.opfsName),
+    kind: 'cache', name: rec.name, path: rec.dir ? `${rec.dir.name}/${rec.fileName}` : rec.url, writable: false,
+    getFile: () => remote.openStored(linkPlace(rec)),
     stat: async () => null,
     write: async () => { throw new Error('read only'); },
   };
 }
 
 async function openLink(rec, { view = null } = {}) {
-  try { await remote.openCached(rec.opfsName); } catch {
-    // the downloaded copy is gone (browser storage cleared): download again
+  if (rec.dir && !(await disk.ensurePermission(rec.dir, 'readwrite'))) {
+    // a folder needs the user's OK once per session, and that needs a click
+    toast(t('linksDir.noAccess', { name: rec.dir.name }), { kind: 'warn', timeout: 12000, action: { label: t('linksDir.allow'), onClick: () => openLink(rec, { view }) } });
+    return;
+  }
+  try { await remote.openStored(linkPlace(rec)); } catch {
+    // the downloaded copy is gone (browser storage cleared, file deleted): download again
     try {
-      const r = await downloadInto(rec, rec);
-      Object.assign(rec, { opfsName: r.opfsName, version: r.meta?.version || rec.version, update: false });
+      const r = await downloadInto(rec, rec, await linksTarget());
+      Object.assign(rec, { ...placeFields(r.place), version: r.meta?.version || rec.version, update: false });
       await disk.idbPut('links', rec);
     } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 10000 }); return; }
   }
@@ -1456,8 +1598,9 @@ async function openLink(rec, { view = null } = {}) {
 }
 
 async function forgetLink(rec) {
-  if (!(await confirmDialog({ title: t('link.forget'), text: t('link.forgetText', { name: rec.title }), ok: t('link.forget'), danger: true }))) return;
-  await remote.removeCached(rec.opfsName);
+  const text = rec.dir ? t('link.forgetTextFolder', { name: rec.title, file: `${rec.dir.name}/${rec.fileName}` }) : t('link.forgetText', { name: rec.title });
+  if (!(await confirmDialog({ title: t('link.forget'), text, ok: t('link.forget'), danger: true }))) return;
+  await remote.removeStored(linkPlace(rec));
   await disk.idbDel('links', rec.key);
   S.links = S.links.filter((x) => x !== rec);
   if (S.active?.key === rec.key) { S.store = null; S.link = null; S.board.setDoc(null); render(); }
@@ -1480,6 +1623,7 @@ async function checkLinks() {
 }
 
 async function syncLink(rec, manual = false) {
+  const dir = await linksTarget();
   let meta = null;
   try { meta = await remote.remoteMeta(rec, apiKey()); } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 9000 }); return; }
   if (meta?.version && meta.version === rec.version && manual) {
@@ -1490,12 +1634,12 @@ async function syncLink(rec, manual = false) {
     return;
   }
   let r;
-  try { r = await downloadInto(rec, rec); } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 10000 }); return; }
-  const old = rec.opfsName;
-  Object.assign(rec, { opfsName: r.opfsName, version: r.meta?.version || meta?.version || null, modified: r.meta?.modified || null, size: r.meta?.size || 0, update: false, at: Date.now() });
+  try { r = await downloadInto(rec, rec, dir); } catch (e) { toast(linkErrorText(e), { kind: 'error', timeout: 10000 }); return; }
+  const old = linkPlace(rec);
+  Object.assign(rec, { ...placeFields(r.place), version: r.meta?.version || meta?.version || null, modified: r.meta?.modified || null, size: r.meta?.size || 0, update: false, at: Date.now() });
   await disk.idbPut('links', rec);
   if (S.active?.key === rec.key) await openLink(rec, { view: { ...S.board.view } });
-  await remote.removeCached(old);
+  if (old.opfsName !== rec.opfsName) await remote.removeStored(old); // a copy in a folder is never deleted
   toast(t('link.synced'), { kind: 'ok' });
 }
 
@@ -1555,12 +1699,31 @@ function openSettings() {
 
   const autosave = h('label.check', {}, h('input', { type: 'checkbox', checked: pref.get('autosave', true), onchange: (e) => { pref.set('autosave', e.target.checked); if (e.target.checked) scheduleSave(); } }), t('settings.autosaveText'));
 
+  const linksDir = h('div.links-dir');
+  const paintLinksDir = () => {
+    const pick = async () => {
+      let dir;
+      try { dir = await disk.pickLinksFolder(); } catch { return; } // cancelled
+      S.linksDir = dir;
+      await disk.idbPut('settings', { key: 'linksDir', handle: dir });
+      paintLinksDir();
+    };
+    const reset = async () => { S.linksDir = null; await disk.idbDel('settings', 'linksDir'); paintLinksDir(); };
+    linksDir.replaceChildren(...[
+      h('span.links-dir-name', { title: S.linksDir?.name || '' }, icon(S.linksDir ? 'folder' : 'download', 16), h('span', {}, S.linksDir ? S.linksDir.name : t('linksDir.browser'))),
+      disk.fsaSupported() ? h('button.btn.small', { type: 'button', onclick: pick }, S.linksDir ? t('linksDir.change') : t('linksDir.pick')) : null,
+      S.linksDir ? h('button.btn.small.ghost', { type: 'button', onclick: reset }, t('linksDir.reset')) : null,
+    ].filter(Boolean));
+  };
+  paintLinksDir();
+
   const body = h('div.form', {},
     field(t('settings.style'), picks),
     field(t('settings.background'), bgs, t('settings.bgNote')),
     field(t('settings.ui'), seg(UI_SCALES.map((v) => [v, `${Math.round(v * 100)}%`]), currentUi(), (v) => { pref.set('ui', v); applyUi(); })),
     field(t('settings.wheel'), seg([['zoom', t('settings.wheelZoom')], ['pan', t('settings.wheelPan')]], pref.get('wheel', 'zoom'), (v) => { pref.set('wheel', v); S.board.wheelMode = v; }), t('settings.wheelNote')),
     field(t('settings.autosave'), autosave),
+    field(t('settings.linksDir'), linksDir, disk.fsaSupported() ? t('settings.linksDirNote') : t('settings.linksDirNoApi')),
     field(t('settings.language'), seg([['ru', 'Русский'], ['en', 'English']], getLang(), (v) => { pref.set('lang', v); setLang(v); dlg.close(); render(); openSettings(); })),
     h('div.about', {},
       h('span', {}, `IluCanvas ${APP_VERSION}`),
@@ -1744,7 +1907,7 @@ async function demo(n) {
   for (let i = 0; i < n; i++) {
     const ar = [1.5, 0.75, 1, 1.78, 0.66, 1.33][i % 6];
     const W = big ? 1200 : 360;
-    const c = new OffscreenCanvas(Math.round(W * Math.min(1, ar)), Math.round((W / ar) * Math.min(1, ar)));
+    const c = canvas2d(Math.round(W * Math.min(1, ar)), Math.round((W / ar) * Math.min(1, ar)));
     const ctx = c.getContext('2d');
     const hh = (i * 47) % 360;
     const g = ctx.createLinearGradient(0, 0, c.width, c.height);
@@ -1761,7 +1924,7 @@ async function demo(n) {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = `700 ${Math.round(c.width / 8)}px sans-serif`;
     ctx.fillText(`#${i + 1}`, c.width * 0.06, c.height * 0.94);
-    files.push(new File([await c.convertToBlob({ type: 'image/jpeg', quality: 0.85 })], `demo-${String(i + 1).padStart(4, '0')}.jpg`, { type: 'image/jpeg' }));
+    files.push(new File([await c.blob('image/jpeg', 0.85)], `demo-${String(i + 1).padStart(4, '0')}.jpg`, { type: 'image/jpeg' }));
   }
   const per = Math.ceil(n / 3);
   let x = 0;
@@ -1803,7 +1966,7 @@ async function start() {
       selection: () => S.notes?.render(),
       create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : S.notes.create(where, o)),
       connect: (from, to) => S.notes.connect(from, to),
-      brush,
+      brush: strokeBrush,
       stroke: addStroke,
       toggleTask: (id, block) => S.notes.toggleTask(id, block),
       pointerDown: () => { if (S.notes.editing) S.notes.close(); },
@@ -1845,8 +2008,10 @@ async function start() {
   // remembered folders, files, links
   S.recent = (await disk.idbAll('recent')).sort((a, b) => b.at - a.at);
   S.links = (await disk.idbAll('links')).sort((a, b) => b.at - a.at);
+  S.linksDir = disk.fsaSupported() ? (await disk.idbGet('settings', 'linksDir'))?.handle || null : null;
   S.folders = (await disk.idbAll('folders')).sort((a, b) => b.at - a.at).map((f) => ({ ...f, granted: false, files: [] }));
   for (const f of S.folders) { f.granted = await disk.hasPermission(f.handle); if (f.granted) await scanFolder(f, true); }
+  if (opfsSupported()) await refreshLocal();
   S.server = await disk.detectServer();
   if (S.server) { try { S.serverFiles = await disk.serverList(); } catch { S.serverFiles = []; } }
   render();
@@ -1869,7 +2034,12 @@ async function start() {
   setInterval(() => { for (const f of S.folders) scanFolder(f); }, 15000);
   setInterval(checkLinks, 5 * 60 * 1000);
   setTimeout(checkLinks, 4000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(); for (const f of S.folders) scanFolder(f); } });
+  document.addEventListener('visibilitychange', () => {
+    // hidden: save now — iPad / iPhone may close a tab in the background
+    if (document.hidden) { if (S.store?.writable && isDirty() && pref.get('autosave', true)) save(); return; }
+    poll();
+    for (const f of S.folders) scanFolder(f);
+  });
   addEventListener('resize', () => { const n = isNarrow(); if (n !== S.wasNarrow) { S.wasNarrow = n; S.sidebar = n ? false : pref.get('sidebar', true); render(); } });
   S.wasNarrow = isNarrow();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

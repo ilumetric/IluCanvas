@@ -5,7 +5,7 @@
 import { itemBounds, unionBounds, byId } from '../core/model.js';
 import { connectorPath } from '../core/connectors.js';
 import { INK_ALPHA, strokeScale } from '../core/ink.js';
-import { INK_COLOR } from './ink.js';
+import { inkColor } from './ink.js';
 import { NOTE_BG } from './text.js';
 import { FILL } from './shapes.js';
 
@@ -97,7 +97,7 @@ export class Minimap {
         if (pts.length < 2) continue;
         ctx.beginPath();
         pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-        ctx.strokeStyle = it.type === 'stroke' ? INK_COLOR[it.color] || th.faint : th.faint;
+        ctx.strokeStyle = it.type === 'stroke' ? inkColor(it.color) : th.faint;
         ctx.globalAlpha = it.type === 'stroke' ? INK_ALPHA[it.tool] ?? 1 : 0.8;
         ctx.lineWidth = Math.max(minW, it.type === 'stroke' ? it.width * strokeScale(it) : 0);
         ctx.lineCap = 'round';

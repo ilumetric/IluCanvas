@@ -6,9 +6,10 @@ A `.ilucanvas` file is a **ZIP archive**. Rename a copy to `.zip` (or open it wi
 ```
 mimetype              application/x-ilucanvas+zip   (first entry, stored)
 canvas.json           the scene (below)
-preview.webp          a small cover of the board, for file lists (optional)
+preview.webp          a small cover of the board, for file lists (optional; Safari keeps the old one)
 images/<name>.<ext>   the original image files, byte for byte, under their own names
-thumbs/<asset>.webp   previews, longest side ≤ 512 px (optional; the app regenerates missing ones)
+thumbs/<asset>.webp   previews, longest side ≤ 512 px (optional; the app regenerates missing ones;
+                      .jpg / .png when written by a browser that cannot encode WebP — Safari)
 ```
 
 * Images are **stored** (no compression: they are compressed already), so the
@@ -81,7 +82,7 @@ other ids; anything unique is fine.)
 | `type` | `image/jpeg`, `image/png`, `image/webp`, `image/gif`, `image/bmp`, `image/avif` |
 | `w`, `h` | pixel size as displayed (EXIF rotation applied) |
 | `bytes`, `sha256` | size and hash of the file |
-| `thumb` | path of the preview, `thumbs/<id>.webp` (optional) |
+| `thumb` | path of the preview, `thumbs/<id>.webp` (`.jpg` / `.png` from Safari) (optional) |
 | `color` | average colour `#rrggbb` (optional) — shown while loading and when tiny |
 | `name` | the original file name |
 | `source` | where it came from (URL), optional |
@@ -160,7 +161,7 @@ become free points where they were.
 | field | |
 |---|---|
 | `from`, `to` | the ends |
-| `route` | `straight` (default), `elbow` (right angles), `curve` |
+| `route` | `straight` (when left out), `elbow` (right angles, around the end items), `curve`, `dubins` (arcs and straight lines with a minimum turning radius — a Dubins path; what the tools make by default) |
 | `start`, `end` | heads `none arrow dot`; default no start head, `arrow` at the end |
 | `color` | `white grey black red orange yellow green blue violet pink` |
 | `width` | line width in board units; default 2 |
@@ -180,7 +181,7 @@ ends move — read them, do not edit them. Connectors never have a `parent`.
 |---|---|
 | `tool` | `pen` (pressure changes thickness), `highlighter` (40 % opaque, flat ends), `tape` (55 % opaque ribbon with torn ends) |
 | `nib` | `italic` — a pen with a broad, slanted nib (stylus barrel rotation turns it); round when left out |
-| `color` | `white grey black red orange yellow green blue violet pink` |
+| `color` | `white grey black red orange yellow green blue violet pink`, or a custom `#rrggbb` |
 | `width` | line width in the stroke's own units |
 | `pts` | the samples, flat: `x, y, pressure, x, y, pressure, …` — pressure 0…1 (0.5 for a mouse) |
 | `tw` | optional, one number per sample: the stylus barrel rotation in degrees |

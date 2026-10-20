@@ -1,7 +1,7 @@
 // Decoded images for the renderer, by level of detail, within a memory budget.
 //
 // Levels (longest side, px): 0 → 128, 1 → 512, 2 → 2048, 3 → 8192 (originals
-// up to 8K). Levels 0–1 come from the stored ≤ 512 px preview, so a board full
+// up to 8K; 4K on iOS). Levels 0–1 come from the stored ≤ 512 px preview, so a board full
 // of 40-megapixel photos opens by decoding a few KB per image; originals are
 // decoded only for images that are big on screen. Bitmaps not drawn for a
 // while are closed, oldest first, when the budget is exceeded.
@@ -9,8 +9,14 @@
 // The renderer, every frame: get(asset, level) → the best bitmap available now
 // (or null), want(asset, level, priority) → schedule what it would like; then
 // flush() starts the most urgent decodes.
+//
+// iPad / iPhone (Safari): a tab gets far less memory, so the budget is small and
+// originals stop at 4096 px.
 
-export const LEVELS = [128, 512, 2048, 8192];
+/** iOS and iPadOS (which says it is a Mac, but has a touch screen). */
+export const IOS = typeof navigator !== 'undefined' && (/iP(ad|hone|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+export const LEVELS = [128, 512, 2048, IOS ? 4096 : 8192];
 
 /** The level for an image `px` device pixels across on screen whose natural longest side is `natural`. */
 export function levelFor(px, natural) {
@@ -59,6 +65,23 @@ export function work(op, blob) {
   });
 }
 
+/**
+ * A smaller copy of a bitmap. createImageBitmap's resize options where they work;
+ * where they are ignored (the result is still big) a canvas does it.
+ */
+async function scaled(bitmap, w, h, quality) {
+  try {
+    const b = await createImageBitmap(bitmap, { resizeWidth: w, resizeHeight: h, resizeQuality: quality });
+    if (b.width <= w * 1.25 && b.height <= h * 1.25) return b;
+    b.close();
+  } catch { /* no resize options */ }
+  const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = quality;
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  return createImageBitmap(c);
+}
+
 // ---- the cache -------------------------------------------------------------------------------
 
 export class ImageCache {
@@ -70,8 +93,9 @@ export class ImageCache {
     this.resolve = resolve;
     this.natural = natural;
     this.onLoad = onLoad;
-    const mem = (navigator.deviceMemory || 8) * 1024 ** 3;
-    this.budget = budget || Math.min(2.5 * 1024 ** 3, mem * 0.3);
+    // Safari and Firefox do not tell the memory: assume little
+    const mem = navigator.deviceMemory ? navigator.deviceMemory * 1024 ** 3 : 0;
+    this.budget = budget || (IOS ? 400 * 1024 ** 2 : mem ? Math.min(2.5 * 1024 ** 3, mem * 0.3) : 1024 ** 3);
     this.map = new Map(); // `${asset}:${level}` → { bitmap, bytes, used }
     this.failed = new Map(); // asset → level that failed (originals of broken files)
     this.wants = new Map(); // key → { asset, level, prio }
@@ -153,8 +177,8 @@ export class ImageCache {
       const side = Math.max(bitmap.width, bitmap.height);
       if (side > target * 1.05 && !(fromThumb && level === 1)) {
         const k = target / side;
-        const small = await createImageBitmap(bitmap, { resizeWidth: Math.max(1, Math.round(bitmap.width * k)), resizeHeight: Math.max(1, Math.round(bitmap.height * k)), resizeQuality: level <= 1 ? 'high' : 'medium' });
-        bitmap.close();
+        const small = await scaled(bitmap, Math.max(1, Math.round(bitmap.width * k)), Math.max(1, Math.round(bitmap.height * k)), level <= 1 ? 'high' : 'medium');
+        if (small !== bitmap) bitmap.close();
         bitmap = small;
       }
       if (gen !== this.generation) { bitmap.close(); return; }

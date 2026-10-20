@@ -5,6 +5,7 @@
 //   preview.webp        a small cover picture of the board, for file lists
 //   images/<name>.<ext> the original image files, byte for byte, under their own names
 //   thumbs/<asset>.webp previews (≤ 512 px) so a board opens without decoding originals
+//                       (.jpg / .png where the browser cannot write WebP: Safari)
 //
 // Saving never rewrites what did not change. A save is a "plan": a file offset
 // and the chunks to write there (Uint8Array | Blob | { range: [offset, length] }
