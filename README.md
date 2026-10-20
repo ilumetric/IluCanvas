@@ -62,6 +62,9 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 
 ## For agents
 
+Give your agent one link — https://ilumetric.github.io/IluCanvas/docs/AGENT.md
+(the app copies it: *For agents* in the sidebar). That page is the whole guide.
+
 ```bash
 curl -O https://ilumetric.github.io/IluCanvas/ilucanvas.mjs
 node ilucanvas.mjs new refs.ilucanvas --title "Character"

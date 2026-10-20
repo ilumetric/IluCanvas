@@ -448,6 +448,9 @@ body:not(.side-open) #sidebar { display: none; }
 .side-item:hover:not(:disabled), .side-row:hover { background: var(--row-hover); }
 .side-item:hover:not(:disabled) .ico { color: var(--text); transform: rotate(calc(-8deg * var(--wiggle))) scale(1.08); }
 .side-item:disabled { opacity: 0.4; }
+/* a trailing icon (copy): shown on hover, like a key hint */
+.side-item .ico:last-child:not(:first-child) { opacity: 0; transition: opacity 0.12s; }
+.side-item:hover .ico:last-child:not(:first-child) { opacity: 1; }
 .side-item kbd { opacity: 0; transition: opacity 0.12s; }
 .side-item:hover kbd { opacity: 1; }
 .side-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
@@ -657,6 +660,8 @@ body:not(.side-open) #sidebar { display: none; }
   border: 1.5px dashed var(--border); max-width: 100%; text-decoration: none;
 }
 .agent-line:hover { background: var(--row-hover); border-color: var(--text-faint); }
+button.agent-line { background: none; font: inherit; font-size: 12px; cursor: pointer; }
+.agent-line .ico:last-child { opacity: 0.6; }
 .agent-line code { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- dialogs ---------- */

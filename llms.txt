@@ -2,6 +2,8 @@
 
 > IluCanvas is an infinite reference board (like PureRef / FigJam) that runs as a static web page and keeps each board in one local file, `name.ilucanvas` — a ZIP with `canvas.json` (the scene: images, groups, notes, shapes, connectors, ink strokes and YouTube video cards with positions) and the original images under `images/`. No server, no accounts. An AI agent can create and edit boards without a browser through a single-file, dependency-free Node CLI, or drive the open page through `window.ilucanvas`. The app picks up file changes made by the CLI within seconds.
 
+**Start here: [AGENT.md](https://ilumetric.github.io/IluCanvas/docs/AGENT.md) — the whole guide in one file** (CLI, batch ops, every item type and field, `window.ilucanvas`, the app's controls, rules, recipes). This page is a short summary of it.
+
 ## Quick start
 
 Needs Node 20+ and nothing else:
@@ -15,7 +17,7 @@ node ilucanvas.mjs ls refs.ilucanvas
 
 ## Docs
 
-- [Agent guide](https://ilumetric.github.io/IluCanvas/docs/AGENT.md): CLI commands, batch ops (`apply`), `window.ilucanvas`, rules
+- [Agent guide](https://ilumetric.github.io/IluCanvas/docs/AGENT.md): everything in one file — read this
 - [Format reference](https://ilumetric.github.io/IluCanvas/docs/FORMAT.md): the ZIP layout and every field of canvas.json
 - [JSON Schema](https://ilumetric.github.io/IluCanvas/schema/canvas.schema.json)
 - [Sharing](https://ilumetric.github.io/IluCanvas/docs/SHARING.md): Google Drive links, the API key
@@ -30,7 +32,7 @@ node ilucanvas.mjs ls refs.ilucanvas
 - Many changes: one `apply` with a JSON array of ops (`add`, `note`, `shape`, `connect`, `stroke`, `video`, `newgroup`, `group`, `set`, `move`, `arrange`, `fit`, `rm`, `ungroup`, `front`, `back`); `"as": "$name"` names created ids.
 - Notes (stickies, documents, plain text) hold Markdown: `node ilucanvas.mjs note refs.ilucanvas '# Title\n- [ ] todo' --color paper`.
 - Diagrams: `node ilucanvas.mjs shape refs.ilucanvas diamond 'Approved?' --fill yellow`, then `node ilucanvas.mjs connect refs.ilucanvas <from-id> <to-id> --label yes --route elbow`. Connectors follow the items they join.
-- Ink: `node ilucanvas.mjs stroke refs.ilucanvas "0,0 60,40 120,10" --color red` (pen; `--tool highlighter|tape`).
+- Ink: `node ilucanvas.mjs stroke refs.ilucanvas "0,0 60,40 120,10" --color red` (pen; `--tool highlighter|tape`, `--dash`, `--arrow`).
 - Video: `node ilucanvas.mjs video refs.ilucanvas "https://youtu.be/<id>?t=43"` — a card with its poster; `set` takes `rate`, `loop` {a,b}, `marks` [{t,label}].
 - The CLI records `"updated_by": "agent"`. Do not delete the human's references unless asked.
 - `.pur` files are read only: `node ilucanvas.mjs from-pur board.pur` makes an editable copy.

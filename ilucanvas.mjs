@@ -1755,13 +1755,17 @@ function newVideo(doc, { url, title, start, rate, loop, marks, x, y, w, h, group
   return it;
 }
 
-function newStroke(doc, { tool = 'pen', nib, color, width, samples, group = null, by = 'human' } = {}) {
+function newStroke(doc, { tool = 'pen', nib, color, width, dash, end, samples, group = null, by = 'human' } = {}) {
   const def = INK_DEFAULTS[tool] || INK_DEFAULTS.pen;
   const w = Number(width) || def.width;
-  const f = strokeFrame({ tool, width: w }, samples);
+  need(!end || end === 'arrow' || end === 'none', 'a stroke\'s end is "arrow" or "none"');
+  const arrow = end === 'arrow' && tool !== 'tape';
+  const f = strokeFrame({ tool, width: w, end: arrow ? 'arrow' : undefined }, samples);
   need(f, 'a stroke needs at least one point');
   const k = { id: newId('stroke'), type: 'stroke', tool, color: color || def.color, width: w, ...f };
   if (tool === 'pen' && nib === 'italic') k.nib = 'italic';
+  if (dash && tool !== 'tape') k.dash = true;
+  if (arrow) k.end = 'arrow';
   if (group) k.parent = group;
   addItems(doc, [k], by);
   if (group) growGroup(doc, group, k, { by });
@@ -4683,11 +4687,13 @@ Write (re-read → change → write; the open app picks the change up within sec
         default place: right of everything (or at the bottom of --group)
   set <file> <id|canvas> key=value…     ${EDITABLE_KEYS.join(' ')}; canvas: title
   move <file> <id>… (--by DX,DY | --to X,Y)
-  shape <file> <kind> ["text"] [--fill C] [--stroke C] [--at X,Y] [--w W] [--h H] [--group ID]
+  shape <file> <kind> ["text"] [--fill C] [--stroke C] [--stroke-width W] [--dash]
+        [--at X,Y] [--w W] [--h H] [--group ID]
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
   connect <file> <from> <to> [--label L] [--route dubins|curve|straight|elbow] [--start/--end none|arrow|dot]
                                         from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
-  stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic] [--group ID]
+  stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic]
+        [--dash] [--arrow] [--group ID]
                                         freehand ink through the points (X,Y,PRESSURE also works)
   video <file> <youtube-url> [--title T] [--at X,Y] [--w W] [--start T] [--group ID] [--no-poster]
                                         a YouTube video card; its poster is stored in the file
@@ -4712,7 +4718,7 @@ Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'no_poster', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'h', 'v']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -5091,9 +5097,9 @@ async function main(argv) {
       case 'arrange': need(pos.length, 'arrange: a group id or item ids'); ops = [{ op: 'arrange', ids: pos, width: opt.width, gap: opt.gap }]; break;
       case 'front': case 'back': need(pos.length, `${cmd}: which ids?`); ops = [{ op: cmd, ids: pos }]; break;
       case 'shape': {
-        need(pos.length >= 1 && pos.length <= 2, 'shape: usage: shape <file> <kind> ["text"] [--fill C] [--at X,Y] [--w W] [--h H] [--group ID]');
+        need(pos.length >= 1 && pos.length <= 2, 'shape: usage: shape <file> <kind> ["text"] [--fill C] [--stroke C] [--stroke-width W] [--dash] [--at X,Y] [--w W] [--h H] [--group ID]');
         const at = opt.at ? pair(opt.at, '--at') : null;
-        ops = [{ op: 'shape', kind: pos[0], text: (pos[1] || '').replace(/\\n/g, '\n'), fill: opt.fill, stroke: opt.stroke, x: at?.[0], y: at?.[1], w: opt.w ? Number(opt.w) : undefined, h: opt.h ? Number(opt.h) : undefined, size: opt.size, group: opt.group }];
+        ops = [{ op: 'shape', kind: pos[0], text: (pos[1] || '').replace(/\\n/g, '\n'), fill: opt.fill, stroke: opt.stroke, strokeWidth: opt.stroke_width ? Number(opt.stroke_width) : undefined, dash: opt.dash ? true : undefined, x: at?.[0], y: at?.[1], w: opt.w ? Number(opt.w) : undefined, h: opt.h ? Number(opt.h) : undefined, size: opt.size, group: opt.group }];
         break;
       }
       case 'connect': {
@@ -5109,13 +5115,13 @@ async function main(argv) {
         break;
       }
       case 'stroke': {
-        need(pos.length >= 1, 'stroke: usage: stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W]');
+        need(pos.length >= 1, 'stroke: usage: stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--dash] [--arrow]');
         const points = pos.join(' ').trim().split(/\s+/).map((s) => {
           const v = s.split(',').map(Number);
           need(v.length >= 2 && v.length <= 3 && v.every(Number.isFinite), `stroke: "${s}" is not X,Y or X,Y,PRESSURE`);
           return v;
         });
-        ops = [{ op: 'stroke', points, tool: opt.tool, color: opt.color, width: opt.width ? Number(opt.width) : undefined, nib: opt.nib, group: opt.group }];
+        ops = [{ op: 'stroke', points, tool: opt.tool, color: opt.color, width: opt.width ? Number(opt.width) : undefined, nib: opt.nib, dash: opt.dash ? true : undefined, end: opt.arrow ? 'arrow' : undefined, group: opt.group }];
         break;
       }
       case 'note': {

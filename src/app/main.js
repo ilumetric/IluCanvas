@@ -40,6 +40,8 @@ import { IOS } from './images.js';
 
 const $ = (id) => document.getElementById(id);
 const REPO_URL = 'https://github.com/ilumetric/IluCanvas';
+// the one page an agent needs (the public copy: an agent cannot reach a local dev server)
+const AGENT_URL = 'https://ilumetric.github.io/IluCanvas/docs/AGENT.md';
 const STYLES = ['fun', 'calm', 'oli'];
 /** No File System Access (Safari, Firefox): boards live in the browser's storage and download as files. */
 const inBrowser = () => !disk.fsaSupported() && opfsSupported();
@@ -446,7 +448,7 @@ function renderSidebar() {
 
   const foot = h('div.side-foot', {},
     item('settings', t('side.settings'), openSettings),
-    h('a.side-item', { href: 'docs/AGENT.md', target: '_blank', rel: 'noopener' }, icon('terminal'), h('span.grow', {}, t('side.agents'))));
+    h('button.side-item', { type: 'button', title: t('agents.copyHint'), onclick: copyAgentLink }, icon('terminal'), h('span.grow', {}, t('side.agents')), icon('copy', 14)));
 
   side.replaceChildren(
     h('div.side-head', {},
@@ -685,7 +687,20 @@ function renderWelcome() {
       tile('file', t('side.openFile'), t('welcome.file'), openFile),
       tile('link', t('side.openLink'), t('welcome.link'), openLinkDialog)),
     disk.fsaSupported() ? null : h(`p.note${inBrowser() ? '' : '.warn'}`, {}, icon(inBrowser() ? 'save' : 'alert', 15), h('span', {}, inBrowser() ? t('welcome.local') : t('welcome.noFsa'))),
-    h('a.agent-line', { href: 'llms.txt', target: '_blank', rel: 'noopener' }, icon('terminal', 14), h('span', {}, t('welcome.agents')), h('code', {}, 'llms.txt'))].filter(Boolean));
+    h('button.agent-line', { type: 'button', title: t('agents.copyHint'), onclick: copyAgentLink }, icon('terminal', 14), h('span', {}, t('welcome.agents')), h('code', {}, 'docs/AGENT.md'), icon('copy', 14))].filter(Boolean));
+}
+
+/** Copy the link to the agent guide: the human pastes it to any AI agent. */
+async function copyAgentLink() {
+  try {
+    await navigator.clipboard.writeText(AGENT_URL);
+    toast(t('agents.copied'), { timeout: 4000 });
+  } catch {
+    // no clipboard (an old browser, a page without focus): show the link to copy by hand
+    const input = h('input.input', { value: AGENT_URL, readonly: true, onfocus: (e) => e.target.select() });
+    openDialog({ title: t('side.agents'), body: h('div', {}, h('p', {}, t('agents.copyHint')), input), actions: [{ spacer: true }, { label: t('dlg.ok'), kind: 'primary' }] });
+    setTimeout(() => input.select(), 50);
+  }
 }
 
 function setSidebar(open) {

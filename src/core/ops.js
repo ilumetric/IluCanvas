@@ -257,13 +257,17 @@ export function newVideo(doc, { url, title, start, rate, loop, marks, x, y, w, h
   return it;
 }
 
-export function newStroke(doc, { tool = 'pen', nib, color, width, samples, group = null, by = 'human' } = {}) {
+export function newStroke(doc, { tool = 'pen', nib, color, width, dash, end, samples, group = null, by = 'human' } = {}) {
   const def = INK_DEFAULTS[tool] || INK_DEFAULTS.pen;
   const w = Number(width) || def.width;
-  const f = strokeFrame({ tool, width: w }, samples);
+  need(!end || end === 'arrow' || end === 'none', 'a stroke\'s end is "arrow" or "none"');
+  const arrow = end === 'arrow' && tool !== 'tape';
+  const f = strokeFrame({ tool, width: w, end: arrow ? 'arrow' : undefined }, samples);
   need(f, 'a stroke needs at least one point');
   const k = { id: newId('stroke'), type: 'stroke', tool, color: color || def.color, width: w, ...f };
   if (tool === 'pen' && nib === 'italic') k.nib = 'italic';
+  if (dash && tool !== 'tape') k.dash = true;
+  if (arrow) k.end = 'arrow';
   if (group) k.parent = group;
   addItems(doc, [k], by);
   if (group) growGroup(doc, group, k, { by });

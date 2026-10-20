@@ -29,7 +29,7 @@ const RU = {
   'local.download': 'Скачать файл .ilucanvas', 'local.importing': 'Копирую {name} в браузер…', 'local.imported': 'Доска скопирована в браузер — теперь её можно править. «Скачать» сохраняет файл.', 'local.kept': 'Копия сохранена в браузере — её можно править.',
   'top.keep': 'Сохранить в браузере',
   'welcome.noFsa': 'Этот браузер не умеет сохранять в файл на диске: открыть и посмотреть можно, сохранить — только скачиванием. Для работы откройте в Chrome или Edge.',
-  'welcome.agents': 'Для AI-агентов:',
+  'welcome.agents': 'Для AI-агентов:', 'agents.copyHint': 'Скопировать ссылку на инструкцию для AI-агента: прочитав её, агент поймёт, как работать с IluCanvas', 'agents.copied': 'Ссылка для агента скопирована — отправь её агенту',
 
   'leave.title': 'Несохранённые изменения', 'leave.text': 'Канвас ещё не сохранён в файл. Сохранить его?', 'leave.discard': 'Не сохранять',
   'leave.failed': 'Сохранить не получилось. Закрыть без сохранения?',
@@ -164,7 +164,7 @@ const EN = {
   'local.download': 'Download the .ilucanvas file', 'local.importing': 'Copying {name} into the browser…', 'local.imported': 'The board is copied into the browser and editable now. Download saves a file.', 'local.kept': 'A copy is kept in the browser and editable.',
   'top.keep': 'Keep in browser',
   'welcome.noFsa': 'This browser cannot save into a file on disk: you can open and view, saving downloads a copy. Use Chrome or Edge to work.',
-  'welcome.agents': 'For AI agents:',
+  'welcome.agents': 'For AI agents:', 'agents.copyHint': 'Copy the link to the guide for AI agents: after reading it an agent knows how to work with IluCanvas', 'agents.copied': 'Link for agents copied — send it to your agent',
 
   'leave.title': 'Unsaved changes', 'leave.text': 'This canvas is not saved to a file yet. Save it?', 'leave.discard': 'Don’t save',
   'leave.failed': 'Saving failed. Close without saving?',

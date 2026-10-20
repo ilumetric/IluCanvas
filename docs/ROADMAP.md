@@ -50,7 +50,7 @@ One type covers all three uses; they differ by colour and size only:
   - text colour: `[text]{.red}`
   Colours: `red orange yellow green blue violet pink grey`.
   Not planned (keep it simple): tables, code, images inside notes.
-- Editing: double click → a contentEditable editor over the note with a small
+- Editing: Enter (or the menu) → a contentEditable editor over the note with a small
   formatting bar (H1–H3, B, I, U, S, lists, checklist, quote, link, colour,
   highlight, align); Markdown shortcuts while typing (`# `, `- `, `[ ] `, `**`).
 - Checklist boxes toggle with a click on the board, without editing.
