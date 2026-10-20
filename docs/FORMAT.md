@@ -222,11 +222,32 @@ loop, labelled timecodes.
 {"id":"v8k2m1qa","type":"video","provider":"youtube","videoId":"dQw4w9WgXcQ","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"…","asset":"263dedc00c8521ab","x":0,"y":0,"w":640,"h":360,"start":43,"rate":0.5,"loop":{"a":60,"b":65},"marks":[{"t":43,"label":"chorus"}]}
 ```
 
+**table** — a grid of cells with text (FigJam style). A click on a cell copies
+its text (a range: tab-separated, a line per row); a double click edits it.
+
+| field | |
+|---|---|
+| `cols` | column widths, board units |
+| `rows` | row heights, board units — the least: a row grows to show its text |
+| `cells` | rows × cols, row by row; a cell is Markdown text (like a note's), or `{ "text", "fill"?, "align"? }` when it has a fill or an alignment of its own |
+| `fill` | the cells' background: `white grey black red orange yellow green blue violet pink`, `#rrggbb` or `none` |
+| `size`, `scale` | text size, as for notes |
+| `align` | `left center right` for the cells; default `left` |
+| `clickCopy` | `false`: a click on a cell does not copy it |
+
+`w` is the sum of `cols`; `h` the rows as drawn (the app measures the text;
+tools without fonts estimate it, the app corrects it). Tables do not turn.
+
+```json
+{"id":"t4k2m1qa","type":"table","x":0,"y":0,"w":400,"h":112,"fill":"white","cols":[200,200],"rows":[56,56],"cells":[["Name","Link"],[{"text":"**Rim**","fill":"yellow"},"https://example.com"]]}
+```
+
 ## Checks (`ilucanvas validate`)
 
 Errors: wrong `format`; an item whose `asset` is not in `assets`; a `parent`
 that is not a group; groups inside each other in a circle; duplicate ids;
 a connector end that is neither `{id}` nor `{x, y}`, or names an unknown item or the connector itself;
+a table whose `cells` are not `rows` × `cols`;
 `x y w h` that are not numbers, `w`/`h` ≤ 0; an asset `file` missing from the ZIP.
 Warnings: unknown item types, assets nobody uses, missing previews.
 

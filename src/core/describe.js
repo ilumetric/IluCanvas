@@ -4,6 +4,10 @@
 import { childrenOf, groupsOf, contentBounds } from './model.js';
 import { plainText } from './markdown.js';
 import { formatTime } from './video.js';
+import { cellOf } from './table.js';
+
+/** Rows of a table shown under its line (the rest is counted). */
+const TABLE_ROWS = 30;
 
 const r0 = (v) => Math.round(v);
 const box = (it) => `x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`;
@@ -16,7 +20,7 @@ export function headerLine(doc) {
     const n = doc.items.filter((i) => i.type === type).length;
     return n ? ` · ${n} ${word}` : '';
   };
-  return `canvas "${doc.title}" ${doc.id} · ${doc.items.filter((i) => i.type === 'image').length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')}${count('stroke', 'strokes')}${count('video', 'videos')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`;
+  return `canvas "${doc.title}" ${doc.id} · ${doc.items.filter((i) => i.type === 'image').length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')}${count('stroke', 'strokes')}${count('video', 'videos')}${count('table', 'tables')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`;
 }
 
 export function itemLine(doc, it) {
@@ -42,6 +46,16 @@ export function itemLine(doc, it) {
       const extra = [it.start ? `start=${formatTime(it.start)}` : '', it.rate ? `rate=${it.rate}` : '', it.loop ? `loop=${formatTime(it.loop.a)}-${formatTime(it.loop.b)}` : '', it.marks?.length ? `${it.marks.length} marks` : '', it.asset ? '' : 'no poster'].filter(Boolean).join(' ');
       return `${it.id}  video  ${it.provider} ${it.videoId}  "${(it.title || '').slice(0, 60)}"${extra ? `  ${extra}` : ''}  ${box(it)}`;
     }
+    case 'table': {
+      // the line, then its rows: "| a | b |" (cells as plain text, cut at 40 characters)
+      const R = it.rows?.length || 0;
+      const C = it.cols?.length || 0;
+      const cell = (r, c) => { const s = plainText(cellOf(it, r, c).text).replace(/\s*\n\s*/g, ' / '); return s.length > 40 ? `${s.slice(0, 39)}…` : s; };
+      const rows = [];
+      for (let r = 0; r < Math.min(R, TABLE_ROWS); r++) rows.push(`| ${Array.from({ length: C }, (_, c) => cell(r, c)).join(' | ')} |`);
+      if (R > TABLE_ROWS) rows.push(`… (+${R - TABLE_ROWS} rows)`);
+      return [`${it.id}  table  ${R}×${C}  fill=${it.fill}${it.clickCopy === false ? '  no-click-copy' : ''}  ${box(it)}`, ...rows].join('\n');
+    }
     default:
       return `${it.id}  ${it.type}  ${box(it)}`;
   }
@@ -52,7 +66,8 @@ export function listText(doc, { group = null } = {}) {
   const lines = [headerLine(doc)];
   const walk = (parent, ind) => {
     for (const g of doc.items) if (g.type === 'group' && (g.parent || null) === parent) { lines.push(ind + itemLine(doc, g)); walk(g.id, `${ind}  `); }
-    for (const it of doc.items) if (it.type !== 'group' && (it.parent || null) === parent) lines.push(ind + itemLine(doc, it));
+    // a table's rows come on lines of their own, under it
+    for (const it of doc.items) if (it.type !== 'group' && (it.parent || null) === parent) lines.push(...itemLine(doc, it).split('\n').map((l, i) => `${ind}${i ? '    ' : ''}${l}`));
   };
   if (group) {
     const g = doc.items.find((it) => it.id === group);

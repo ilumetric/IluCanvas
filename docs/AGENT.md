@@ -6,8 +6,8 @@ the other docs ([FORMAT.md](FORMAT.md), [PUREREF.md](PUREREF.md),
 
 IluCanvas (https://ilumetric.github.io/IluCanvas/) is an infinite reference
 board for artists, like PureRef or FigJam: pictures, groups, sticky notes and
-documents, shapes and arrows for diagrams, freehand ink and YouTube videos on
-one zoomable canvas. It is a static web page — no server, no accounts. Every
+documents, shapes and arrows for diagrams, tables, freehand ink and YouTube
+videos on one zoomable canvas. It is a static web page — no server, no accounts. Every
 board is **one local file, `name.ilucanvas`**: a ZIP with `canvas.json` (the
 scene) and the original images, byte for byte.
 
@@ -81,6 +81,10 @@ node ilucanvas.mjs stroke refs.ilucanvas "0,0 60,40,0.9 120,10" --color red --wi
 node ilucanvas.mjs stroke refs.ilucanvas "0,0 200,0 260,60" --arrow --dash             # a dashed hand-drawn arrow
 node ilucanvas.mjs stroke refs.ilucanvas "0,300 400,300" --tool highlighter --color yellow
 node ilucanvas.mjs video refs.ilucanvas "https://youtu.be/dQw4w9WgXcQ?t=43" --at 0,2400   # poster + title fetched
+node ilucanvas.mjs table refs.ilucanvas --csv data.csv --at 0,3000              # a table from CSV / TSV (a file or -)
+node ilucanvas.mjs table refs.ilucanvas 'Name\tLink\nRim\thttps://…'         # … or from text ("\t", "\n")
+node ilucanvas.mjs table refs.ilucanvas --rows 4 --cols 3 --no-copy             # empty; clicks do not copy cells
+node ilucanvas.mjs cell refs.ilucanvas t4k2m1q 1 0 '**Rim** light' --fill yellow # one cell (0-based, -1 = last)
 node ilucanvas.mjs rm refs.ilucanvas i8k2m1q [--keep-children]
 node ilucanvas.mjs front|back refs.ilucanvas i8k2m1q
 node ilucanvas.mjs apply refs.ilucanvas ops.json                      # many changes, one write (section 3)
@@ -132,6 +136,11 @@ in the batch; later ops refer to it as `"$name"`.
   { "op": "add", "paths": ["refs/rim.jpg", "refs/night/"], "group": "$light" },
   { "op": "add", "urls": ["https://example.com/sky.jpg"], "x": 4000, "y": 0, "max": 800 },
   { "op": "video", "url": "https://youtu.be/dQw4w9WgXcQ", "rate": 0.5, "marks": [{ "t": 43, "label": "jump" }] },
+  { "op": "table", "cells": [["Shot", "Ref", "Status"], ["01", "rim light", "- [ ] find"]], "x": 0, "y": 3000, "as": "$tb" },
+  { "op": "cell", "id": "$tb", "row": 1, "col": 2, "text": "- [x] found", "fill": "green" },
+  { "op": "row", "id": "$tb", "cells": ["02", "pose", ""] },
+  { "op": "col", "id": "$tb", "at": 1, "width": 120, "cells": ["Lens", "35mm", "85mm"] },
+  { "op": "row", "id": "$tb", "at": 0, "remove": true },
   { "op": "group", "ids": ["i8k2m1q", "i3x9a0b"], "name": "Poses", "as": "$poses" },
   { "op": "set", "id": "i8k2m1q", "note": "rim light", "rot": 90, "flipX": true },
   { "op": "set", "id": "canvas", "title": "Character refs v2" },
@@ -153,6 +162,9 @@ in the batch; later ops refer to it as `"$name"`.
 | `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`), `route` (`dubins` default, `curve straight elbow`), `start` / `end` heads (`none arrow dot`; default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `dash`, `end` (`arrow`), `group`, `as` |
 | `video` | `url` (YouTube: watch, youtu.be, shorts, embed, live), `title`, `start` (seconds or `1:23`), `rate` (0.25…2), `loop` (`{ a, b }`), `marks` (`[{ t, label, end? }]`), `x`, `y`, `w`, `h` (default 640×360; shorts 360×640), `group`, `as` |
+| `table` | `cells` (rows of cells: text, or `{ text, fill, align }`) or `rows` × `cols` empty ones (numbers; default 3 × 3; or lists of heights / widths), `width` / `height` of each column / row (default 200 / 56), `fill`, `size`, `scale`, `align`, `clickCopy` (`false`: clicks do not copy), `x`, `y`, `group`, `as` |
+| `cell` | `id` (a table), `row`, `col` (0-based; negative counts from the end), and `text` (Markdown), `fill`, `align` (`null` removes the cell's own fill / align) |
+| `row`, `col` | `id` (a table), `at` (where the new one goes, default the end), `cells` (its cells), `height` / `width`; or `remove: true` with `at` (and `to` for a range) |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
 | `set` | `id` (or `"canvas"` with `title`) and any editable field of that item (section 4); `null` removes a field |
@@ -167,7 +179,8 @@ in the batch; later ops refer to it as `"$name"`.
 flipY opacity crop`; groups `name color`; notes `text color fit size scale
 align ratio`; shapes `kind text fill stroke strokeWidth dash size scale align`;
 connectors `from to route start end color width dash label`; strokes `tool
-nib color width dash end`; videos `title start rate loop marks`.
+nib color width dash end`; videos `title start rate loop marks`; tables `cells cols rows fill size scale
+align clickCopy` (`cells` replaces them all — prefer `cell`, `row`, `col`).
 
 ## 4. What is on a board (canvas.json)
 
@@ -218,6 +231,7 @@ Unknown types and fields are kept as they are.
 | `connector` | a line / arrow; ends follow their items | `from`, `to` (`{"id"}`, `{"id","side"}` or `{"x","y"}`), `route` (`straight elbow curve dubins`), `start`, `end` (`none arrow dot`), `color`, `width` (default 2), `dash`, `label` — its `x y w h` are computed: never edit them, move its items |
 | `stroke` | freehand ink | `tool` (`pen highlighter tape`), `nib` (`italic`), `color`, `width`, `dash`, `end` (`arrow`), `pts` (flat `x, y, pressure, …` in a `vw × vh` box), `vw`, `vh`, `tw` (stylus twist) — make strokes with the `stroke` op, not by hand |
 | `video` | a YouTube card; plays in the app | `provider` (`youtube`), `videoId`, `url`, `title`, `asset` (the poster), `start`, `rate`, `loop` (`{a,b}`), `marks` (`[{t,label,end?}]`), `duration` |
+| `table` | a grid of cells (FigJam style) | `cols` (widths), `rows` (least heights — a row grows to show its text), `cells` (rows × cols; Markdown text, or `{text, fill?, align?}`), `fill`, `size`, `scale`, `align`, `clickCopy` (`false`: a click does not copy the cell) — `w` = Σ cols, `h` = the rows as drawn; tables do not turn |
 
 **Colours** (fixed, they do not change with the app's theme):
 
@@ -225,7 +239,7 @@ Unknown types and fields are kept as they are.
 - notes: `yellow orange pink green blue violet grey` (stickies), `paper` (a document), `none` (plain text on the board)
 - shapes, connectors, ink: `white grey black red orange yellow green blue violet pink`, or any `#rrggbb`; a shape's `fill` also `none`
 
-**Note and shape text is Markdown** (a subset), every line one paragraph:
+**Note, shape and table-cell text is Markdown** (a subset), every line one paragraph:
 
 | | |
 |---|---|
@@ -280,8 +294,16 @@ Useful when you explain things to the human or click through the page.
 - **Links**: `?link=<url of a .ilucanvas>` opens a shared board; `?demo=30`
   makes a demo board.
 - **Toolbar** (keys): Select V · Hand H · Note N · Shape S (picker: 8 shapes,
-  a line, an arrow) · Connector X · Pen P · Highlighter Shift+P · Tape T ·
-  Eraser E · Image I · Video Y.
+  a line, an arrow) · Connector X · Table Shift+T · Pen P · Highlighter
+  Shift+P · Tape T · Eraser E · Image I · Video Y.
+- **Tables**: a click on a cell selects it and copies its text (Shift+click: a
+  range, copied tab-separated — it pastes into spreadsheets); a double click,
+  Enter or just typing edits the cell (Tab: the next one; past the last cell a
+  new row). The selected table has + bars (a column at the right, a row at the
+  bottom), pills above the columns / left of the rows (select the whole one),
+  dots between them (insert one there); dragging a border resizes a column /
+  row. Its bar: fill, text size, bold / strike / bullets, alignment, "copy on
+  click", rows and columns. Arrows move the selected cell, Delete clears it.
 - **Mouse**: wheel = zoom to the cursor (Shift + wheel scrolls sideways);
   right button drag = move the board (a right click without moving opens the
   context menu); middle button drag = zoom; Space + drag = move the board.
@@ -302,7 +324,7 @@ Useful when you explain things to the human or click through the page.
 ## 7. Rules
 
 - **Reference items by id** (`i8k2m1q` images, `g4k2x9q` groups, `s…`
-  shapes, `c…` connectors, `k…` strokes, `n…` notes, `v…` videos). Ids are
+  shapes, `c…` connectors, `k…` strokes, `n…` notes, `v…` videos, `t…` tables). Ids are
   random, unique and never change.
 - **Re-read the board right before editing** (`ls`); never write back a copy
   from an earlier turn — the human may have changed it since.
@@ -337,6 +359,11 @@ decisions), `connect` them with `--route elbow` and `--label yes/no`, all in one
 **Annotate a reference:** find its box with `ls`, then a `note` next to it
 (`x = image.x + image.w + 40`), a dashed `shape` `rect` with `fill: "none"`
 over the detail, and a `connect` from the note to that rectangle.
+
+**A table from data:** `table --csv shots.csv` (or `"op": "table"` with `cells`);
+then `cell` for single changes and `row` / `col` to add or remove — never
+rewrite `cells` whole when the human may be editing other cells. `ls` prints
+a table's rows under it (`| a | b |`), so you can read it back.
 
 **Study a video:** `video` with `rate: 0.5`, `loop: {a, b}` around the moment
 and `marks` for the key frames.

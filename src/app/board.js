@@ -15,9 +15,11 @@ import { drawNote, checkAt, linkAt } from './text.js';
 import { drawShapeBody, drawConnector, connectorWidth } from './shapes.js';
 import { strokeHits, strokeInRect } from '../core/ink.js';
 import { drawStroke, drawLive } from './ink.js';
+import { drawTable, tableLayout, cellAt } from './table.js';
+import { resizeCol, resizeRow, TABLE_MIN } from '../core/table.js';
 
 /** Tools that make things by clicking / dragging on the board. */
-const MAKERS = new Set(['note', 'shape']);
+const MAKERS = new Set(['note', 'shape', 'table']);
 /** Drawing tools (the eraser removes whole strokes). */
 const INK = new Set(['pen', 'highlighter', 'tape']);
 const DRAWS = new Set([...INK, 'eraser']);
@@ -28,7 +30,12 @@ const pressureOf = (e) => (e.pointerType === 'pen' ? Math.min(1, Math.max(0.08, 
 /** Barrel rotation of a stylus (turns the italic nib). */
 const twistOf = (e) => (Number.isFinite(e.twist) ? e.twist : 0);
 /** Items a connector can attach to (and that show connection dots). */
-const LINKABLE = new Set(['image', 'note', 'shape']);
+const LINKABLE = new Set(['image', 'note', 'shape', 'table']);
+/** A selected table's + bars (add a column / row): thickness and gap, screen px. */
+const TBAR = 22;
+const TGAP = 8;
+/** The strips above its columns / left of its rows (pills select, dots insert): distance from the table, px. */
+const TSTRIP = 16;
 const DOT_OFF = 14; // connection dots: px outside the item's side
 
 const MIN_Z = 0.002;
@@ -84,6 +91,10 @@ export class Board {
     this.wheelMode = 'zoom';
     this.ui = 1; // interface scale (group tags, handles)
     this.editingId = null; // the note whose text is in the editor
+    this.cells = null; // a table's selected cells: { id, ar, ac (anchor), fr, fc (focus) }
+    this.editingCell = null; // the table cell in the editor: { id, r, c }
+    this.tableDraft = null; // its text so far: { id, r, c, text } (its row grows as you type)
+    this.tableHover = null; // the column / row under the pointer on the selected table (pills, dots)
     this.snap = true; // moving / resizing snaps to the edges and centres of other items (Ctrl: not now)
     this.snapGrid = true; // … and, where no item is near, to the background's grid
     this.gridDense = 13; // the background's densest spacing on screen, css px (background.js: 16 for the grid)
@@ -122,6 +133,7 @@ export class Board {
   select(ids, { add = false } = {}) {
     if (!add) this.selection.clear();
     for (const id of ids) this.selection.add(id);
+    if (this.cells && (!this.selection.has(this.cells.id) || this.selection.size !== 1)) this.cells = null;
     this.invalidateOverlay();
     this.cb.selection?.();
   }
@@ -130,6 +142,34 @@ export class Board {
     if (!this.doc) return [];
     const m = byId(this.doc);
     return [...this.selection].map((id) => m.get(id)).filter(Boolean);
+  }
+
+  /** The selected cells, kept inside the table: { id, ar, ac, r0, c0, r1, c1 } or null. */
+  cellRange() {
+    const s = this.cells;
+    if (!s || !this.doc || !this.selection.has(s.id)) return null;
+    const t = byId(this.doc).get(s.id);
+    if (!t || t.type !== 'table') return null;
+    const cl = (v, n) => Math.max(0, Math.min(n - 1, v));
+    const R = t.rows.length;
+    const C = t.cols.length;
+    const [ar, ac, fr, fc] = [cl(s.ar, R), cl(s.ac, C), cl(s.fr, R), cl(s.fc, C)];
+    return { id: t.id, ar, ac, fr, fc, r0: Math.min(ar, fr), r1: Math.max(ar, fr), c0: Math.min(ac, fc), c1: Math.max(ac, fc) };
+  }
+
+  /** Select a table's cells from the anchor (ar, ac) to the focus (fr, fc); the table alone is selected. */
+  selectCells(id, ar, ac, fr = ar, fc = ac) {
+    if (!this.selection.has(id) || this.selection.size !== 1) this.selection = new Set([id]);
+    this.cells = { id, ar, ac, fr, fc };
+    this.invalidateOverlay();
+    this.cb.selection?.();
+  }
+
+  clearCells() {
+    if (!this.cells) return;
+    this.cells = null;
+    this.invalidateOverlay();
+    this.cb.selection?.();
   }
 
   /** Drop selected ids that no longer exist (after undo, reload). */
@@ -339,6 +379,11 @@ export class Board {
         continue;
       }
       if (it.type === 'video') { this.#drawVideo(ctx, it, k, z); continue; }
+      if (it.type === 'table') {
+        const ed = this.editingCell?.id === it.id ? this.editingCell : null;
+        drawTable(ctx, it, { px: k, theme, family: theme.font, vis, editing: ed, draft: ed && this.tableDraft?.id === it.id ? this.tableDraft : null });
+        continue;
+      }
       if (it.type !== 'image') { this.#drawUnknown(ctx, it, z); continue; }
       const a = this.doc.assets[it.asset];
       const px = Math.max(it.w, it.h) * k;
@@ -571,6 +616,17 @@ export class Board {
     const m = byId(this.doc);
     const outline = (it, width, alpha = 1) => {
       if (it.type === 'connector') { this.#outlinePath(ctx, it, width, alpha); return; }
+      if (it.type === 'table') {
+        // its rows as drawn (they may have grown past h while typing)
+        const g = this.#tableGeom(it);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = width;
+        ctx.strokeStyle = th.select;
+        ctx.strokeRect(g.x, g.y, g.w, g.h);
+        ctx.restore();
+        return;
+      }
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.lineWidth = width;
@@ -662,6 +718,8 @@ export class Board {
         ctx.stroke();
       }
     }
+    // a selected table: its selected cells, the + bars, pills and dots
+    if (sel.length === 1 && sel[0].type === 'table' && !(this.drag?.moved && (this.drag.type === 'move' || this.drag.type === 'resize'))) this.#drawTableUI(ctx, sel[0]);
     if (this.drag?.type === 'create' && this.drag.moved && this.drag.line) {
       const a = this.toScreen(this.drag.wx, this.drag.wy);
       const b = this.toScreen(this.drag.end.x, this.drag.end.y);
@@ -727,6 +785,153 @@ export class Board {
     }
   }
 
+  // ---- tables: the parts around a selected one ----------------------------------------------------------
+
+  /** A table on screen: its box and the x of its column edges / y of its row edges (px). */
+  #tableGeom(t) {
+    const L = tableLayout(t, this.theme.font, this.tableDraft?.id === t.id ? this.tableDraft : null);
+    const a = this.toScreen(t.x, t.y);
+    const z = this.view.z;
+    return { L, x: a.x, y: a.y, w: L.w * z, h: L.h * z, xs: L.xs.map((v) => a.x + v * z), ys: L.ys.map((v) => a.y + v * z) };
+  }
+
+  /** The + bars: a column at the right, a row at the bottom. */
+  #tableBars(g) {
+    return [
+      { axis: 'col', x: g.x + g.w + TGAP, y: g.y, w: TBAR, h: g.h },
+      { axis: 'row', x: g.x, y: g.y + g.h + TGAP, w: g.w, h: TBAR },
+    ];
+  }
+
+  /** Big enough on screen for its bars, pills and border handles. */
+  #tableUsable(g) { return !this.readOnly && g.w >= 48 && g.h >= 24; }
+
+  /** What of a selected table is under a screen point: a + bar, a pill, an insert dot, a border — or null. */
+  #tableHit(t, sx, sy, k = 1) {
+    const g = this.#tableGeom(t);
+    if (!this.#tableUsable(g)) return null;
+    for (const b of this.#tableBars(g)) if (sx >= b.x - 2 * k && sx <= b.x + b.w + 2 * k && sy >= b.y - 2 * k && sy <= b.y + b.h + 2 * k) return { kind: 'tableAdd', id: t.id, axis: b.axis };
+    const idx = (edges, v) => { for (let i = 0; i < edges.length - 1; i++) if (v >= edges[i] && v < edges[i + 1]) return i; return v >= edges[edges.length - 1] ? edges.length - 2 : -1; };
+    const strip = (TSTRIP + 12) * k;
+    if (sy >= g.y - strip && sy < g.y - 3 && sx >= g.x - 8 && sx <= g.x + g.w + 8) {
+      for (let i = 0; i < g.xs.length; i++) if (Math.abs(sx - g.xs[i]) <= 7 * k) return { kind: 'tableInsert', id: t.id, axis: 'col', i };
+      const c = idx(g.xs, sx);
+      if (c >= 0) return { kind: 'tablePick', id: t.id, axis: 'col', i: c };
+    }
+    if (sx >= g.x - strip && sx < g.x - 3 && sy >= g.y - 8 && sy <= g.y + g.h + 8) {
+      for (let i = 0; i < g.ys.length; i++) if (Math.abs(sy - g.ys[i]) <= 7 * k) return { kind: 'tableInsert', id: t.id, axis: 'row', i };
+      const r = idx(g.ys, sy);
+      if (r >= 0) return { kind: 'tablePick', id: t.id, axis: 'row', i: r };
+    }
+    // borders: a column's right edge, a row's bottom edge — drag to resize
+    const tol = 4 * k;
+    if (sy >= g.y && sy <= g.y + g.h) for (let i = 1; i < g.xs.length; i++) if (Math.abs(sx - g.xs[i]) <= tol) return { kind: 'tableBorder', id: t.id, axis: 'col', i: i - 1 };
+    if (sx >= g.x && sx <= g.x + g.w) for (let i = 1; i < g.ys.length; i++) if (Math.abs(sy - g.ys[i]) <= tol) return { kind: 'tableBorder', id: t.id, axis: 'row', i: i - 1 };
+    return null;
+  }
+
+  #drawTableUI(ctx, t) {
+    const th = this.theme;
+    const g = this.#tableGeom(t);
+    const range = this.cellRange();
+    const R = g.ys.length - 1;
+    const C = g.xs.length - 1;
+    if (range && range.id === t.id) {
+      const x = g.xs[range.c0];
+      const y = g.ys[range.r0];
+      const w = g.xs[range.c1 + 1] - x;
+      const h = g.ys[range.r1 + 1] - y;
+      ctx.fillStyle = rgba(th.select, 0.1);
+      ctx.fillRect(x, y, w, h);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = th.select;
+      ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    }
+    if (!this.#tableUsable(g) || this.editingCell) return;
+    const hot = this.tableHot?.id === t.id ? this.tableHot : null;
+    const same = (a, b) => a && b && a.kind === b.kind && a.axis === b.axis && a.i === b.i;
+    // + bars
+    for (const b of this.#tableBars(g)) {
+      const on = hot?.kind === 'tableAdd' && hot.axis === b.axis;
+      ctx.beginPath();
+      ctx.roundRect(b.x, b.y, b.w, b.h, 6);
+      ctx.fillStyle = rgba(th.select, on ? 0.42 : 0.2);
+      ctx.fill();
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      ctx.strokeStyle = th.select;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 6, cy); ctx.lineTo(cx + 6, cy);
+      ctx.moveTo(cx, cy - 6); ctx.lineTo(cx, cy + 6);
+      ctx.stroke();
+    }
+    // pills: the hovered column / row and the selected whole ones; dots between them insert
+    const hv = this.tableHover?.id === t.id ? this.tableHover : null;
+    const fullCols = range && range.id === t.id && range.r0 === 0 && range.r1 === R - 1;
+    const fullRows = range && range.id === t.id && range.c0 === 0 && range.c1 === C - 1;
+    const pill = (x, y, w, h, picked, hotOne) => {
+      ctx.beginPath();
+      ctx.roundRect(x - w / 2, y - h / 2, w, h, Math.min(w, h) / 2);
+      ctx.fillStyle = picked ? th.select : hotOne ? rgba(th.select, 0.75) : rgba(th.select, 0.45);
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+    };
+    const dot = (x, y, hotOne) => {
+      ctx.beginPath();
+      ctx.arc(x, y, hotOne ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = hotOne ? th.select : rgba(th.select, 0.55);
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+      if (hotOne) {
+        ctx.beginPath();
+        ctx.moveTo(x - 4, y); ctx.lineTo(x + 4, y);
+        ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4);
+        ctx.stroke();
+      }
+    };
+    const py = g.y - TSTRIP;
+    const px = g.x - TSTRIP;
+    for (let c = 0; c < C; c++) {
+      const picked = fullCols && c >= range.c0 && c <= range.c1;
+      if (picked || hv?.col === c) pill((g.xs[c] + g.xs[c + 1]) / 2, py, Math.min(26, (g.xs[c + 1] - g.xs[c]) * 0.6), 8, picked, same(hot, { kind: 'tablePick', axis: 'col', i: c }));
+    }
+    for (let r = 0; r < R; r++) {
+      const picked = fullRows && r >= range.r0 && r <= range.r1;
+      if (picked || hv?.row === r) pill(px, (g.ys[r] + g.ys[r + 1]) / 2, 8, Math.min(26, (g.ys[r + 1] - g.ys[r]) * 0.6), picked, same(hot, { kind: 'tablePick', axis: 'row', i: r }));
+    }
+    if (hv?.colEdge !== undefined) dot(g.xs[hv.colEdge], py, same(hot, { kind: 'tableInsert', axis: 'col', i: hv.colEdge }));
+    if (hv?.rowEdge !== undefined) dot(px, g.ys[hv.rowEdge], same(hot, { kind: 'tableInsert', axis: 'row', i: hv.rowEdge }));
+  }
+
+  /** The column / row under the pointer for the selected table's pills and dots (null: none). */
+  #tableHoverAt(p) {
+    const sel = this.selection.size === 1 ? byId(this.doc).get([...this.selection][0]) : null;
+    if (!sel || sel.type !== 'table' || this.editingCell) return null;
+    const g = this.#tableGeom(sel);
+    if (!this.#tableUsable(g)) return null;
+    const inX = p.x >= g.x && p.x <= g.x + g.w;
+    const inY = p.y >= g.y && p.y <= g.y + g.h;
+    const top = inX && p.y >= g.y - TSTRIP - 14 && p.y < g.y;
+    const left = inY && p.x >= g.x - TSTRIP - 14 && p.x < g.x;
+    if (!((inX && inY) || top || left)) return null;
+    const idx = (edges, v) => { let i = 0; while (i < edges.length - 2 && v >= edges[i + 1]) i++; return i; };
+    const hv = { id: sel.id };
+    if (inX) {
+      hv.col = idx(g.xs, p.x);
+      if (top) hv.colEdge = p.x - g.xs[hv.col] < g.xs[hv.col + 1] - p.x ? hv.col : hv.col + 1;
+    }
+    if (inY) {
+      hv.row = idx(g.ys, p.y);
+      if (left) hv.rowEdge = p.y - g.ys[hv.row] < g.ys[hv.row + 1] - p.y ? hv.row : hv.row + 1;
+    }
+    return hv;
+  }
+
   /** Outline a connector's path on the overlay. */
   #outlinePath(ctx, c, width, alpha) {
     const m = byId(this.doc);
@@ -761,6 +966,7 @@ export class Board {
     const id = this.hover || (this.selection.size === 1 ? [...this.selection][0] : null);
     const it = id && m.get(id);
     if (!it || !LINKABLE.has(it.type) || it.rot) return null;
+    if (it.type === 'table' && this.selection.has(it.id)) return null;
     if (Math.min(it.w, it.h) * this.view.z < 36) return null;
     return it;
   }
@@ -810,6 +1016,7 @@ export class Board {
       }
       const box = this.#selectionBox(sel);
       if (box) for (const hd of this.#handles(box, sel)) if (Math.abs(sx - hd.x) <= HANDLE * k && Math.abs(sy - hd.y) <= HANDLE * k) return { kind: 'handle', handle: hd.id };
+      if (sel.length === 1 && sel[0].type === 'table' && !this.editingCell) { const th = this.#tableHit(sel[0], sx, sy, k); if (th) return th; }
       const dotItem = this.#dotItem();
       if (dotItem) for (const d of this.#dots(dotItem)) if (Math.hypot(sx - d.x, sy - d.y) <= 9 * k) return { kind: 'dot', id: d.id, side: d.side };
     }
@@ -831,7 +1038,7 @@ export class Board {
       }
       // a stroke: on its ink, not anywhere in its box
       if (it.type === 'stroke') { if (strokeHits(it, p, reach * 0.7)) return { kind: 'item', id: it.id }; continue; }
-      if (inItem(it, p)) return { kind: 'item', id: it.id };
+      if (inItem(it, p)) return it.type === 'table' ? { kind: 'item', id: it.id, cell: cellAt(it, p, this.theme.font) } : { kind: 'item', id: it.id };
     }
     const g = groupAtPoint(this.doc, p);
     return g ? { kind: 'group', id: g.id } : { kind: 'none' };
@@ -1031,6 +1238,30 @@ export class Board {
       if (rs) this.drag = { ...base, type: 'resize', handle: hit.handle, ...rs };
       return;
     }
+    // a selected table: + bars and insert dots act on release; a pill selects its column / row; a border resizes
+    if (hit.kind === 'tableAdd' || hit.kind === 'tableInsert') { this.drag = { ...base, type: 'tableBtn' }; return; }
+    if (hit.kind === 'tablePick') {
+      const t = byId(this.doc).get(hit.id);
+      const ext = e.shiftKey && this.cells?.id === t.id;
+      if (hit.axis === 'col') this.selectCells(t.id, 0, ext ? this.cells.ac : hit.i, t.rows.length - 1, hit.i);
+      else this.selectCells(t.id, ext ? this.cells.ar : hit.i, 0, hit.i, t.cols.length - 1);
+      this.cb.cellsPicked?.(t.id);
+      this.drag = { ...base, type: 'noop' };
+      return;
+    }
+    if (hit.kind === 'tableBorder') {
+      const t = byId(this.doc).get(hit.id);
+      const L = tableLayout(t, this.theme.font);
+      this.drag = { ...base, type: 'tableBorder', id: t.id, axis: hit.axis, i: hit.i, start: t, size: hit.axis === 'col' ? t.cols[hit.i] : L.hs[hit.i] };
+      return;
+    }
+    // Shift + a cell of the table whose cells are selected: a range
+    if (hit.kind === 'item' && hit.cell && e.shiftKey && this.cells?.id === hit.id && this.selection.has(hit.id)) {
+      this.selectCells(hit.id, this.cells.ar, this.cells.ac, hit.cell.r, hit.cell.c);
+      this.cb.cellsPicked?.(hit.id);
+      this.drag = { ...base, type: 'noop' };
+      return;
+    }
     if (hit.kind === 'item' || hit.kind === 'label' || (hit.kind === 'group' && this.selection.has(hit.id))) {
       const id = hit.id;
       if (e.shiftKey) {
@@ -1084,6 +1315,12 @@ export class Board {
     } else if (d.type === 'resize') {
       if (first) d.before = this.doc.items;
       this.#resizeTo(d, this.#snapPoint(d, w, e.ctrlKey || e.metaKey));
+    } else if (d.type === 'tableBorder') {
+      if (first) d.before = this.doc.items;
+      const delta = d.axis === 'col' ? w.x - d.wx : w.y - d.wy;
+      const n = d.axis === 'col' ? resizeCol(d.start, d.i, d.size + delta) : resizeRow(d.start, d.i, d.size + delta);
+      this.doc.items = d.before.map((it) => (it.id === n.id ? n : it));
+      this.invalidate();
     } else if (d.type === 'marquee') {
       d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
       this.#marqueeSelect(d);
@@ -1167,6 +1404,18 @@ export class Board {
       this.invalidate();
       return;
     }
+    if (d.type === 'tableBorder') {
+      if (!d.moved) { this.invalidateOverlay(); return; }
+      if (cancelled) { this.doc.items = d.before; this.invalidate(); return; }
+      this.cb.commit?.('resize', d.before);
+      this.invalidate();
+      return;
+    }
+    if (d.type === 'tableBtn') {
+      if (!cancelled && !d.moved) this.cb.tableAction?.(d.hit);
+      this.invalidateOverlay();
+      return;
+    }
     if (d.type === 'connect') {
       this.invalidateOverlay();
       if (cancelled || !d.moved) return;
@@ -1195,6 +1444,12 @@ export class Board {
       // a click on a note: tick a checkbox, open a link (Ctrl); on a video's play button: play
       const it = byId(this.doc).get(d.hit.id);
       if (it?.type === 'video' && this.#onPlay(it, { x: d.wx, y: d.wy })) { this.cb.playVideo?.(it.id); this.invalidateOverlay(); return; }
+      // a click on a table's cell: that cell is selected (and copied, unless the table says not to)
+      if (it?.type === 'table' && d.hit.cell && it.id !== this.editingCell?.id) {
+        this.selectCells(it.id, d.hit.cell.r, d.hit.cell.c);
+        this.cb.cellsPicked?.(it.id, { click: true });
+        return;
+      }
       if (it?.type === 'note' && it.id !== this.editingId) {
         const p = unturn(it, { x: d.wx, y: d.wy });
         const box = !this.readOnly && checkAt(it, p, this.theme.font);
@@ -1258,6 +1513,15 @@ export class Board {
     // keep the dots of the item the pointer came from while it is on them
     const id = hit.kind === 'item' || hit.kind === 'label' ? hit.id : hit.kind === 'dot' ? hit.id : null;
     let cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : hit.kind === 'dot' || hit.kind === 'end' ? 'crosshair' : '';
+    if (hit.kind === 'tableBorder') cursor = hit.axis === 'col' ? 'ew' : 'ns';
+    if (hit.kind === 'tableAdd' || hit.kind === 'tablePick' || hit.kind === 'tableInsert') cursor = 'pointer';
+    const tHot = hit.kind?.startsWith('table') ? hit : null;
+    const tHover = this.#tableHoverAt(p);
+    if (JSON.stringify(tHot) !== JSON.stringify(this.tableHot ?? null) || JSON.stringify(tHover) !== JSON.stringify(this.tableHover)) {
+      this.tableHot = tHot;
+      this.tableHover = tHover;
+      this.invalidateOverlay();
+    }
     if (!cursor && hit.kind === 'item') {
       const it = byId(this.doc).get(hit.id);
       if (it?.type === 'note' && it.id !== this.editingId && !this.readOnly && checkAt(it, unturn(it, this.toWorld(p.x, p.y)), this.theme.font)) cursor = 'pointer';
@@ -1324,7 +1588,7 @@ export class Board {
     const frameOnly = sel.length === 1 && freeResize(sel[0]);
     const ids = frameOnly ? new Set([sel[0].id]) : withChildren(this.doc, sel.map((s) => s.id));
     const start = new Map();
-    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h, scale: (it.type === 'note' && !it.fit) || it.type === 'shape' ? it.scale || 1 : null, from: it.type === 'connector' ? it.from : null, to: it.type === 'connector' ? it.to : null });
+    for (const it of this.doc.items) if (ids.has(it.id)) start.set(it.id, { x: it.x, y: it.y, w: it.w, h: it.h, scale: (it.type === 'note' && !it.fit) || it.type === 'shape' || it.type === 'table' ? it.scale || 1 : null, from: it.type === 'connector' ? it.from : null, to: it.type === 'connector' ? it.to : null, cols: it.type === 'table' ? it.cols : null, rows: it.type === 'table' ? it.rows : null });
     const ax = handle.includes('w') ? b.x + b.w : handle.includes('e') ? b.x : null;
     const ay = handle.includes('n') ? b.y + b.h : handle.includes('s') ? b.y : null;
     return { box: b, frameOnly, start, ax, ay };
@@ -1430,6 +1694,16 @@ export class Board {
         if (d.handle.includes('n')) y = y2 - nh; else y2 = y + nh;
       }
       patch = new Map([[id, { x, y, w: x2 - x, h: y2 - y }]]);
+      if (it?.type === 'table') {
+        // a table: its columns share the new width, its rows the new height (rows still fit their text)
+        const s0 = start.get(id);
+        const min = TABLE_MIN * (it.scale || 1);
+        const cols = s0.cols.map((v) => Math.max(min, (v * (x2 - x)) / s0.w));
+        const rows = s0.rows.map((v) => Math.max(min, (v * (y2 - y)) / s0.h));
+        const w2 = cols.reduce((a, b) => a + b, 0);
+        if (d.handle.includes('w')) x = x2 - w2;
+        patch = new Map([[id, { x, y, w: w2, h: Math.max(y2 - y, rows.reduce((a, b) => a + b, 0)), cols, rows }]]);
+      }
     } else {
       // uniform scale from the opposite corner (images keep their aspect)
       const ax = d.ax ?? b.x;
@@ -1443,6 +1717,7 @@ export class Board {
       for (const [id, r] of start) {
         const p = { x: ax + (r.x - ax) * s, y: ay + (r.y - ay) * s, w: r.w * s, h: r.h * s };
         if (r.scale) p.scale = r.scale * s; // documents and text scale with their box here
+        if (r.cols) { p.cols = r.cols.map((v) => v * s); p.rows = r.rows.map((v) => v * s); }
         const sc = (e) => (e && e.id === undefined ? { x: ax + (e.x - ax) * s, y: ay + (e.y - ay) * s } : e);
         if (r.from) { p.from = sc(r.from); p.to = sc(r.to); }
         patch.set(id, p);
@@ -1509,7 +1784,7 @@ export class Board {
 }
 
 /** Items whose box is resized on its own (8 handles) rather than scaled with the selection. */
-const freeResize = (it) => it.type === 'group' || ((it.type === 'note' || it.type === 'shape') && !it.rot); // turned: scaled as a whole
+const freeResize = (it) => it.type === 'group' || it.type === 'table' || ((it.type === 'note' || it.type === 'shape') && !it.rot); // turned: scaled as a whole
 
 /** A board point in an item's own (unturned) frame. */
 function unturn(it, p) {

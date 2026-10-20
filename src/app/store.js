@@ -56,6 +56,15 @@ export class Store {
     return s;
   }
 
+  /**
+   * The time of the file as read: what tells an outside change later. A Blob has
+   * none (a server source may give one): then ask the source.
+   */
+  async #mtimeOf(file) {
+    if (file.lastModified) return file.lastModified;
+    try { return (await this.source?.stat?.())?.mtime ?? null; } catch { return null; }
+  }
+
   async #loadCanvas(file) {
     const reader = blobReader(file);
     const c = await openCanvas(reader);
@@ -65,7 +74,7 @@ export class Store {
     this.index = c.index;
     this.doc = c.doc;
     this.base = serialize(c.doc);
-    this.mtime = file.lastModified ?? null;
+    this.mtime = await this.#mtimeOf(file);
     this.warnings = c.warnings;
   }
 
@@ -290,7 +299,7 @@ export class Store {
     this.file = file;
     this.reader = reader;
     this.index = c.index;
-    this.mtime = file.lastModified ?? null;
+    this.mtime = await this.#mtimeOf(file);
     this.base = serialize(c.doc);
     this.doc = doc;
     return { conflicts, changedAssets };

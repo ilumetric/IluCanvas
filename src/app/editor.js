@@ -192,10 +192,12 @@ function clean(s) {
 export class NoteEditor {
   /**
    * board: Board; layer: the element the editor lives in;
-   * onClose(id, text | null): null when nothing changed; onChange(): formatting state may have changed
+   * onClose(id, text | null): null when nothing changed; onChange(): formatting state may have changed;
+   * onTab(back): Tab in a table cell (the next cell)
    */
-  constructor({ board, layer, onClose, onChange }) {
+  constructor({ board, layer, onClose, onChange, onTab }) {
     this.board = board;
+    this.onTab = onTab;
     this.layer = layer;
     this.onClose = onClose;
     this.onChange = onChange;
@@ -347,6 +349,7 @@ export class NoteEditor {
   #key(e) {
     if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.close(); return; }
+    if (e.key === 'Tab' && this.item?.type === 'cell' && this.onTab) { e.preventDefault(); e.stopPropagation(); this.onTab(e.shiftKey); return; }
     if (e.key === 'Tab') {
       e.preventDefault();
       if (document.getSelection().anchorNode?.parentElement?.closest('li')) document.execCommand(e.shiftKey ? 'outdent' : 'indent');

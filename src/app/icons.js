@@ -101,6 +101,13 @@ const P = {
   headArrow: '<path d="M4 12h15"/><path d="M14 7l5 5-5 5"/>',
   headDot: '<path d="M4 12h12"/><circle cx="18" cy="12" r="2.6" fill="currentColor"/>',
   dash: '<path d="M3 12h4M10 12h4M17 12h4"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/>',
+  rowAbove: '<rect x="3" y="12" width="18" height="8" rx="1.5"/><path d="M12 3v6M9 6h6"/>',
+  rowBelow: '<rect x="3" y="4" width="18" height="8" rx="1.5"/><path d="M12 15v6M9 18h6"/>',
+  colLeft: '<rect x="12" y="3" width="8" height="18" rx="1.5"/><path d="M3 12h6M6 9v6"/>',
+  colRight: '<rect x="4" y="3" width="8" height="18" rx="1.5"/><path d="M15 12h6M18 9v6"/>',
+  rowRemove: '<rect x="3" y="8" width="18" height="8" rx="1.5"/><path d="M9.5 10l5 4M14.5 10l-5 4"/>',
+  colRemove: '<rect x="8" y="3" width="8" height="18" rx="1.5"/><path d="M10 9.5l4 5M14 9.5l-4 5"/>',
   lineWidth: '<path d="M4 6.5h16" stroke-width="1"/><path d="M4 12h16" stroke-width="2.2"/><path d="M4 18h16" stroke-width="4"/>',
   logo: '<rect x="3" y="3" width="8" height="10" rx="1"/><rect x="13" y="3" width="8" height="6" rx="1"/><rect x="13" y="11" width="8" height="10" rx="1"/><rect x="3" y="15" width="8" height="6" rx="1"/>',
 };

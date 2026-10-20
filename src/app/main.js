@@ -179,6 +179,7 @@ function silent(fn) {
 
 function changed({ save = true } = {}) {
   S.rev++;
+  fitTables();
   if (doc()) refreshConnectors(doc());
   S.board.pruneSelection();
   S.notes?.sync();
@@ -189,6 +190,14 @@ function changed({ save = true } = {}) {
   renderTopbar();
   updateDocTitle();
   if (save) scheduleSave();
+}
+
+/** Tables: their box follows their rows as drawn (the text measured here) — part of the change, not a step of its own. */
+function fitTables() {
+  const d = doc();
+  if (!d || !S.notes) return;
+  const ids = d.items.filter((it) => it.type === 'table').map((it) => it.id);
+  if (ids.length) S.notes.fitHeights(d, ids);
 }
 
 function restore(s) {
@@ -542,6 +551,7 @@ function renderToolbar() {
     readOnly() ? null : noteTool(),
     readOnly() ? null : tool('shape', shapeIcon, t('tool.shape'), 'S'),
     readOnly() ? null : tool('connector', 'connector', t('tool.connector'), 'X'),
+    readOnly() ? null : tool('table', 'table', t('tool.table'), 'Shift+T'),
     readOnly() ? null : h('span.tool-sep'),
     readOnly() ? null : tool('pen', 'pen', t('tool.pen'), 'P'),
     readOnly() ? null : tool('highlighter', 'highlighter', t('tool.highlighter'), 'Shift+P'),
@@ -1156,7 +1166,7 @@ async function absorbOutside(dirty) {
 function growNotes() {
   const d = doc();
   if (!d || !S.notes) return;
-  const ids = d.items.filter((it) => it.type === 'note' && !it.fit).map((it) => it.id);
+  const ids = d.items.filter((it) => (it.type === 'note' && !it.fit) || it.type === 'table').map((it) => it.id);
   if (!ids.length) return;
   if (S.notes.fitHeights(d, ids).length) {
     S.board.invalidate();
@@ -1732,11 +1742,13 @@ function contextMenu(pt, hit, world) {
 /**
  * A double click (two taps) only moves the view: onto the item under it (fitted
  * to the screen), or to the point on the empty board (centred, same zoom). Editing
- * is Enter / the context menu, a group's name F2, a video its play button.
+ * is Enter / the context menu, a group's name F2, a video its play button —
+ * except a table's cell: a double click edits it (a click selects and copies it).
  */
 function onDblClick(hit, e) {
   if (!doc()) return;
   const it = hit.id && byId(doc()).get(hit.id);
+  if (it?.type === 'table' && hit.cell && !readOnly()) { S.notes.openCell(it.id, hit.cell.r, hit.cell.c); return; }
   if (it) {
     S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
     return;
@@ -1990,7 +2002,7 @@ function openSettings() {
 
 function showShortcuts() {
   const rows = [
-    ['V / H', t('tool.select') + ' / ' + t('tool.hand')], [t('keys.rmb'), t('keys.pan')], [t('keys.space'), t('keys.pan')], [t('keys.wheel'), t('keys.zoom')], [t('keys.mmb'), t('keys.zoom')],
+    ['V / H', t('tool.select') + ' / ' + t('tool.hand')], ['Shift+T', t('tool.table')], [t('keys.cellClick'), t('keys.cellCopy')], [t('keys.dbl') + ' · Enter', t('keys.cellEdit')], [t('keys.rmb'), t('keys.pan')], [t('keys.space'), t('keys.pan')], [t('keys.wheel'), t('keys.zoom')], [t('keys.mmb'), t('keys.zoom')],
     ['Shift+1 / Shift+2 / Shift+0', `${t('zoom.fit')} / ${t('zoom.selection')} / 100%`], ['Ctrl+G / Ctrl+Shift+G', `${t('ctx.group')} / ${t('ctx.ungroup')}`],
     ['Shift+A', t('ctx.arrange')], ['Shift+H / Shift+V', `${t('ctx.flipH')} / ${t('ctx.flipV')}`], ['Shift+R', t('ctx.rotateRight')],
     ['] / [', `${t('ctx.front')} / ${t('ctx.back')}`], ['Ctrl+C / Ctrl+V / Ctrl+D', `${t('ctx.copy')} / ${t('ctx.paste')} / ${t('ctx.duplicate')}`],
@@ -2011,6 +2023,8 @@ addEventListener('keydown', (e) => {
   if (mod && k === 's') { e.preventDefault(); if (!inDialog) { if (e.shiftKey) saveAs(); else save(); } return; }
   if (mod && k === 'o') { e.preventDefault(); if (!inDialog) openFile(); return; }
   if (inDialog || isTyping(e.target)) return;
+  // a table's selected cells take the arrows, Enter, Delete, Ctrl+C and typing
+  if (S.notes?.cellKey(e)) return;
   if (mod && (k === '=' || k === '+')) { e.preventDefault(); S.board.zoomCenter(1.5); return; }
   if (mod && k === '-') { e.preventDefault(); S.board.zoomCenter(1 / 1.5); return; }
   if (mod && k === 'b') { e.preventDefault(); setSidebar(!S.sidebar); return; }
@@ -2032,6 +2046,7 @@ addEventListener('keydown', (e) => {
     if (k === 'r') { e.preventDefault(); rotate(90); return; }
     if (k === 'a') { e.preventDefault(); arrangeSelection(); return; }
     if (k === 'p' && !readOnly()) { e.preventDefault(); setTool('highlighter'); return; }
+    if (k === 't' && !readOnly()) { e.preventDefault(); setTool('table'); return; }
   }
   switch (e.key) {
     case 'Delete': case 'Backspace': e.preventDefault(); if (!readOnly()) deleteSelection(); return;
@@ -2225,7 +2240,9 @@ async function start() {
         commit(label, { items, assets: assets || doc().assets, title: doc().title });
       },
       selection: () => S.notes?.render(),
-      create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : S.notes.create(where, o)),
+      create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : tool === 'table' ? S.notes.createTable(o?.from || where) : S.notes.create(where, o)),
+      cellsPicked: (id) => S.notes.cellsPicked(id),
+      tableAction: (hit) => S.notes.tableAction(hit),
       connect: (from, to) => S.notes.connect(from, to),
       playVideo: (id) => S.video.play(id),
       brush: strokeBrush,

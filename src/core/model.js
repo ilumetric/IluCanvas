@@ -14,8 +14,9 @@ export const GROUP_COLORS = ['violet', 'blue', 'orange', 'green', 'pink', 'yello
 import { connectorPath, pathBounds, ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, INK_DEFAULTS } from './ink.js';
 import { PROVIDERS, RATE_MIN, RATE_MAX, cleanMarks } from './video.js';
+import { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, cleanCells, cleanSizes, cellOf, packCell } from './table.js';
 
-export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke', 'video'];
+export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke', 'video', 'table'];
 export const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
 /** Fixed colours of shapes, connectors and ink (they do not follow the style). */
 export const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
@@ -38,6 +39,7 @@ const ITEM_KEYS = {
   connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
   stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'dash', 'end', 'x', 'y', 'w', 'h', 'rot', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
   video: ['id', 'type', 'provider', 'videoId', 'url', 'title', 'asset', 'x', 'y', 'w', 'h', 'rot', 'start', 'rate', 'loop', 'duration', 'parent', 'locked', 'note', 'marks'],
+  table: ['id', 'type', 'x', 'y', 'w', 'h', 'fill', 'size', 'scale', 'align', 'clickCopy', 'parent', 'locked', 'note', 'cols', 'rows', 'cells'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
 const DOC_KEYS = ['format', 'version', 'id', 'title', 'created', 'updated', 'updated_by', 'generator', 'assets', 'items'];
@@ -164,6 +166,7 @@ export function normalize(raw) {
       n.pts = pts.length % 3 === 0 && pts.every((v) => typeof v === 'number' && Number.isFinite(v)) ? pts : [];
       if (!Array.isArray(n.tw) || n.tw.length !== n.pts.length / 3 || !n.tw.every(Number.isFinite)) delete n.tw;
     }
+    if (n.type === 'table') { const c = cleanTable(n); for (const k of Object.keys(n)) if (!(k in c)) delete n[k]; Object.assign(n, c); }
     if (n.type === 'group') {
       n.name = str(n.name) ?? 'Group';
       if (!GROUP_COLORS.includes(n.color)) n.color = 'grey';
@@ -193,6 +196,36 @@ export function normalize(raw) {
   return doc;
 }
 
+/**
+ * A table's fields made consistent: rows × cols cells, positive sizes, known
+ * colours; `w` = Σ cols, `h` at least Σ rows. Tables do not turn.
+ */
+export function cleanTable(t) {
+  const n = { ...t };
+  const scale = n.scale > 0 ? n.scale : 1;
+  let R = Array.isArray(n.rows) && n.rows.length ? n.rows.length : Array.isArray(n.cells) && n.cells.length ? n.cells.length : 3;
+  const C = Array.isArray(n.cols) && n.cols.length ? n.cols.length : Math.max(0, ...(Array.isArray(n.cells) ? n.cells.map((r) => (Array.isArray(r) ? r.length : 0)) : [0])) || 3;
+  R = Math.max(1, Math.min(R, Math.floor(TABLE_MAX_CELLS / C)));
+  n.cols = cleanSizes(n.cols, C, TABLE_COL * scale);
+  n.rows = cleanSizes(n.rows, R, TABLE_ROW * scale);
+  const paint = (v) => (isHexColor(v) ? v.toLowerCase() : PAINT.includes(v) || v === 'none' ? v : null);
+  n.cells = cleanCells(n.cells, R, C).map((row, r) => row.map((_, c) => {
+    const cell = cellOf({ cells: [[row[c]]] }, 0, 0);
+    if (cell.fill !== undefined && !paint(cell.fill)) delete cell.fill; else if (cell.fill) cell.fill = paint(cell.fill);
+    if (cell.align !== undefined && !NOTE_ALIGNS.includes(cell.align)) delete cell.align;
+    return packCell(cell);
+  }));
+  n.fill = paint(n.fill) || 'white';
+  if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
+  if (!(n.scale > 0) || n.scale === 1) delete n.scale;
+  if (!NOTE_ALIGNS.includes(n.align) || n.align === 'left') delete n.align;
+  if (n.clickCopy !== false) delete n.clickCopy;
+  delete n.rot;
+  n.w = n.cols.reduce((a, b) => a + b, 0);
+  n.h = Math.max(n.rows.reduce((a, b) => a + b, 0), Number(n.h) > 0 ? Math.min(MAX_COORD, n.h) : 0);
+  return n;
+}
+
 // ---- validate --------------------------------------------------------------------------------------
 
 /** { ok, errors: [{ id?, path, msg }], warnings } — errors make the file unusable by other tools. */
@@ -220,6 +253,14 @@ export function validate(doc, { files = null } = {}) {
     ids.add(it.id);
     if (!ITEM_TYPES.includes(it.type)) warn(`${p}.type`, `unknown type "${it.type}" (kept, not editable here)`, it.id);
     if ((it.type === 'note' || it.type === 'shape') && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
+    if (it.type === 'table') {
+      const R = Array.isArray(it.rows) ? it.rows.length : 0;
+      const C = Array.isArray(it.cols) ? it.cols.length : 0;
+      if (!R || !it.rows.every((v) => v > 0)) err(`${p}.rows`, 'must be row heights (positive numbers), one per row', it.id);
+      if (!C || !it.cols.every((v) => v > 0)) err(`${p}.cols`, 'must be column widths (positive numbers), one per column', it.id);
+      if (!Array.isArray(it.cells) || it.cells.length !== R || !it.cells.every((row) => Array.isArray(row) && row.length === C)) err(`${p}.cells`, `must be ${R} rows of ${C} cells (text, or { text, fill, align })`, it.id);
+      else if (!it.cells.every((row) => row.every((v) => typeof v === 'string' || (v && typeof v === 'object' && typeof v.text === 'string')))) err(`${p}.cells`, 'a cell is text, or { text, fill, align }', it.id);
+    }
     if (it.type === 'video') {
       if (!/^[\w-]{11}$/.test(it.videoId || '')) err(`${p}.videoId`, 'must be a YouTube video id (11 characters)', it.id);
       if (it.asset !== undefined) { if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id); used.add(it.asset); }

@@ -283,7 +283,9 @@ export function serverSource(path) {
     async getFile() {
       const r = await fetch(`${API}file?${q}`, { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status === 404 ? 'not found' : `HTTP ${r.status}`);
-      return r.blob();
+      // with the file's time: without it a reload could not tell an outside change any more
+      const m = Number(r.headers.get('X-Mtime'));
+      return new File([await r.blob()], path.split('/').pop(), Number.isFinite(m) && m > 0 ? { lastModified: m } : {});
     },
     async stat() {
       const r = await fetch(`${API}stat?${q}`, { cache: 'no-store' });

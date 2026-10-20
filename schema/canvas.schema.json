@@ -75,6 +75,9 @@
             "$ref": "#/$defs/video"
           },
           {
+            "$ref": "#/$defs/table"
+          },
+          {
             "$ref": "#/$defs/other"
           }
         ]
@@ -236,7 +239,8 @@
               "shape",
               "connector",
               "stroke",
-              "video"
+              "video",
+              "table"
             ]
           }
         }
@@ -771,6 +775,147 @@
               }
             }
           }
+        }
+      }
+    },
+    "table": {
+      "description": "A table: a grid of cells with Markdown text. w = the sum of cols; h = the rows as drawn (a row grows to show its text). Tables do not turn.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/box"
+        }
+      ],
+      "required": [
+        "cols",
+        "rows",
+        "cells",
+        "fill"
+      ],
+      "properties": {
+        "type": {
+          "const": "table"
+        },
+        "cols": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "description": "Column widths, board units."
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "description": "Row heights, board units: the least — a row grows to show its text."
+        },
+        "cells": {
+          "type": "array",
+          "description": "rows × cols cells, row by row.",
+          "items": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Markdown text."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "text"
+                  ],
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "fill": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "white",
+                            "grey",
+                            "black",
+                            "red",
+                            "orange",
+                            "yellow",
+                            "green",
+                            "blue",
+                            "violet",
+                            "pink",
+                            "none"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^#[0-9a-f]{6}$"
+                        }
+                      ],
+                      "description": "The cell's own fill."
+                    },
+                    "align": {
+                      "enum": [
+                        "left",
+                        "center",
+                        "right"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "grey",
+                "black",
+                "red",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "violet",
+                "pink",
+                "none"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$"
+            }
+          ],
+          "description": "The cells' background (none: the board shows through)."
+        },
+        "size": {
+          "enum": [
+            "s",
+            "l",
+            "xl"
+          ],
+          "description": "Text size; m when left out."
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "align": {
+          "enum": [
+            "center",
+            "right"
+          ],
+          "description": "Text alignment of the cells; left when left out."
+        },
+        "clickCopy": {
+          "const": false,
+          "description": "A click on a cell does not copy its text (it does when left out)."
         }
       }
     }

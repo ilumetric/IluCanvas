@@ -6,7 +6,7 @@ new features are new item types, not new subsystems.
 ## Principles
 
 - **Everything is an item** in `canvas.json` `items`: today `image`, `group`,
-  `note`, `shape`, `connector`, `stroke`, `video`. Every type gets the same
+  `note`, `shape`, `connector`, `stroke`, `video`, `table`. Every type gets the same
   selection, move, resize, groups, undo, autosave, minimap, agent ops.
 - **Drawn on the canvas**, like images (fast with thousands of items; correct
   stacking — a note can lie under a picture). Real DOM appears only while
@@ -126,9 +126,28 @@ once per `pts` array and cached. Details: [FORMAT.md](FORMAT.md).
   for a range, `label`); click to jump, add the current time with a label;
   `?t=` from the link becomes the start.
 
+## 7. Tables (`table`)
+
+```json
+{"id":"t4…","type":"table","x":0,"y":0,"w":400,"h":112,"fill":"white","cols":[200,200],"rows":[56,56],"cells":[["Name","Link"],[{"text":"**Rim**","fill":"yellow"},"https://…"]]}
+```
+
+- FigJam style: + bars at the right / bottom add a column / row; pills above
+  the columns and left of the rows select a whole one; dots between them
+  insert one there; borders drag to resize. Rows grow to show their text.
+- A cell is Markdown (the notes' layout and editor: a cell is laid out as a
+  small note). A click selects a cell and copies it (Shift: a range, copied
+  as TSV + an HTML table); `clickCopy: false` turns copying off per table. A
+  double click, Enter or typing edits; Tab moves on, past the last cell a new
+  row. Arrows move the selection, Delete clears it.
+- The bar: fill (the selected cells or the table), text size, bold / strike /
+  bullets over whole cells, alignment, copy on click, rows and columns.
+- Agents: ops `table` (cells or rows × cols), `cell`, `row`, `col`; CLI
+  `table --csv`, `cell`; `ls` prints the rows.
+
 ## Toolbar
 
-Select (V), Hand (H) · Note (N), Shape (S ▸ picker), Connector (X) · Pen (P),
+Select (V), Hand (H) · Note (N), Shape (S ▸ picker), Connector (X), Table (Shift+T) · Pen (P),
 Highlighter (Shift+P), Tape (T), Eraser (E) · Image (I), Video (Y). A tool's options slide out next to the toolbar (like GuitarCanvas'
 brush bar).
 
@@ -148,3 +167,4 @@ connectors as `s1 → s2 "yes"`.
 5. PureRef on our rails: a `.pur` opens as ordinary IluCanvas items — its
    groups become our groups, its text notes our notes, its drawings our strokes.
    No PureRef-specific widgets. *(done: groups, notes, drawings — shapes, lines, ink)*
+6. Tables. *(done)*

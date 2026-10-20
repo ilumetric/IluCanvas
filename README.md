@@ -31,6 +31,12 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   between anything (X, or drag from the dots around a hovered item) —
   a Dubins path of arcs and lines (default), curved, straight or elbow, with heads, labels and dashes; they follow the
   items they connect.
+- **Tables** (Shift+T), FigJam style: + bars add a column / row, pills above
+  columns and left of rows select them, dots between them insert one, borders
+  drag to resize; rows grow with their text. A click on a cell copies it (a
+  Shift+click range copies as tab-separated text — it pastes into
+  spreadsheets; can be switched off per table), a double click edits it, Tab
+  goes to the next cell. Agents: `table --csv`, `cell`, ops `row` / `col`.
 - **Ink**: pen (P) with pressure and an italic nib, highlighter (Shift+P),
   washi tape (T) and an eraser (E) that removes whole strokes; a stylus
   draws, its back end erases, fingers pan. Ten fixed colours and a colour

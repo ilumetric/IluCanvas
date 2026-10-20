@@ -21,6 +21,7 @@ import { parsePureRef } from '../src/core/pureref.js';
 import { purItems } from '../src/core/purdoc.js';
 import { listText } from '../src/core/describe.js';
 import { posterUrls, oembedUrl } from '../src/core/video.js';
+import { parseDelimited } from '../src/core/table.js';
 
 const HELP = `IluCanvas ${APP_VERSION} — infinite reference board in one .ilucanvas file (format v${FORMAT_VERSION})
 A .ilucanvas file is a ZIP: canvas.json (the scene) + images/ (originals) + thumbs/.
@@ -54,6 +55,13 @@ Write (re-read → change → write; the open app picks the change up within sec
   note <file> "text" [--color C] [--at X,Y] [--group ID] [--w W] [--size s|m|l|xl]
                                         a note; Markdown text ("\\n" = new line); colours: yellow orange
                                         pink green blue violet grey (stickies), paper (document), none (text)
+  table <file> ["CSV / TSV text"] [--csv FILE | -] [--rows N] [--cols N] [--at X,Y] [--width W]
+        [--size s|m|l|xl] [--fill C] [--group ID] [--no-copy]
+                                        a table: cells from CSV / TSV (text or a file), or N × M empty
+                                        (default 3 × 3); --no-copy: a click on a cell does not copy it
+  cell <file> <table-id> <row> <col> ["text"] [--fill C|none] [--align left|center|right]
+                                        one cell (0 is the first, -1 the last); rows and columns:
+                                        apply ops row / col (insert, remove)
   rm <file> <id>… [--keep-children]     a group goes with its images unless --keep-children
   group <file> <id>… [--name N] [--color ${GROUP_COLORS.join('|')}]
   ungroup <file> <group-id>
@@ -72,7 +80,7 @@ Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'no_copy', 'h', 'v']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -476,6 +484,21 @@ async function main(argv) {
           return v;
         });
         ops = [{ op: 'stroke', points, tool: opt.tool, color: opt.color, width: opt.width ? Number(opt.width) : undefined, nib: opt.nib, dash: opt.dash ? true : undefined, end: opt.arrow ? 'arrow' : undefined, group: opt.group }];
+        break;
+      }
+      case 'table': {
+        need(pos.length <= 1, 'table: usage: table <file> ["CSV / TSV text"] [--csv FILE | -] [--rows N] [--cols N] [--at X,Y]');
+        const at = opt.at ? pair(opt.at, '--at') : null;
+        const src = opt.csv !== undefined ? (opt.csv === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(String(opt.csv), 'utf8')) : pos[0] !== undefined ? pos[0].replace(/\\n/g, '\n').replace(/\\t/g, '\t') : null;
+        const cells = src !== null ? parseDelimited(src) : undefined;
+        if (cells) need(cells.length, 'table: the CSV / TSV has no rows');
+        ops = [{ op: 'table', cells, rows: opt.rows ? Number(opt.rows) : undefined, cols: opt.cols ? Number(opt.cols) : undefined, width: opt.width ? Number(opt.width) : undefined, size: opt.size, fill: opt.fill, clickCopy: opt.no_copy ? false : undefined, x: at?.[0], y: at?.[1], group: opt.group }];
+        break;
+      }
+      case 'cell': {
+        need(pos.length >= 3 && pos.length <= 4, 'cell: usage: cell <file> <table-id> <row> <col> ["text"] [--fill C] [--align A]');
+        const [id, row, col, text] = pos;
+        ops = [{ op: 'cell', id, row: Number(row), col: Number(col), text: text !== undefined ? text.replace(/\\n/g, '\n') : undefined, fill: opt.fill === 'none' ? null : opt.fill, align: opt.align }];
         break;
       }
       case 'note': {

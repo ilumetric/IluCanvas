@@ -1,18 +1,21 @@
-// Notes, shapes and connectors in the app: making them (tools, double click,
-// dragging out of the tool bar), editing their text, connector labels, and
-// the bar that floats over the selection — their settings, or the formatting
-// buttons while you type.
+// Notes, shapes, connectors and tables in the app: making them (tools, double
+// click, dragging out of the tool bar), editing their text (a table's cells
+// too), connector labels, and the bar that floats over the selection — their
+// settings, or the formatting buttons while you type.
 
 import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, refreshConnectors, NOTE_COLORS, RATIO_K, SHAPE_KINDS, PAINT, isHexColor } from '../core/model.js';
 import { connectorPath, midpoint, ROUTES } from '../core/connectors.js';
 import { toggleTask, MARK_COLORS } from '../core/markdown.js';
 import { NoteEditor } from './editor.js';
 import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
+import { tableLayout } from './table.js';
+import { TABLE_COL, TABLE_ROW, cellOf, mapCells, insertRow, insertCol, removeRows, removeCols, cellsText, cellsHtml, hasMark, setMark, isList, setList } from '../core/table.js';
+import { cleanTable } from '../core/model.js';
 import { FILL, LINE_COLOR, fillColor, lineColor } from './shapes.js';
 import { INK_COLOR, inkColor } from './ink.js';
 import { openColorPicker } from './colorpicker.js';
 import { INK_TOOLS, INK_WIDTHS, inkScale, reframe, strokeScale } from '../core/ink.js';
-import { h, icon, openMenu, promptDialog } from './ui.js';
+import { h, icon, openMenu, promptDialog, toast } from './ui.js';
 import { t } from './i18n.js';
 
 const KIND_ICON = { rect: 'shRect', rounded: 'shRounded', ellipse: 'shEllipse', diamond: 'shDiamond', triangle: 'shTriangle', parallelogram: 'shParallelogram', hexagon: 'shHexagon', star: 'shStar', line: 'routeStraight', arrow: 'connector' };
@@ -41,8 +44,20 @@ export class NotesUI {
       board: this.board,
       layer,
       onClose: (id, md) => this.#closed(id, md),
-      onChange: () => this.render(),
+      onChange: () => this.#changed(),
+      onTab: (back) => this.#nextCell(back),
     });
+    this.cellEdit = null; // the table cell in the editor: { id, r, c }
+  }
+
+  /** The editor's text changed (or its caret moved): a cell's row grows as you type; the format bar follows. */
+  #changed() {
+    const ce = this.cellEdit;
+    if (ce && this.editor.el) {
+      const md = this.editor.markdown();
+      if (this.board.tableDraft?.text !== md) { this.board.tableDraft = { ...ce, text: md }; this.board.invalidate(); }
+    }
+    this.render();
   }
 
   get family() { return this.board.theme.font; }
@@ -204,6 +219,19 @@ export class NotesUI {
 
   /** Editing finished. Empty notes stay — the person deletes what they do not need. */
   #closed(id, md) {
+    const ce = this.cellEdit;
+    if (ce) {
+      // a table cell: its text goes into the table (one undo step), its row fits it
+      this.cellEdit = null;
+      this.board.editingCell = null;
+      this.board.tableDraft = null;
+      const d = this.app.doc();
+      const tb = d && byId(d).get(ce.id);
+      if (tb && md !== null) this.#editTable('text', ce.id, (x) => mapCells(x, { r0: ce.r, c0: ce.c }, (cell) => ({ ...cell, text: md })));
+      else this.board.invalidate();
+      this.render();
+      return;
+    }
     const d = this.app.doc();
     const it = d && byId(d).get(id);
     if (it && md !== null) {
@@ -215,12 +243,17 @@ export class NotesUI {
     this.render();
   }
 
-  /** Documents and text grow to show all their text (stickies shrink their text instead). */
+  /** Documents and text grow to show all their text (stickies shrink their text instead); a table's box is its rows as drawn. */
   fitHeights(d, ids) {
     const m = byId(d);
     const patches = {};
     for (const id of ids) {
       const it = m.get(id);
+      if (it?.type === 'table') {
+        const L = tableLayout(it, this.family);
+        if (Math.abs(L.h - it.h) > 0.5 || Math.abs(L.w - it.w) > 0.5) patches[id] = { w: L.w, h: Math.ceil(L.h * 100) / 100 };
+        continue;
+      }
       if (!it || (it.type !== 'note' && it.type !== 'shape') || it.fit) continue;
       const need = neededHeight(it, this.family);
       if (need > it.h + 0.5) patches[id] = { h: Math.ceil(need) };
@@ -240,6 +273,12 @@ export class NotesUI {
     const id = this.editor.id;
     if (!id) return;
     const it = byId(this.app.doc()).get(id);
+    if (this.cellEdit) {
+      const ce = this.cellEdit;
+      if (!it || it.type !== 'table' || ce.r >= it.rows.length || ce.c >= it.cols.length) this.editor.close({ commit: false });
+      else this.editor.update(tableLayout(it, this.family, this.board.tableDraft).cells[ce.r][ce.c]);
+      return;
+    }
     if (!it) this.editor.close({ commit: false });
     else this.editor.update(it);
   }
@@ -289,6 +328,7 @@ export class NotesUI {
     else if (!ro && only('shape')) this.#shapeBar(all);
     else if (!ro && only('connector')) this.#connectorBar(all);
     else if (!ro && only('stroke')) this.#strokeBar(all);
+    else if (!ro && all.length === 1 && all[0].type === 'table') this.#tableBar(all[0]);
     else { bar.hidden = true; bar.replaceChildren(); return; }
     bar.hidden = false;
     this.place();
@@ -308,9 +348,11 @@ export class NotesUI {
     const ui = this.board.ui;
     const r = bar.getBoundingClientRect();
     const st = this.board.stage.getBoundingClientRect();
+    // a selected table has pills above it and + bars around it: the bar keeps clear of them
+    const clear = !this.editor.id && items.length === 1 && items[0].type === 'table' ? 30 : 0;
     let x = st.left + a.x + (b.w * z) / 2 - r.width / 2;
-    let y = st.top + a.y - r.height - 14;
-    if (y < 64 * ui) y = st.top + a.y + b.h * z + 14;
+    let y = st.top + a.y - r.height - 14 - clear;
+    if (y < 64 * ui) y = st.top + a.y + b.h * z + 14 + clear;
     if (y + r.height > innerHeight - 8) y = Math.max(64 * ui, st.top + a.y + 14);
     x = Math.max(8, Math.min(x, innerWidth - r.width - 8));
     bar.style.left = `${x / ui}px`;
@@ -484,6 +526,222 @@ export class NotesUI {
       });
     }
     this.bar.replaceChildren(...parts);
+  }
+
+  // ---- tables ------------------------------------------------------------------------------------------
+
+  /** The Table tool: a 3 × 3 table of the usual size on screen, centred where clicked; its first cell is edited. */
+  createTable(where) {
+    const scale = niceScale(this.board.view.z);
+    const tb = cleanTable({ id: newId('table'), type: 'table', x: 0, y: 0, w: 1, h: 1, cols: Array(3).fill(TABLE_COL * scale), rows: Array(3).fill(TABLE_ROW * scale), cells: [], ...(scale !== 1 ? { scale } : {}) });
+    tb.x = where.x - tb.w / 2;
+    tb.y = where.y - tb.h / 2;
+    this.app.edit('table', (d) => { addItems(d, [tb]); reparent(d, [tb.id]); });
+    this.board.select([tb.id]);
+    this.app.setTool('select');
+    this.openCell(tb.id, 0, 0);
+    return tb.id;
+  }
+
+  /** Edit a table's cell (double click, Enter, typing over a selected cell). */
+  openCell(id, r, c, opts = {}) {
+    if (this.app.readOnly()) return;
+    if (this.editor.el) this.editor.close(); // the cell (or note) being edited keeps its text first
+    const d = this.app.doc();
+    const tb = d && byId(d).get(id);
+    if (!tb || tb.type !== 'table') return;
+    r = Math.max(0, Math.min(tb.rows.length - 1, r));
+    c = Math.max(0, Math.min(tb.cols.length - 1, c));
+    this.cellEdit = { id, r, c };
+    this.board.editingCell = { id, r, c };
+    this.board.tableDraft = null;
+    this.board.selectCells(id, r, c);
+    this.editor.open(tableLayout(tb, this.family).cells[r][c], opts);
+    this.render();
+  }
+
+  /** Tab while editing a cell: the next one (Shift: the one before); past the last cell a new row. */
+  #nextCell(back) {
+    const ce = this.cellEdit;
+    const tb = ce && byId(this.app.doc()).get(ce.id);
+    if (!tb) return;
+    const C = tb.cols.length;
+    const i = ce.r * C + ce.c + (back ? -1 : 1);
+    if (i < 0) return;
+    if (i >= tb.rows.length * C) {
+      this.editor.close();
+      this.#editTable('row', ce.id, (x) => insertRow(x));
+      this.openCell(ce.id, tb.rows.length, 0);
+      return;
+    }
+    this.openCell(ce.id, Math.floor(i / C), i % C);
+  }
+
+  /** Replace a table by `fn(table)` as one undo step; its box follows its rows. */
+  #editTable(label, id, fn) {
+    this.app.edit(label, (d) => {
+      const cur = byId(d).get(id);
+      if (!cur || cur.type !== 'table') return;
+      const n = fn(cur);
+      if (!n || n === cur) return;
+      d.items = d.items.map((it) => (it.id === id ? n : it));
+      this.fitHeights(d, [id]);
+    });
+    this.sync();
+    this.render();
+  }
+
+  /** A click picked cells (a cell, a column, a row): copied, unless the table says not to. */
+  cellsPicked(id) {
+    this.render();
+    const tb = byId(this.app.doc()).get(id);
+    if (tb && tb.clickCopy !== false) this.copyCells(id);
+  }
+
+  /** Copy the selected cells: plain text (tabs between cells, lines between rows) and an HTML table. */
+  async copyCells(id) {
+    const tb = byId(this.app.doc()).get(id);
+    const range = this.board.cellRange();
+    if (!tb || !range || range.id !== id) return false;
+    const text = cellsText(tb, range);
+    if (!text.trim()) return false;
+    try {
+      if (window.ClipboardItem && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([cellsHtml(tb, range)], { type: 'text/html' }) })]);
+      } else await navigator.clipboard.writeText(text);
+    } catch {
+      try { await navigator.clipboard.writeText(text); } catch { return false; }
+    }
+    const one = range.r0 === range.r1 && range.c0 === range.c1;
+    toast(one ? t('table.copied') : t('table.copiedN', { n: (range.r1 - range.r0 + 1) * (range.c1 - range.c0 + 1) }), { timeout: 1400 });
+    return true;
+  }
+
+  /** A + bar or an insert dot of the selected table was clicked. */
+  tableAction(hit) {
+    const tb = byId(this.app.doc()).get(hit.id);
+    if (!tb || this.app.readOnly()) return;
+    const col = hit.axis === 'col';
+    const at = hit.kind === 'tableAdd' ? (col ? tb.cols.length : tb.rows.length) : hit.i;
+    this.#editTable(col ? 'column' : 'row', tb.id, (x) => (col ? insertCol(x, at) : insertRow(x, at)));
+    if (col) this.board.selectCells(tb.id, 0, at, tb.rows.length - 1, at);
+    else this.board.selectCells(tb.id, at, 0, at, tb.cols.length - 1);
+    this.render();
+  }
+
+  /** Keys while a table's cells are selected (and nothing is being typed). True: handled. */
+  cellKey(e) {
+    const range = this.board.cellRange();
+    if (!range || this.editor.el) return false;
+    const tb = byId(this.app.doc()).get(range.id);
+    const ro = this.app.readOnly();
+    const R = tb.rows.length;
+    const C = tb.cols.length;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'c') { e.preventDefault(); this.copyCells(tb.id); return true; }
+    if (mod || e.altKey) return false;
+    const go = (dr, dc) => {
+      e.preventDefault();
+      const fr = Math.max(0, Math.min(R - 1, (e.shiftKey ? range.fr : range.ar) + dr));
+      const fc = Math.max(0, Math.min(C - 1, (e.shiftKey ? range.fc : range.ac) + dc));
+      if (e.shiftKey) this.board.selectCells(tb.id, range.ar, range.ac, fr, fc); else this.board.selectCells(tb.id, fr, fc);
+      this.render();
+      return true;
+    };
+    switch (e.key) {
+      case 'ArrowUp': return go(-1, 0);
+      case 'ArrowDown': return go(1, 0);
+      case 'ArrowLeft': return go(0, -1);
+      case 'ArrowRight': return go(0, 1);
+      case 'Tab': {
+        e.preventDefault();
+        const i = Math.max(0, Math.min(R * C - 1, range.ar * C + range.ac + (e.shiftKey ? -1 : 1)));
+        this.board.selectCells(tb.id, Math.floor(i / C), i % C);
+        this.render();
+        return true;
+      }
+      case 'Enter': case 'F2':
+        if (!ro) { e.preventDefault(); this.openCell(tb.id, range.ar, range.ac); }
+        return true;
+      case 'Delete': case 'Backspace':
+        e.preventDefault();
+        if (!ro) this.#editTable('clear', tb.id, (x) => mapCells(x, range, (cell) => ({ ...cell, text: '' })));
+        return true;
+      case 'Escape': this.board.clearCells(); this.render(); return true;
+      default:
+        // typing over a selected cell starts editing it with that character (spreadsheets)
+        if (!ro && e.key.length === 1) { this.openCell(tb.id, range.ar, range.ac, { select: 'all' }); return true; }
+        return false;
+    }
+  }
+
+  /** The selected table: fill, text size, bold / strike / bullets and alignment (of the selected cells, or all), copy on click, rows and columns. */
+  #tableBar(tb) {
+    const range = this.board.cellRange();
+    const sel = range && range.id === tb.id ? range : null;
+    const all = { r0: 0, c0: 0, r1: tb.rows.length - 1, c1: tb.cols.length - 1 };
+    const scope = sel || all;
+    const texts = [];
+    for (let r = scope.r0; r <= scope.r1; r++) for (let c = scope.c0; c <= scope.c1; c++) { const s = cellOf(tb, r, c).text; if (s.trim()) texts.push(s); }
+    const set = (label, fn) => this.#editTable(label, tb.id, fn);
+    const own = sel ? cellOf(tb, sel.ar, sel.ac) : {};
+    const fillNow = own.fill || tb.fill;
+    const fill = (c) => set('fill', (x) => (sel ? mapCells(x, sel, (cell) => ({ ...cell, fill: c === x.fill ? undefined : c })) : { ...x, fill: c }));
+    const fillBtn = this.#btn(null, t('table.fill'), () => this.#paintMenu(fillBtn, fillNow, fill, { none: true, custom: () => this.#tableCustomFill(fillBtn, tb.id, sel, fillNow) }));
+    fillBtn.dataset.cp = 'table-fill';
+    fillBtn.append(h('span.sb-swatch', { class: fillNow === 'none' ? 'none' : '', style: { background: fillNow === 'none' ? 'transparent' : fillColor(fillNow) } }));
+    const marked = (mark) => texts.length > 0 && texts.every((s) => hasMark(s, mark));
+    const bold = marked('**');
+    const strike = marked('~~');
+    const list = texts.length > 0 && texts.every(isList);
+    const alNow = (sel ? own.align : null) || tb.align || 'left';
+    const align = (a) => set('align', (x) => (sel ? mapCells(x, sel, (cell) => ({ ...cell, align: a === (x.align || 'left') ? undefined : a })) : { ...x, align: a === 'left' ? undefined : a }));
+    const parts = [fillBtn, h('span.sb-sep')];
+    for (const s of ['s', 'm', 'l', 'xl']) parts.push(this.#btn(null, t('note.size'), () => set('size', (x) => ({ ...x, size: s === 'm' ? undefined : s })), (tb.size || 'm') === s, s.toUpperCase()));
+    parts.push(h('span.sb-sep'),
+      this.#btn('bold', t('fmt.bold'), () => set('bold', (x) => mapCells(x, scope, (cell) => ({ ...cell, text: setMark(cell.text, '**', !bold) }))), bold),
+      this.#btn('strike', t('fmt.strike'), () => set('strike', (x) => mapCells(x, scope, (cell) => ({ ...cell, text: setMark(cell.text, '~~', !strike) }))), strike),
+      this.#btn('list', t('fmt.ul'), () => set('list', (x) => mapCells(x, scope, (cell) => ({ ...cell, text: setList(cell.text, !list) }))), list),
+      h('span.sb-sep'),
+      this.#btn('alignLeft', t('fmt.left'), () => align('left'), alNow === 'left'),
+      this.#btn('alignCenter', t('fmt.center'), () => align('center'), alNow === 'center'),
+      this.#btn('alignRight', t('fmt.right'), () => align('right'), alNow === 'right'),
+      h('span.sb-sep'),
+      this.#btn('copy', t('table.clickCopy'), () => set('clickCopy', (x) => ({ ...x, clickCopy: x.clickCopy === false ? undefined : false })), tb.clickCopy !== false));
+    const r0 = sel ? sel.r0 : tb.rows.length - 1;
+    const r1 = sel ? sel.r1 : r0;
+    const c0 = sel ? sel.c0 : tb.cols.length - 1;
+    const c1 = sel ? sel.c1 : c0;
+    const menuBtn = this.#btn('table', t('table.menu'), () => openMenu(menuBtn, [
+      { label: t('table.rowAbove'), icon: 'rowAbove', onClick: () => set('row', (x) => insertRow(x, r0)) },
+      { label: t('table.rowBelow'), icon: 'rowBelow', onClick: () => set('row', (x) => insertRow(x, r1 + 1)) },
+      { label: t('table.colLeft'), icon: 'colLeft', onClick: () => set('column', (x) => insertCol(x, c0)) },
+      { label: t('table.colRight'), icon: 'colRight', onClick: () => set('column', (x) => insertCol(x, c1 + 1)) },
+      tb.rows.length > r1 - r0 + 1 ? { label: r1 > r0 ? t('table.rowsRemove', { n: r1 - r0 + 1 }) : t('table.rowRemove'), icon: 'rowRemove', onClick: () => { this.board.clearCells(); set('remove', (x) => removeRows(x, r0, r1)); } } : null,
+      tb.cols.length > c1 - c0 + 1 ? { label: c1 > c0 ? t('table.colsRemove', { n: c1 - c0 + 1 }) : t('table.colRemove'), icon: 'colRemove', onClick: () => { this.board.clearCells(); set('remove', (x) => removeCols(x, c0, c1)); } } : null,
+      { label: t('table.clear'), icon: 'eraser', onClick: () => set('clear', (x) => mapCells(x, scope, (cell) => ({ ...cell, text: '' }))) },
+    ].filter(Boolean)));
+    parts.push(menuBtn, this.#btn('pencil', `${t('note.edit')} (Enter)`, () => this.openCell(tb.id, sel ? sel.ar : 0, sel ? sel.ac : 0)));
+    this.bar.replaceChildren(...parts);
+  }
+
+  /** A custom fill for the selected cells (or the table): shown live while dragging, one undo step when chosen. */
+  #tableCustomFill(anchor, id, sel, now) {
+    const d0 = this.app.doc();
+    let before = d0.items;
+    const apply = (x, hex) => (sel ? mapCells(x, sel, (cell) => ({ ...cell, fill: hex })) : { ...x, fill: hex });
+    openColorPicker(anchor, fillColor(now === 'none' ? 'white' : now), (hex, done) => {
+      const d = this.app.doc();
+      if (!d) return;
+      if (!done) {
+        d.items = before.map((it) => (it.id === id ? apply(it, hex) : it));
+        this.board.invalidate();
+        return;
+      }
+      d.items = before;
+      this.#editTable('fill', id, (x) => apply(x, hex));
+      before = d.items;
+    }, { key: 'table-fill', place: 'below' });
   }
 
   #formatBar() {

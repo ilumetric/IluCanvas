@@ -14,9 +14,10 @@
 import { ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } from './ink.js';
 import { parseVideoUrl, parseTime, cleanMarks, RATE_MIN, RATE_MAX } from './video.js';
+import { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, estimateHeight, insertRow, insertCol, removeRows, removeCols, setCell, rowCount, colCount } from './table.js';
 import {
   NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
-  removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
+  removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent, cleanTable,
 } from './model.js';
 
 export class OpError extends Error {}
@@ -40,6 +41,7 @@ const EDITABLE = {
   from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
   tool: 'enum', nib: 'enum',
   title: 'str', rate: 'rate', loop: 'loop', marks: 'marks', strokeWidth: 'pos',
+  cells: 'cells', cols: 'sizes', rows: 'sizes', clickCopy: 'onoff',
 };
 /** Fields that mean something else on a video (start: a time, not a connector head). */
 const VIDEO_FIELDS = { start: 'time' };
@@ -61,6 +63,16 @@ export function cleanPatch(doc, input, item = null) {
       need(Number.isFinite(n) && (t === 'num' || n > 0), `${k} must be a ${t === 'pos' ? 'positive ' : ''}number`);
       patch[k] = n;
     } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
+    else if (t === 'onoff') patch[k] = raw === false || raw === 'false' || raw === 0 || raw === '0' || raw === 'off' ? false : undefined; // on by default: only "off" is stored
+    else if (t === 'cells') {
+      const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      need(Array.isArray(v) && v.length && v.every(Array.isArray), 'cells must be rows of cells: [["a", "b"], ["c", "d"]] (a cell: text, or { text, fill, align })');
+      patch[k] = v;
+    } else if (t === 'sizes') {
+      const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      need(Array.isArray(v) && v.length && v.every((x) => Number(x) > 0), `${k} must be a list of positive numbers (${k === 'cols' ? 'column widths' : 'row heights'})`);
+      patch[k] = v.map(Number);
+    }
     else if (t === 'paint') {
       need(raw === 'none' || PAINT.includes(raw) || isHexColor(raw), `${k} must be one of ${PAINT.join(', ')}, none, or #rrggbb`);
       patch[k] = raw === 'none' && k === 'stroke' ? undefined : isHexColor(raw) ? raw.toLowerCase() : raw;
@@ -74,7 +86,7 @@ export function cleanPatch(doc, input, item = null) {
       }
       patch[k] = end;
     } else if (t === 'color') {
-      need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
+      need(item?.type !== 'shape' && item?.type !== 'table', `${item?.type}s have fill${item?.type === 'shape' ? ' and stroke' : ''}, not color`);
       if ((item?.type === 'stroke' || item?.type === 'connector') && isHexColor(raw)) { patch[k] = raw.toLowerCase(); continue; }
       const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' || item?.type === 'stroke' ? PAINT : GROUP_COLORS;
       need(list.includes(raw), `color must be one of ${list.join(', ')}${item?.type === 'stroke' || item?.type === 'connector' ? ', or #rrggbb' : ''}`);
@@ -217,6 +229,55 @@ export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke,
   if (s.parent) fitGroup(doc, s.parent, { by });
   return s;
 }
+
+/**
+ * A new table: `cells` (rows of texts) or `rows` × `cols` empty cells
+ * (default 3 × 3); `rows` / `cols` may also be lists of heights / widths.
+ * Placed at x/y, at the bottom of `group`, or right of everything.
+ */
+export function newTable(doc, { cells, rows, cols, width, height, fill = 'white', size, scale, align, clickCopy, x, y, group = null, by = 'human' } = {}) {
+  const k = scale > 0 ? scale : 1;
+  const R = Array.isArray(rows) ? rows.length : Number(rows) > 0 ? Math.floor(rows) : Array.isArray(cells) && cells.length ? cells.length : 3;
+  const C = Array.isArray(cols) ? cols.length : Number(cols) > 0 ? Math.floor(cols) : Array.isArray(cells) && cells.length ? Math.max(...cells.map((r) => (Array.isArray(r) ? r.length : 1))) : 3;
+  need(R * C <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
+  const t = cleanTable({
+    id: newId('table'), type: 'table', x: 0, y: 0, w: 1, h: 1, fill, size, scale, align, clickCopy,
+    cols: Array.isArray(cols) ? cols : Array(C).fill(Number(width) > 0 ? Number(width) : TABLE_COL * k),
+    rows: Array.isArray(rows) ? rows : Array(R).fill(Number(height) > 0 ? Number(height) : TABLE_ROW * k),
+    cells: cells || [],
+  });
+  t.h = estimateHeight(t);
+  placeNew(doc, t, x, y, group);
+  addItems(doc, [t], by);
+  if (t.parent) growGroup(doc, t.parent, t, { by });
+  return t;
+}
+
+/** A table changed by an op: consistent again, its height estimated (the app measures it properly). */
+function putTable(doc, t, by) {
+  const n = cleanTable(t);
+  n.h = estimateHeight(n);
+  doc.items = doc.items.map((it) => (it.id === n.id ? n : it));
+  doc.updated_by = by;
+  if (n.parent) growGroup(doc, n.parent, n, { by });
+  return n;
+}
+
+/** The table an op names, and a row / column index in it (0-based; negative counts from the end). */
+function tableOf(doc, id) {
+  idsExist(doc, [id]);
+  const t = byId(doc).get(id);
+  need(t.type === 'table', `${id} is not a table`);
+  return t;
+}
+const indexIn = (v, n, name, { end = false } = {}) => {
+  if (v === undefined || v === null || v === '') { need(end, `${name} is needed`); return n; }
+  let i = Number(v);
+  need(Number.isInteger(i), `${name} must be a whole number (0 is the first)`);
+  if (i < 0) i += n + (end ? 1 : 0);
+  need(i >= 0 && i <= (end ? n : n - 1), `${name} ${v} is outside the table (0…${end ? n : n - 1})`);
+  return i;
+};
 
 /** A new connector between two ends ({ id, side? } or { x, y }). */
 export function newConnector(doc, { from, to, route = 'dubins', start, end = 'arrow', color = 'grey', width, dash, label, by = 'human' } = {}) {
@@ -403,6 +464,52 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           log.push(`stroke ${k.id} ${k.tool}`);
           break;
         }
+        case 'table': {
+          const group = o.group ? ref(o.group) : null;
+          if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const { op, as, group: _g, cells, rows, cols, width, height, x, y, ...fields } = o;
+          if (cells !== undefined) cleanPatch(doc, { cells });
+          const t = newTable(doc, { ...cleanPatch(doc, fields, { type: 'table' }), cells, rows, cols, width, height, x, y, group, by });
+          if (as) named.set(as, t.id);
+          created.push(t.id);
+          log.push(`table ${t.id} ${rowCount(t)}×${colCount(t)}`);
+          break;
+        }
+        case 'cell': {
+          const t = tableOf(doc, ref(o.id));
+          const r = indexIn(o.row, rowCount(t), 'row');
+          const c = indexIn(o.col, colCount(t), 'col');
+          const p = {};
+          if (o.text !== undefined) p.text = String(o.text ?? '').replace(/\r\n?/g, '\n');
+          if (o.fill !== undefined) { if (o.fill !== null && o.fill !== '') cleanPatch(doc, { fill: o.fill }); p.fill = o.fill || null; }
+          if (o.align !== undefined) { if (o.align !== null && o.align !== '') cleanPatch(doc, { align: o.align }); p.align = o.align || null; }
+          need(Object.keys(p).length, 'cell needs text, fill or align');
+          putTable(doc, setCell(t, r, c, p), by);
+          log.push(`cell ${t.id} [${r},${c}]`);
+          break;
+        }
+        case 'row': case 'col': {
+          const t = tableOf(doc, ref(o.id));
+          const isRow = o.op === 'row';
+          const n = isRow ? rowCount(t) : colCount(t);
+          if (o.remove) {
+            need(n > 1, `a table keeps at least one ${isRow ? 'row' : 'column'}`);
+            const a = indexIn(o.at, n, 'at');
+            const b = o.to !== undefined ? indexIn(o.to, n, 'to') : a;
+            need(Math.abs(b - a) + 1 < n, `a table keeps at least one ${isRow ? 'row' : 'column'}`);
+            putTable(doc, isRow ? removeRows(t, a, b) : removeCols(t, a, b), by);
+            log.push(`removed ${isRow ? 'row' : 'column'} ${a}${b !== a ? `…${b}` : ''} of ${t.id}`);
+            break;
+          }
+          const at = indexIn(o.at, n, 'at', { end: true });
+          need((rowCount(t) + (isRow ? 1 : 0)) * (colCount(t) + (isRow ? 0 : 1)) <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
+          const cells = o.cells === undefined ? [] : o.cells;
+          need(Array.isArray(cells), 'cells must be a list of the new cells (text, or { text, fill, align })');
+          const size = Number(isRow ? o.height : o.width);
+          putTable(doc, isRow ? insertRow(t, at, { cells, height: size > 0 ? size : undefined }) : insertCol(t, at, { cells, width: size > 0 ? size : undefined }), by);
+          log.push(`${isRow ? 'row' : 'column'} ${at} in ${t.id}`);
+          break;
+        }
         case 'newgroup': {
           const g = newGroup(doc, { ...o, by });
           if (o.as) named.set(o.as, g.id);
@@ -440,7 +547,8 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
             doc.items = doc.items.map((it) => (it.id === id ? n : it));
             patchItems(doc, { [id]: rest }, by);
             if (n.parent) growGroup(doc, n.parent, n, { by });
-          } else patchItems(doc, { [id]: patch }, by);
+          } else if (item.type === 'table') putTable(doc, { ...item, ...patch }, by);
+          else patchItems(doc, { [id]: patch }, by);
           log.push(`set ${id}`);
           break;
         }
@@ -498,7 +606,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           log.push(`${o.op}: ${idList(ids)}`);
           break;
         }
-        default: throw new OpError(`unknown op "${o.op}" (add, note, shape, connect, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
+        default: throw new OpError(`unknown op "${o.op}" (add, note, shape, connect, stroke, video, table, cell, row, col, newgroup, group, set, move, rm, ungroup, arrange, fit, front, back)`);
       }
     } catch (e) {
       const err = new OpError(`op #${i} (${o?.op}): ${e.message}`);

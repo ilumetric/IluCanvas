@@ -1,4 +1,4 @@
-// Text on the canvas — notes and shapes: layout of their Markdown text
+// Text on the canvas — notes, shapes and table cells: layout of their Markdown text
 // (blocks → lines → runs, word wrap measured with the real font) and drawing.
 // Layouts are cached per item object — items are immutable, so a changed note
 // is a new object.
@@ -9,6 +9,7 @@
 import { parseMarkdown } from '../core/markdown.js';
 import { NOTE_FONT } from '../core/ops.js';
 import { shapeFrame, shapeHeightFor, darkFill } from './shapes.js';
+import { cellPad } from '../core/table.js';
 
 // ---- fixed colours (do not follow the style) ---------------------------------------------------
 
@@ -36,12 +37,13 @@ export const QUOTE = 1; // em of quote indent
 /** Inner padding of a note, board units. */
 export const notePad = (it) => (it.color === 'none' ? 4 : Math.max(10, Math.min(40, Math.min(it.w, it.h || it.w) * 0.075)));
 /** Is the text drawn on a light background (dark ink)? */
-export const isLight = (it) => (it.type === 'shape' ? !darkFill(it) : it.color !== 'none');
+export const isLight = (it) => (it.type === 'shape' || it.type === 'cell' ? !darkFill(it) : it.color !== 'none');
 /** Base font size of a document / text note / shape, board units. */
 export const noteFont = (it) => NOTE_FONT[it.size || 'm'] * (it.scale || 1);
 /** Where the text goes, relative to the item's top-left. */
 export function textFrame(it) {
   if (it.type === 'shape') return shapeFrame(it);
+  if (it.type === 'cell') { const [px, py] = cellPad(it); return { x: px, y: py, w: Math.max(10, it.w - px * 2), h: Math.max(10, it.h - py * 2) }; }
   const p = notePad(it);
   return { x: p, y: p, w: Math.max(10, it.w - p * 2), h: Math.max(10, it.h - p * 2) };
 }
@@ -55,6 +57,8 @@ const cache = new WeakMap();
 
 /** Forget measurements (fonts loaded, style changed). */
 export function resetTextCache() { widths.clear(); version++; }
+/** Bumped when measurements are forgotten (layouts cached elsewhere check it). */
+export const textVersion = () => version;
 
 const fontOf = (st, size, family) => `${st.i ? 'italic ' : ''}${st.b || st.head ? 700 : 400} ${size}px ${family}`;
 
@@ -106,8 +110,8 @@ export function layoutNote(it, family) {
     layout.offsetY = frame.y + Math.max(0, (innerH - layout.height) / 2); // stickies: centred vertically
   } else {
     layout = flow(blocks, noteFont(it), innerW, family, align);
-    // shapes: centred vertically; documents: from the top
-    layout.offsetY = frame.y + (it.type === 'shape' ? Math.max(0, (frame.h - layout.height) / 2) : 0);
+    // shapes and table cells: centred vertically; documents: from the top
+    layout.offsetY = frame.y + (it.type === 'shape' || it.type === 'cell' ? Math.max(0, (frame.h - layout.height) / 2) : 0);
   }
   layout.pad = pad;
   layout.total = it.type === 'shape' ? shapeHeightFor(it, layout.height) : layout.height + frame.y * 2;
