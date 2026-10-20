@@ -205,12 +205,56 @@ const cache = new WeakMap();
 
 function cachedPath(it) {
   if (!Array.isArray(it.pts)) return null;
-  const key = `${it.tool}|${it.nib || ''}|${it.width}`;
+  const key = `${it.tool}|${it.nib || ''}|${it.width}|${it.end || ''}`;
   const hit = cache.get(it.pts);
   if (hit && hit.key === key && hit.tw === it.tw) return hit.path;
-  const path = pathOf(it, strokeSamples(it));
+  const path = pathOf(it, inkSamples(it));
   cache.set(it.pts, { key, tw: it.tw, path });
   return path;
+}
+
+/** A stroke's samples as drawn: with an arrow, the line stops under the head (so its round end does not poke out). */
+function inkSamples(it) {
+  const s = strokeSamples(it);
+  if (it.end !== 'arrow' || s.length < 2) return s;
+  let left = arrowLength(it) * 0.8;
+  while (s.length > 2) {
+    const [a, b] = [s[s.length - 1], s[s.length - 2]];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (d > left) break;
+    left -= d;
+    s.pop();
+  }
+  const [a, b] = [s[s.length - 1], s[s.length - 2]];
+  const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+  const k = Math.min(left, d * 0.95) / d;
+  s[s.length - 1] = { ...a, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+  return s;
+}
+
+/** The arrowhead: its tip on the stroke's last point, pointing the way the last stretch goes (not its last jitter). */
+function arrowHead(ctx, it) {
+  const s = strokeSamples(it);
+  if (s.length < 2) return;
+  const len = arrowLength(it);
+  const tip = s[s.length - 1];
+  let k = s.length - 2;
+  while (k > 0 && Math.hypot(tip.x - s[k].x, tip.y - s[k].y) < len) k--;
+  const d = Math.hypot(tip.x - s[k].x, tip.y - s[k].y);
+  if (!d) return;
+  const ux = (tip.x - s[k].x) / d;
+  const uy = (tip.y - s[k].y) / d;
+  const half = len * 0.6;
+  ctx.globalAlpha = INK_ALPHA[it.tool] ?? 1;
+  ctx.fillStyle = inkColor(it.color);
+  ctx.beginPath();
+  ctx.moveTo(tip.x, tip.y);
+  ctx.lineTo(tip.x - ux * len - uy * half, tip.y - uy * len + ux * half);
+  ctx.lineTo(tip.x - ux * len * 0.82, tip.y - uy * len * 0.82); // a slight notch: the head reads as an arrow, not a wedge
+  ctx.lineTo(tip.x - ux * len + uy * half, tip.y - uy * len - ux * half);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
 }
 
 /** Paint a stroke `s` (fields tool, nib, color, width) through `path`, in the current transform. */
@@ -241,40 +285,13 @@ export function drawStroke(ctx, it, { px }) {
   ctx.restore();
 }
 
-/** The arrowhead at a stroke's end, pointing the way the last stretch of it goes (not its last jitter). */
-function arrowHead(ctx, it) {
-  const p = it.pts || [];
-  const n = Math.floor(p.length / 3);
-  if (n < 2) return;
-  const len = arrowLength(it);
-  const tx = p[(n - 1) * 3];
-  const ty = p[(n - 1) * 3 + 1];
-  let k = n - 2;
-  while (k > 0 && Math.hypot(tx - p[k * 3], ty - p[k * 3 + 1]) < len * 0.7) k--;
-  const d = Math.hypot(tx - p[k * 3], ty - p[k * 3 + 1]);
-  if (!d) return;
-  const ux = (tx - p[k * 3]) / d;
-  const uy = (ty - p[k * 3 + 1]) / d;
-  const x = tx + ux * it.width * 0.5; // over the line's round end
-  const y = ty + uy * it.width * 0.5;
-  ctx.globalAlpha = INK_ALPHA[it.tool] ?? 1;
-  ctx.fillStyle = inkColor(it.color);
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x - ux * len - uy * len * 0.55, y - uy * len + ux * len * 0.55);
-  ctx.lineTo(x - ux * len + uy * len * 0.55, y - uy * len - ux * len * 0.55);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
-}
-
 /** A dashed stroke: its centre line with round dashes, the stroke's width (pressure does not show). */
 function dashed(ctx, it) {
-  const p = it.pts || [];
-  if (p.length < 6) return;
+  const s = inkSamples(it);
+  if (s.length < 2) return;
   const line = new Path2D();
-  line.moveTo(p[0], p[1]);
-  for (let i = 3; i + 2 < p.length; i += 3) line.lineTo(p[i], p[i + 1]);
+  line.moveTo(s[0].x, s[0].y);
+  for (let i = 1; i < s.length; i++) line.lineTo(s[i].x, s[i].y);
   ctx.globalAlpha = INK_ALPHA[it.tool] ?? 1;
   ctx.strokeStyle = inkColor(it.color);
   ctx.lineWidth = it.width;

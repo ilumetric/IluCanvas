@@ -23,8 +23,8 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   nestable), Arrange (Shift+A), flip, rotate, original size, layer order;
   minimap; drag-and-drop and paste (Ctrl+V) of pictures, folders and images
   from other sites.
-- **Notes**: one tool for stickies, documents and plain text (N, or double click
-  on the board) — headings, lists, checklists you tick on the board, quotes,
+- **Notes**: one tool for stickies, documents and plain text (N; Enter edits) —
+  headings, lists, checklists you tick on the board, quotes,
   colours, highlights, links; stored as Markdown.
 - **Shapes and connectors** for diagrams: eight shapes with text (S; outline
   width, dashed), free lines and arrows, connectors
@@ -56,9 +56,9 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   are kept in the browser's own storage, save themselves and download as
   `.ilucanvas` files (on iPad: to Files); opening a file copies it in. The
   Pencil draws with pressure, a resting palm is ignored, fingers pan and pinch,
-  a long press opens the menu, a double tap edits. On iPad, *Add to Home Screen*
-  so Safari keeps the boards (it may clear a website's storage after weeks
-  without a visit).
+  a long press opens the menu, a double tap moves the view there. On iPad,
+  *Add to Home Screen* so Safari keeps the boards (it may clear a website's
+  storage after weeks without a visit).
 
 ## For agents
 
@@ -79,7 +79,8 @@ schema: [schema/canvas.schema.json](schema/canvas.schema.json) · [llms.txt](llm
 1. Open https://ilumetric.github.io/IluCanvas/ in Chrome or Edge.
 2. *Open folder* → the folder where your boards will live. *New canvas* creates a file in it.
 3. Drop pictures or folders onto the board, or paste from the clipboard (Ctrl+V).
-   Wheel zooms to the cursor; Space or the middle button pans.
+   Wheel zooms to the cursor; the right button (or Space) drags the board, the
+   middle button held zooms; a right click without a move opens the menu.
 4. Everything saves by itself. Copy the file, send it, put it on Google Drive.
 
 **Firefox, Safari and embedded browsers** cannot write to a file on disk: boards

@@ -257,6 +257,7 @@ kbd {
 #stage.tool-create { cursor: crosshair; }
 #stage[data-cursor="pointer"] { cursor: pointer; }
 #stage.panning, #stage.panning * { cursor: grabbing !important; }
+#stage.zooming, #stage.zooming * { cursor: zoom-in !important; }
 #stage[data-cursor="move"] { cursor: move; }
 #stage[data-cursor="nwse"] { cursor: nwse-resize; }
 #stage[data-cursor="nesw"] { cursor: nesw-resize; }

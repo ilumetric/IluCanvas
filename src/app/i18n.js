@@ -87,7 +87,7 @@ const RU = {
   'linkErr.cors': 'Сайт не разрешает скачивать файл из браузера (CORS)',
 
   'settings.title': 'Настройки', 'settings.style': 'Стиль', 'settings.background': 'Фон', 'settings.bgNote': 'Стиль выбирает подходящий фон; его можно сменить. Настройки общие для всех досок.',
-  'settings.wheel': 'Колесо мыши', 'settings.wheelZoom': 'Масштаб', 'settings.wheelPan': 'Прокрутка', 'settings.wheelNote': 'Ctrl + колесо и щипок на тачпаде — всегда масштаб; Shift + колесо — вбок.',
+  'settings.wheel': 'Тачпад, два пальца', 'settings.wheelZoom': 'Масштаб', 'settings.wheelPan': 'Прокрутка', 'settings.wheelNote': 'Колесо мыши, Ctrl + колесо и щипок — всегда масштаб; Shift + колесо — вбок. Правая кнопка — двигать доску, средняя — масштаб.',
   'settings.autosave': 'Сохранение', 'settings.autosaveText': 'Сохранять автоматически (дописываются только изменения)',
   'settings.language': 'Язык',
   'settings.linksDir': 'Доски по ссылкам', 'settings.linksDirNote': 'Куда скачиваются доски, открытые по ссылке (Google Drive и др.). При синхронизации файл в папке заменяется новой версией. Уже скачанные доски переедут при следующей синхронизации.',
@@ -100,7 +100,7 @@ const RU = {
   'style.fun': 'Яркий и живой', 'style.calm': 'Спокойный и строгий', 'style.oli': 'Мягкий и нежный',
   'bg.dots': 'Точки', 'bg.grid': 'Линовка', 'bg.cross': 'Крестики', 'bg.doodle': 'Каракули', 'bg.garden': 'Сад', 'bg.plain': 'Чистый',
 
-  'keys.space': 'Пробел + тянуть', 'keys.pan': 'двигать доску', 'keys.wheel': 'Колесо', 'keys.zoom': 'масштаб к курсору',
+  'keys.rmb': 'Правая кнопка + тянуть', 'keys.mmb': 'Средняя кнопка + тянуть', 'keys.space': 'Пробел + тянуть', 'keys.pan': 'двигать доску', 'keys.wheel': 'Колесо', 'keys.zoom': 'масштаб к курсору',
   'keys.drag': 'перетаскивание', 'keys.dupDrag': 'копия', 'keys.axis': 'только по одной оси', 'keys.dbl': 'Двойной клик',
 
   'tool.shape': 'Фигура', 'tool.connector': 'Связь', 'tool.pen': 'Ручка', 'tool.highlighter': 'Маркер', 'tool.tape': 'Лента', 'tool.eraser': 'Ластик',
@@ -222,7 +222,7 @@ const EN = {
   'linkErr.cors': 'The site does not allow downloading the file from a browser (CORS)',
 
   'settings.title': 'Settings', 'settings.style': 'Style', 'settings.background': 'Background', 'settings.bgNote': 'A style picks a matching background; you can change it. Settings apply to every board.',
-  'settings.wheel': 'Mouse wheel', 'settings.wheelZoom': 'Zoom', 'settings.wheelPan': 'Scroll', 'settings.wheelNote': 'Ctrl + wheel and trackpad pinch always zoom; Shift + wheel scrolls sideways.',
+  'settings.wheel': 'Trackpad, two fingers', 'settings.wheelZoom': 'Zoom', 'settings.wheelPan': 'Scroll', 'settings.wheelNote': 'The mouse wheel, Ctrl + wheel and a pinch always zoom; Shift + wheel scrolls sideways. Right button drags the board, middle button zooms.',
   'settings.autosave': 'Saving', 'settings.autosaveText': 'Save automatically (only the changes are written)',
   'settings.language': 'Language',
   'settings.linksDir': 'Boards from links', 'settings.linksDirNote': 'Where boards opened by link (Google Drive and others) are downloaded. A sync replaces the file in the folder with the new version. Boards downloaded earlier move there on their next sync.',
@@ -235,7 +235,7 @@ const EN = {
   'style.fun': 'Bright and lively', 'style.calm': 'Quiet and plain', 'style.oli': 'Soft and gentle',
   'bg.dots': 'Dots', 'bg.grid': 'Grid', 'bg.cross': 'Crosses', 'bg.doodle': 'Doodles', 'bg.garden': 'Garden', 'bg.plain': 'Plain',
 
-  'keys.space': 'Space + drag', 'keys.pan': 'move the board', 'keys.wheel': 'Wheel', 'keys.zoom': 'zoom to the cursor',
+  'keys.rmb': 'Right button + drag', 'keys.mmb': 'Middle button + drag', 'keys.space': 'Space + drag', 'keys.pan': 'move the board', 'keys.wheel': 'Wheel', 'keys.zoom': 'zoom to the cursor',
   'keys.drag': 'drag', 'keys.dupDrag': 'a copy', 'keys.axis': 'one axis only', 'keys.dbl': 'Double click',
 
   'tool.shape': 'Shape', 'tool.connector': 'Connector', 'tool.pen': 'Pen', 'tool.highlighter': 'Highlighter', 'tool.tape': 'Tape', 'tool.eraser': 'Eraser',

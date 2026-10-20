@@ -90,12 +90,49 @@ export function drawShapeBody(ctx, it, { px }) {
   if (stroke) {
     // its own width (board units), or one that grows with the shape; never under 1.5 device px
     ctx.lineWidth = Math.max((1.5 * dpr) / px, it.strokeWidth || Math.max((2 * dpr) / px, Math.min(it.w, it.h) * 0.012));
-    if (it.dash) ctx.setLineDash([ctx.lineWidth * 3, ctx.lineWidth * 2.2]);
+    if (it.dash) dashOutline(ctx, it.kind, it.w, it.h, ctx.lineWidth);
     ctx.lineJoin = 'round';
     ctx.strokeStyle = lineColor(stroke);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+    ctx.lineCap = 'butt';
   }
+}
+
+/** The outline's length (polygons exactly; the ellipse by Ramanujan; the rounded rect with its arcs). */
+function perimeter(kind, w, h) {
+  if (kind === 'ellipse') {
+    const [a, b] = [w / 2, h / 2];
+    return Math.PI * (3 * (a + b) - Math.sqrt((3 * a + b) * (a + 3 * b)));
+  }
+  if (kind === 'rounded') { const r = Math.min(w, h) * 0.18; return 2 * (w + h) - r * (8 - 2 * Math.PI); }
+  const pts = {
+    diamond: [[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]],
+    triangle: [[0.5, 0], [1, 1], [0, 1]],
+    parallelogram: [[0.18, 0], [1, 0], [0.82, 1], [0, 1]],
+    hexagon: [[0.22, 0], [0.78, 0], [1, 0.5], [0.78, 1], [0.22, 1], [0, 0.5]],
+    star: Array.from({ length: 10 }, (_, k) => { const r = k % 2 ? 0.45 : 1; const a = -Math.PI / 2 + (k * Math.PI) / 5; return [0.5 + Math.cos(a) * 0.5 * r, 0.5 + Math.sin(a) * 0.5 * r]; }),
+  }[kind];
+  if (!pts) return 2 * (w + h);
+  let len = 0;
+  pts.forEach((p, i) => { const q = pts[(i + 1) % pts.length]; len += Math.hypot((q[0] - p[0]) * w, (q[1] - p[1]) * h); });
+  return len;
+}
+
+/**
+ * Dashes for a shape's outline: round ends, a whole number of them around it
+ * (no stub where the outline closes), a dash centred on the start (a corner).
+ */
+function dashOutline(ctx, kind, w, h, lw) {
+  // round caps add half a width at each end: dash 1.6 + 1 = 2.6 widths seen, gap 2.6 - 1 = 1.6
+  const len = perimeter(kind, w, h);
+  const n = Math.max(2, Math.round(len / (lw * 4.2)));
+  const step = len / n;
+  const dash = Math.max(0.01, step * (1.6 / 4.2));
+  ctx.setLineDash([dash, step - dash]);
+  ctx.lineDashOffset = dash / 2;
+  ctx.lineCap = 'round';
 }
 
 // ---- connectors -------------------------------------------------------------------------------

@@ -873,6 +873,7 @@ export class Board {
     });
     st.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      if (this.drag?.right || performance.now() - (this.rightUpAt || 0) < 400) return; // the right button: #up opens the menu
       if (this.drag?.type === 'pan' && this.drag.moved) return;
       if (this.lastType && this.lastType !== 'mouse' && performance.now() - (this.pressedAt || 0) < 1500) return; // a long press handles it
       this.#context(e.clientX, e.clientY);
@@ -948,9 +949,17 @@ export class Board {
     const p = this.#local(e);
     // once a stylus has been used, a finger pans in the drawing tools (Apple Notes)
     const fingerPans = e.pointerType === 'touch' && (this.tool === 'hand' || (this.penSeen && DRAWS.has(this.tool)));
-    const pan = e.button === 1 || (e.button === 0 && (this.tool === 'hand' || this.space)) || fingerPans;
-    if (e.button === 2) { this.pointers.delete(e.pointerId); return; }
+    const pan = e.button === 2 || (e.button === 0 && (this.tool === 'hand' || this.space)) || fingerPans;
+    if ((e.button === 2 || e.button === 1) && e.pointerType === 'touch') { this.pointers.delete(e.pointerId); return; }
     try { this.stage.setPointerCapture(e.pointerId); } catch { /* not a live pointer (synthetic event) */ }
+    if (e.button === 1) {
+      // the middle button held: dragging up / right zooms in about where it was pressed
+      e.preventDefault();
+      this.anim = null;
+      this.drag = { type: 'zoom', pointer: e.pointerId, sx: p.x, sy: p.y, z: this.view.z, at: this.toWorld(p.x, p.y), moved: false };
+      this.stage.classList.add('zooming');
+      return;
+    }
     // a finger or a pencil held still: the context menu (iPad has no right click)
     if (e.pointerType !== 'mouse' && e.button === 0 && !DRAWS.has(this.tool)) {
       const id = e.pointerId;
@@ -969,7 +978,9 @@ export class Board {
     }
     if (pan) {
       e.preventDefault();
-      this.drag = { type: 'pan', pointer: e.pointerId, sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false };
+      this.anim = null;
+      // the right button: a drag pans, a click (no move) opens the menu when it is let go
+      this.drag = { type: 'pan', pointer: e.pointerId, sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false, right: e.button === 2, cx: e.clientX, cy: e.clientY };
       this.stage.classList.add('panning');
       return;
     }
@@ -1061,6 +1072,11 @@ export class Board {
       this.setView({ x: d.vx + p.x - d.sx, y: d.vy + p.y - d.sy, z: this.view.z });
       return;
     }
+    if (d.type === 'zoom') {
+      const z = Math.max(MIN_Z, Math.min(MAX_Z, d.z * Math.exp((p.x - d.sx - (p.y - d.sy)) * 0.006)));
+      this.setView({ x: d.sx - d.at.x * z, y: d.sy - d.at.y * z, z });
+      return;
+    }
     const w = this.toWorld(p.x, p.y);
     if (d.type === 'move') {
       if (first) this.#moveStart(d);
@@ -1115,8 +1131,14 @@ export class Board {
     const d = this.drag;
     if (!d || d.pointer !== e.pointerId) return;
     this.drag = null;
-    this.stage.classList.remove('panning');
+    this.stage.classList.remove('panning', 'zooming');
     try { this.stage.releasePointerCapture(e.pointerId); } catch { /* released */ }
+    if (d.right) {
+      this.rightUpAt = performance.now();
+      if (!cancelled && !d.moved) this.#context(d.cx, d.cy);
+      return;
+    }
+    if (d.type === 'zoom') return;
     if (d.type === 'ink') {
       this.invalidateOverlay();
       // the system may cancel a pencil mid-stroke (a palm, a gesture): keep what was drawn
@@ -1473,8 +1495,8 @@ export class Board {
     const dx = e.deltaX * lines;
     const dy = e.deltaY * lines;
     const mouseWheel = e.deltaMode !== 0 || (dx === 0 && Math.abs(dy) >= 50 && Number.isInteger(dy));
-    // zoom: Ctrl / pinch always; the plain wheel when the setting says so (Shift pans sideways)
-    if (e.ctrlKey || e.metaKey || (this.wheelMode === 'zoom' && !e.shiftKey)) {
+    // zoom: Ctrl / pinch and a mouse wheel always; a trackpad's scroll when the setting says so (Shift pans sideways)
+    if (e.ctrlKey || e.metaKey || ((mouseWheel || this.wheelMode === 'zoom') && !e.shiftKey)) {
       const k = mouseWheel ? 0.0016 : 0.01;
       const f = Math.max(0.5, Math.min(2, Math.exp(-dy * k)));
       this.zoomAt(p.x, p.y, f);

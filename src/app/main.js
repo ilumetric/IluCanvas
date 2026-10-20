@@ -1684,22 +1684,21 @@ function contextMenu(pt, hit, world) {
   ]);
 }
 
+/**
+ * A double click (two taps) only moves the view: onto the item under it (fitted
+ * to the screen), or to the point on the empty board (centred, same zoom). Editing
+ * is Enter / the context menu, a group's name F2, a video its play button.
+ */
 function onDblClick(hit, e) {
   if (!doc()) return;
-  if (hit.kind === 'label') return renameGroup(hit.id);
   const it = hit.id && byId(doc()).get(hit.id);
-  if ((it?.type === 'note' || it?.type === 'shape') && !readOnly()) return S.notes.open(it.id);
-  if (it?.type === 'connector' && !readOnly()) return S.notes.editLabel(it.id);
-  if (it?.type === 'video') return S.video.play(it.id);
-  if (hit.kind === 'item' || hit.kind === 'group') {
-    if (it) S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
-    return null;
+  if (it) {
+    S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
+    return;
   }
-  if (hit.kind === 'none' && !readOnly() && S.board.tool === 'select') {
-    const r = $('stage').getBoundingClientRect();
-    S.notes.createText(S.board.toWorld(e.clientX - r.left, e.clientY - r.top));
-  }
-  return null;
+  const r = $('stage').getBoundingClientRect();
+  const p = S.board.toWorld(e.clientX - r.left, e.clientY - r.top);
+  S.board.fitBounds({ x: p.x, y: p.y, w: 0, h: 0 }, true, { maxZ: S.board.view.z });
 }
 
 // ---- links ------------------------------------------------------------------------------------------------
@@ -1946,7 +1945,7 @@ function openSettings() {
 
 function showShortcuts() {
   const rows = [
-    ['V / H', t('tool.select') + ' / ' + t('tool.hand')], [t('keys.space'), t('keys.pan')], [t('keys.wheel'), t('keys.zoom')],
+    ['V / H', t('tool.select') + ' / ' + t('tool.hand')], [t('keys.rmb'), t('keys.pan')], [t('keys.space'), t('keys.pan')], [t('keys.wheel'), t('keys.zoom')], [t('keys.mmb'), t('keys.zoom')],
     ['Shift+1 / Shift+2 / Shift+0', `${t('zoom.fit')} / ${t('zoom.selection')} / 100%`], ['Ctrl+G / Ctrl+Shift+G', `${t('ctx.group')} / ${t('ctx.ungroup')}`],
     ['Shift+A', t('ctx.arrange')], ['Shift+H / Shift+V', `${t('ctx.flipH')} / ${t('ctx.flipV')}`], ['Shift+R', t('ctx.rotateRight')],
     ['] / [', `${t('ctx.front')} / ${t('ctx.back')}`], ['Ctrl+C / Ctrl+V / Ctrl+D', `${t('ctx.copy')} / ${t('ctx.paste')} / ${t('ctx.duplicate')}`],
