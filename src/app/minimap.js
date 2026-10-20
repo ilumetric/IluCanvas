@@ -2,7 +2,24 @@
 // Click or drag to move there. Items are drawn as their average colour, or as
 // their preview when it is already decoded (nothing is decoded for the map).
 
-import { itemBounds, unionBounds } from '../core/model.js';
+import { itemBounds, unionBounds, byId } from '../core/model.js';
+import { connectorPath } from '../core/connectors.js';
+import { INK_ALPHA, strokeScale } from '../core/ink.js';
+import { INK_COLOR } from './ink.js';
+import { NOTE_BG } from './text.js';
+import { FILL } from './shapes.js';
+
+/** A stroke's samples in board units, thinned out (the map is small). */
+function strokeLine(it) {
+  const pts = it.pts || [];
+  const sx = it.w / (it.vw || it.w);
+  const sy = it.h / (it.vh || it.h);
+  const step = Math.max(1, Math.floor(pts.length / 3 / 40)) * 3;
+  const out = [];
+  for (let i = 0; i + 2 < pts.length; i += step) out.push({ x: it.x + pts[i] * sx, y: it.y + pts[i + 1] * sy });
+  if (pts.length >= 3) out.push({ x: it.x + pts[pts.length - 3] * sx, y: it.y + pts[pts.length - 2] * sy });
+  return out;
+}
 
 export class Minimap {
   constructor(canvas, board) {
@@ -70,8 +87,32 @@ export class Minimap {
     }
     ctx.globalAlpha = 1;
     const few = doc.items.length < 600;
+    const m = byId(doc);
+    const minW = 1.5 / L.k;
     for (const it of doc.items) {
       if (it.type === 'group') continue;
+      if (it.type === 'stroke' || it.type === 'connector') {
+        // lines: a stroke's centre line in its ink, a connector's path
+        const pts = it.type === 'connector' ? connectorPath(it, (id) => m.get(id)).pts : strokeLine(it);
+        if (pts.length < 2) continue;
+        ctx.beginPath();
+        pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+        ctx.strokeStyle = it.type === 'stroke' ? INK_COLOR[it.color] || th.faint : th.faint;
+        ctx.globalAlpha = it.type === 'stroke' ? INK_ALPHA[it.tool] ?? 1 : 0.8;
+        ctx.lineWidth = Math.max(minW, it.type === 'stroke' ? it.width * strokeScale(it) : 0);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        continue;
+      }
+      if (it.type === 'note' || it.type === 'shape') {
+        const c = it.type === 'note' ? NOTE_BG[it.color] : FILL[it.fill];
+        if (!c) continue;
+        ctx.fillStyle = c;
+        ctx.fillRect(it.x, it.y, Math.max(it.w, minW), Math.max(it.h, minW));
+        continue;
+      }
       const b = itemBounds(it);
       const bmp = few && it.type === 'image' ? this.board.images.get(it.asset, 0) : null;
       if (bmp && b.w * L.k > 4) ctx.drawImage(bmp, b.x, b.y, b.w, b.h);

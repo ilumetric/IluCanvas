@@ -92,7 +92,8 @@ const RU = {
   'keys.space': 'Пробел + тянуть', 'keys.pan': 'двигать доску', 'keys.wheel': 'Колесо', 'keys.zoom': 'масштаб к курсору',
   'keys.drag': 'перетаскивание', 'keys.dupDrag': 'копия', 'keys.axis': 'только по одной оси', 'keys.dbl': 'Двойной клик',
 
-  'tool.shape': 'Фигура', 'tool.connector': 'Связь',
+  'tool.shape': 'Фигура', 'tool.connector': 'Связь', 'tool.pen': 'Ручка', 'tool.highlighter': 'Маркер', 'tool.tape': 'Лента', 'tool.eraser': 'Ластик',
+  'ink.round': 'Круглое перо', 'ink.italic': 'Каллиграфическое перо — поворот стилуса поворачивает перо', 'ink.width': 'Толщина', 'ink.color': 'Цвет', 'ink.tool': 'Инструмент',
   'shape.kind': 'Фигура', 'shape.fill': 'Заливка', 'shape.stroke': 'Обводка',
   'shape.rect': 'Прямоугольник', 'shape.rounded': 'Скруглённый', 'shape.ellipse': 'Эллипс', 'shape.diamond': 'Ромб',
   'shape.triangle': 'Треугольник', 'shape.parallelogram': 'Параллелограмм', 'shape.hexagon': 'Шестиугольник', 'shape.star': 'Звезда',
@@ -209,7 +210,8 @@ const EN = {
   'keys.space': 'Space + drag', 'keys.pan': 'move the board', 'keys.wheel': 'Wheel', 'keys.zoom': 'zoom to the cursor',
   'keys.drag': 'drag', 'keys.dupDrag': 'a copy', 'keys.axis': 'one axis only', 'keys.dbl': 'Double click',
 
-  'tool.shape': 'Shape', 'tool.connector': 'Connector',
+  'tool.shape': 'Shape', 'tool.connector': 'Connector', 'tool.pen': 'Pen', 'tool.highlighter': 'Highlighter', 'tool.tape': 'Tape', 'tool.eraser': 'Eraser',
+  'ink.round': 'Round nib', 'ink.italic': 'Italic nib — turning the stylus turns it', 'ink.width': 'Width', 'ink.color': 'Colour', 'ink.tool': 'Tool',
   'shape.kind': 'Shape', 'shape.fill': 'Fill', 'shape.stroke': 'Outline',
   'shape.rect': 'Rectangle', 'shape.rounded': 'Rounded', 'shape.ellipse': 'Ellipse', 'shape.diamond': 'Diamond',
   'shape.triangle': 'Triangle', 'shape.parallelogram': 'Parallelogram', 'shape.hexagon': 'Hexagon', 'shape.star': 'Star',

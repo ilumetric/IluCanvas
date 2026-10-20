@@ -12,10 +12,11 @@ export const FORMAT = 'ilucanvas';
 export const FORMAT_VERSION = 1;
 export const GROUP_COLORS = ['violet', 'blue', 'orange', 'green', 'pink', 'yellow', 'red', 'amber', 'grey'];
 import { connectorPath, pathBounds, ROUTES, HEADS, SIDES } from './connectors.js';
+import { INK_TOOLS, INK_DEFAULTS } from './ink.js';
 
-export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector'];
+export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke'];
 export const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
-/** Fixed colours of shapes and connectors (they do not follow the style). */
+/** Fixed colours of shapes, connectors and ink (they do not follow the style). */
 export const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
 /** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
 export const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
@@ -32,6 +33,7 @@ const ITEM_KEYS = {
   note: ['id', 'type', 'x', 'y', 'w', 'h', 'rot', 'color', 'fit', 'size', 'scale', 'align', 'ratio', 'parent', 'locked', 'text'],
   shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
   connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
+  stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'x', 'y', 'w', 'h', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
 const DOC_KEYS = ['format', 'version', 'id', 'title', 'created', 'updated', 'updated_by', 'generator', 'assets', 'items'];
@@ -44,7 +46,8 @@ const rand = (n) => {
   return s;
 };
 /** "i" / "g" + 7 chars: short enough to type, random enough not to clash with the CLI. */
-export const newId = (type = 'image') => `${type === 'group' ? 'g' : type.charAt(0)}${rand(7)}`;
+const ID_PREFIX = { group: 'g', stroke: 'k' };
+export const newId = (type = 'image') => `${ID_PREFIX[type] || type.charAt(0)}${rand(7)}`;
 export const newCanvasId = () => `c${rand(11)}`;
 /** Asset ids are content addresses: the first 16 hex digits of the file's SHA-256. */
 export const assetIdFromSha = (sha256) => sha256.slice(0, 16);
@@ -124,6 +127,17 @@ export function normalize(raw) {
       if (typeof n.label !== 'string' || !n.label) delete n.label;
       delete n.parent;
     }
+    if (n.type === 'stroke') {
+      if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
+      if (n.nib !== 'italic' || n.tool !== 'pen') delete n.nib;
+      if (!PAINT.includes(n.color)) n.color = INK_DEFAULTS[n.tool].color;
+      n.width = pos(n.width, INK_DEFAULTS[n.tool].width);
+      n.vw = pos(n.vw, n.w);
+      n.vh = pos(n.vh, n.h);
+      const pts = Array.isArray(n.pts) ? n.pts : [];
+      n.pts = pts.length % 3 === 0 && pts.every((v) => typeof v === 'number' && Number.isFinite(v)) ? pts : [];
+      if (!Array.isArray(n.tw) || n.tw.length !== n.pts.length / 3 || !n.tw.every(Number.isFinite)) delete n.tw;
+    }
     if (n.type === 'group') {
       n.name = str(n.name) ?? 'Group';
       if (!GROUP_COLORS.includes(n.color)) n.color = 'grey';
@@ -180,6 +194,11 @@ export function validate(doc, { files = null } = {}) {
     ids.add(it.id);
     if (!ITEM_TYPES.includes(it.type)) warn(`${p}.type`, `unknown type "${it.type}" (kept, not editable here)`, it.id);
     if ((it.type === 'note' || it.type === 'shape') && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
+    if (it.type === 'stroke') {
+      if (!Array.isArray(it.pts) || it.pts.length % 3 || !it.pts.every((v) => typeof v === 'number' && Number.isFinite(v))) err(`${p}.pts`, 'must be numbers: x, y, pressure for each sample', it.id);
+      else if (!it.pts.length) warn(`${p}.pts`, 'an empty stroke', it.id);
+      if (it.tw !== undefined && (!Array.isArray(it.tw) || it.tw.length * 3 !== it.pts?.length)) err(`${p}.tw`, 'must have one number per sample', it.id);
+    }
     if (it.type === 'connector') {
       for (const k of ['from', 'to']) {
         const e = it[k];
@@ -520,6 +539,24 @@ export function groupAtPoint(doc, p, exclude = new Set(), gs = groupsByDepth(doc
     if (contains(g, p)) return g;
   }
   return null;
+}
+
+/** The innermost group whose frame holds all of box `b` (a new stroke drawn over a group joins it). */
+export function groupAround(doc, b) {
+  const gs = groupsByDepth(doc);
+  for (let i = gs.length - 1; i >= 0; i--) {
+    const g = gs[i];
+    if (b.x >= g.x && b.y >= g.y && b.x + b.w <= g.x + g.w && b.y + b.h <= g.y + g.h) return g;
+  }
+  return null;
+}
+
+/** Grow group `gid` (never shrink it) to hold box `b` with `pad` around it. */
+export function growGroup(doc, gid, b, { pad = 16, by = 'human' } = {}) {
+  const g = byId(doc).get(gid);
+  if (!g) return;
+  const u = unionBounds([g, { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 }]);
+  if (u.w > g.w + 0.01 || u.h > g.h + 0.01) patchItems(doc, { [gid]: u }, by);
 }
 
 /**

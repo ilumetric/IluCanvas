@@ -9,8 +9,8 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { APP_VERSION } from '../src/core/version.js';
 import {
-  FORMAT_VERSION, GROUP_COLORS, emptyCanvas, validate, serialize, contentBounds,
-  childrenOf, groupsOf, addItems, newId, assetIdFromSha, assetPath, takenPaths, now, withChildren, pruneAssets,
+  FORMAT_VERSION, GROUP_COLORS, emptyCanvas, validate, serialize,
+  groupsOf, addItems, newId, assetIdFromSha, assetPath, takenPaths, now, withChildren, pruneAssets,
 } from '../src/core/model.js';
 import { applyOps, idsExist, OpError, EDITABLE_KEYS } from '../src/core/ops.js';
 import { openCanvas, planSave, chooseMode, deadBytes, EXT } from '../src/core/canvasfile.js';
@@ -18,7 +18,7 @@ import { readEntry } from '../src/core/zip.js';
 import { crc32 } from '../src/core/crc32.js';
 import { imageInfo, isImageName } from '../src/core/imageinfo.js';
 import { parsePureRef } from '../src/core/pureref.js';
-import { plainText } from '../src/core/markdown.js';
+import { listText } from '../src/core/describe.js';
 
 const HELP = `IluCanvas ${APP_VERSION} — infinite reference board in one .ilucanvas file (format v${FORMAT_VERSION})
 A .ilucanvas file is a ZIP: canvas.json (the scene) + images/ (originals) + thumbs/.
@@ -43,6 +43,8 @@ Write (re-read → change → write; the open app picks the change up within sec
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
   connect <file> <from> <to> [--label L] [--route straight|elbow|curve] [--start/--end none|arrow|dot]
                                         from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
+  stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic] [--group ID]
+                                        freehand ink through the points (X,Y,PRESSURE also works)
   note <file> "text" [--color C] [--at X,Y] [--group ID] [--w W] [--size s|m|l|xl]
                                         a note; Markdown text ("\\n" = new line); colours: yellow orange
                                         pink green blue violet grey (stickies), paper (document), none (text)
@@ -254,56 +256,7 @@ function purImageName(pur, n) {
 
 // ---- output --------------------------------------------------------------------------------------
 
-const r0 = (v) => Math.round(v);
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
-
-function lsText(doc, only = null) {
-  const lines = [];
-  const imgs = doc.items.filter((i) => i.type === 'image');
-  const count = (type, word) => {
-    const n = doc.items.filter((i) => i.type === type).length;
-    return n ? ` · ${n} ${word}` : '';
-  };
-  lines.push(`canvas "${doc.title}" ${doc.id} · ${imgs.length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`);
-  const img = (it, ind) => {
-    const a = doc.assets[it.asset] || {};
-    const extra = [it.rot ? `rot=${r0(it.rot)}` : '', it.flipX ? 'flipX' : '', it.flipY ? 'flipY' : '', it.crop ? 'cropped' : '', it.locked ? 'locked' : ''].filter(Boolean).join(' ');
-    lines.push(`${ind}${it.id}  image  "${a.name || a.file || it.asset}"  ${a.w || '?'}×${a.h || '?'}px  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}${extra ? `  ${extra}` : ''}${it.note ? `  note="${it.note}"` : ''}`);
-  };
-  const walk = (parent, ind) => {
-    for (const g of doc.items) {
-      if (g.type !== 'group' || (g.parent || null) !== parent) continue;
-      lines.push(`${ind}${g.id}  group  "${g.name}"  ${g.color}  x=${r0(g.x)} y=${r0(g.y)} w=${r0(g.w)} h=${r0(g.h)}  (${childrenOf(doc, g.id).length} items)`);
-      walk(g.id, `${ind}  `);
-    }
-    for (const it of doc.items) {
-      if (it.type === 'group' || (it.parent || null) !== parent) continue;
-      if (it.type === 'image') img(it, ind);
-      else if (it.type === 'note') {
-        const first = plainText(it.text).split('\n').find((l) => l.trim()) || '';
-        const more = it.text.split('\n').length - 1;
-        lines.push(`${ind}${it.id}  note  "${first.slice(0, 60)}"${more ? ` (+${more} lines)` : ''}  ${it.color}${it.fit ? ' sticky' : ''}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
-      }
-      else if (it.type === 'shape') {
-        const first = plainText(it.text).split('\n').find((l) => l.trim()) || '';
-        lines.push(`${ind}${it.id}  shape  ${it.kind}  "${first.slice(0, 60)}"  fill=${it.fill}${it.stroke ? ` stroke=${it.stroke}` : ''}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
-      } else if (it.type === 'connector') {
-        const end = (e) => (e.id ? `${e.id}${e.side ? `.${e.side}` : ''}` : `(${r0(e.x)},${r0(e.y)})`);
-        lines.push(`${ind}${it.id}  connector  ${end(it.from)} → ${end(it.to)}${it.label ? `  "${it.label}"` : ''}  ${it.route || 'straight'}${it.start ? ` start=${it.start}` : ''} end=${it.end}  ${it.color}`);
-      } else lines.push(`${ind}${it.id}  ${it.type}  x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`);
-    }
-  };
-  if (only) {
-    const g = doc.items.find((it) => it.id === only);
-    lines.push(`${g.id}  group  "${g.name}"  ${g.color}  x=${r0(g.x)} y=${r0(g.y)} w=${r0(g.w)} h=${r0(g.h)}  (${childrenOf(doc, g.id).length} items)`);
-    walk(only, '  ');
-    return lines.join('\n');
-  }
-  walk(null, '');
-  const b = contentBounds(doc);
-  if (b) lines.push(`bounds x=${r0(b.x)} y=${r0(b.y)} w=${r0(b.w)} h=${r0(b.h)}`);
-  return lines.join('\n');
-}
 
 function need(cond, msg) { if (!cond) throw new UsageError(msg); }
 
@@ -393,7 +346,7 @@ async function main(argv) {
       case 'ls': {
         if (opt.group) { idsExist(doc, [opt.group]); need(doc.items.find((i) => i.id === opt.group).type === 'group', `${opt.group} is not a group`); }
         const items = opt.group ? doc.items.filter((it) => it.id === opt.group || withChildren(doc, [opt.group]).has(it.id)) : doc.items;
-        out(lsText(doc, opt.group || null), { title: doc.title, id: doc.id, assets: doc.assets, items });
+        out(listText(doc, { group: opt.group || null }), { title: doc.title, id: doc.id, assets: doc.assets, items });
         return 0;
       }
       case 'json': process.stdout.write(serialize(doc)); return 0;
@@ -485,6 +438,16 @@ async function main(argv) {
         need(pos.length === 2, 'connect: usage: connect <file> <from-id | X,Y> <to-id | X,Y> [--label L] [--route straight|elbow|curve] [--start H] [--end H] [--color C] [--dash]');
         const end = (v) => (/^-?[\d.]+\s*,\s*-?[\d.]+$/.test(v) ? (([x, y]) => ({ x, y }))(pair(v, 'point')) : v);
         ops = [{ op: 'connect', from: end(pos[0]), to: end(pos[1]), label: opt.label, route: opt.route, start: opt.start, end: opt.end, color: opt.color, dash: opt.dash ? true : undefined, width: opt.width ? Number(opt.width) : undefined }];
+        break;
+      }
+      case 'stroke': {
+        need(pos.length >= 1, 'stroke: usage: stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W]');
+        const points = pos.join(' ').trim().split(/\s+/).map((s) => {
+          const v = s.split(',').map(Number);
+          need(v.length >= 2 && v.length <= 3 && v.every(Number.isFinite), `stroke: "${s}" is not X,Y or X,Y,PRESSURE`);
+          return v;
+        });
+        ops = [{ op: 'stroke', points, tool: opt.tool, color: opt.color, width: opt.width ? Number(opt.width) : undefined, nib: opt.nib, group: opt.group }];
         break;
       }
       case 'note': {

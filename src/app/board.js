@@ -13,9 +13,20 @@ import { connectorPath, distToPolyline, pathBounds, sidePoint, nearestSide, SIDE
 import { LEVELS, levelFor } from './images.js';
 import { drawNote, checkAt, linkAt } from './text.js';
 import { drawShapeBody, drawConnector, connectorWidth } from './shapes.js';
+import { strokeHits, strokeInRect } from '../core/ink.js';
+import { drawStroke, drawLive } from './ink.js';
 
 /** Tools that make things by clicking / dragging on the board. */
 const MAKERS = new Set(['note', 'shape']);
+/** Drawing tools (the eraser removes whole strokes). */
+const INK = new Set(['pen', 'highlighter', 'tape']);
+const DRAWS = new Set([...INK, 'eraser']);
+const ERASER = 10; // eraser radius, screen px
+const MAX_SAMPLES = 20000;
+/** Thickness follows a stylus's pressure; a mouse or a finger draws evenly. */
+const pressureOf = (e) => (e.pointerType === 'pen' ? Math.min(1, Math.max(0.08, e.pressure || 0.5)) : 0.5);
+/** Barrel rotation of a stylus (turns the italic nib). */
+const twistOf = (e) => (Number.isFinite(e.twist) ? e.twist : 0);
 /** Items a connector can attach to (and that show connection dots). */
 const LINKABLE = new Set(['image', 'note', 'shape']);
 const DOT_OFF = 14; // connection dots: px outside the item's side
@@ -98,6 +109,10 @@ export class Board {
     this.tool = tool;
     this.stage.classList.toggle('tool-hand', tool === 'hand');
     this.stage.classList.toggle('tool-create', MAKERS.has(tool) || tool === 'connector');
+    this.stage.classList.toggle('tool-ink', INK.has(tool));
+    this.stage.classList.toggle('tool-eraser', tool === 'eraser');
+    if (DRAWS.has(tool)) { this.hover = null; this.stage.dataset.cursor = ''; }
+    if (tool !== 'eraser') this.cursorPt = null;
     this.invalidateOverlay();
   }
 
@@ -304,6 +319,7 @@ export class Board {
       const b = it.rot ? itemBounds(it) : it;
       if (!intersects(b, vis)) continue;
       drawn++;
+      if (it.type === 'stroke') { drawStroke(ctx, it, { px: k }); continue; }
       if (it.type === 'note') { drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId }); continue; }
       if (it.type === 'shape') {
         drawShapeBody(ctx, it, { px: k });
@@ -550,6 +566,24 @@ export class Board {
       ctx.fillRect(a.x, a.y, r.w * this.view.z, r.h * this.view.z);
       ctx.strokeRect(Math.round(a.x) + 0.5, Math.round(a.y) + 0.5, Math.round(r.w * this.view.z), Math.round(r.h * this.view.z));
     }
+    // a stroke being drawn, in board units
+    if (this.drag?.type === 'ink') {
+      ctx.save();
+      const k = this.view.z * dpr;
+      ctx.setTransform(k, 0, 0, k, this.view.x * dpr, this.view.y * dpr);
+      drawLive(ctx, this.drag.brush, this.drag.samples);
+      ctx.restore();
+    }
+    // the eraser's circle follows the pointer
+    if (this.cursorPt && (this.tool === 'eraser' || this.drag?.type === 'erase')) {
+      ctx.beginPath();
+      ctx.arc(this.cursorPt.x, this.cursorPt.y, ERASER, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.stroke();
+    }
   }
 
   /** Outline a connector's path on the overlay. */
@@ -652,6 +686,8 @@ export class Board {
         if (distToPolyline(p, path.pts) <= reach + (it.width || 2) / 2) return { kind: 'item', id: it.id };
         continue;
       }
+      // a stroke: on its ink, not anywhere in its box
+      if (it.type === 'stroke') { if (strokeHits(it, p, reach * 0.7)) return { kind: 'item', id: it.id }; continue; }
       if (inItem(it, p)) return { kind: 'item', id: it.id };
     }
     const g = groupAtPoint(this.doc, p);
@@ -681,7 +717,10 @@ export class Board {
     st.addEventListener('pointerup', (e) => this.#up(e));
     st.addEventListener('pointercancel', (e) => this.#up(e, true));
     st.addEventListener('lostpointercapture', (e) => { if (this.drag && this.drag.pointer === e.pointerId) this.#up(e, true); });
-    st.addEventListener('pointerleave', () => { if (this.hover && !this.drag) { this.hover = null; this.invalidateOverlay(); } });
+    st.addEventListener('pointerleave', () => {
+      if (this.cursorPt && !this.drag) { this.cursorPt = null; this.invalidateOverlay(); }
+      if (this.hover && !this.drag) { this.hover = null; this.invalidateOverlay(); }
+    });
     st.addEventListener('wheel', (e) => this.#wheel(e), { passive: false });
     st.addEventListener('dblclick', (e) => {
       const r = st.getBoundingClientRect();
@@ -722,18 +761,41 @@ export class Board {
 
   #down(e) {
     this.anim = null;
+    // palm rejection: while a stylus is on the board, fingers do nothing
+    if (e.pointerType === 'touch' && this.penDown !== undefined && this.penDown !== null) return;
+    if (e.pointerType === 'pen') this.penSeen = true;
     if (document.activeElement && isTyping(document.activeElement)) document.activeElement.blur();
     this.pointers.set(e.pointerId, this.#local(e));
     if (this.pointers.size === 2) { this.#startPinch(); return; }
     if (this.pointers.size > 2) return;
     const p = this.#local(e);
-    const pan = e.button === 1 || (e.button === 0 && (this.tool === 'hand' || this.space)) || (e.pointerType === 'touch' && this.tool === 'hand');
+    // once a stylus has been used, a finger pans in the drawing tools (Apple Notes)
+    const fingerPans = e.pointerType === 'touch' && (this.tool === 'hand' || (this.penSeen && DRAWS.has(this.tool)));
+    const pan = e.button === 1 || (e.button === 0 && (this.tool === 'hand' || this.space)) || fingerPans;
     if (e.button === 2) { this.pointers.delete(e.pointerId); return; }
     try { this.stage.setPointerCapture(e.pointerId); } catch { /* not a live pointer (synthetic event) */ }
     if (pan) {
       e.preventDefault();
       this.drag = { type: 'pan', pointer: e.pointerId, sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false };
       this.stage.classList.add('panning');
+      return;
+    }
+    // drawing; the back end of a stylus erases in any tool
+    const penEraser = e.pointerType === 'pen' && ((e.buttons & 32) !== 0 || e.button === 5);
+    if (this.doc && !this.readOnly && (penEraser || (e.button === 0 && DRAWS.has(this.tool)))) {
+      e.preventDefault();
+      const w = this.toWorld(p.x, p.y);
+      if (e.pointerType === 'pen') this.penDown = e.pointerId;
+      this.cb.pointerDown?.();
+      this.cursorPt = p;
+      if (penEraser || this.tool === 'eraser') {
+        this.drag = { type: 'erase', pointer: e.pointerId, sx: p.x, sy: p.y, moved: false, before: this.doc.items, gone: new Set(), last: w };
+        this.#eraseAlong(w, w);
+      } else {
+        const brush = { ...(this.cb.brush?.(this.tool) || {}), tool: this.tool };
+        this.drag = { type: 'ink', pointer: e.pointerId, sx: p.x, sy: p.y, moved: false, brush, samples: [{ x: w.x, y: w.y, p: pressureOf(e), t: twistOf(e) }], cx: e.clientX, cy: e.clientY };
+      }
+      this.invalidateOverlay();
       return;
     }
     if (e.button !== 0 || !this.doc) return;
@@ -782,7 +844,18 @@ export class Board {
     const p = this.#local(e);
     const d = this.drag;
     if (!d || d.pointer !== e.pointerId) {
+      if (this.tool === 'eraser' && e.pointerType !== 'touch' && !e.buttons) { this.cursorPt = p; this.invalidateOverlay(); }
       if (e.pointerType === 'mouse' && !e.buttons) this.#hover(p);
+      return;
+    }
+    if (d.type === 'ink') { this.#inkMove(e, d); return; }
+    if (d.type === 'erase') {
+      const w = this.toWorld(p.x, p.y);
+      this.#eraseAlong(d.last, w);
+      d.last = w;
+      d.moved = true;
+      this.cursorPt = p;
+      this.invalidateOverlay();
       return;
     }
     if (!d.moved && Math.hypot(p.x - d.sx, p.y - d.sy) < DRAG_START) return;
@@ -827,12 +900,25 @@ export class Board {
 
   #up(e, cancelled = false) {
     this.pointers.delete(e.pointerId);
+    if (e.pointerId === this.penDown) this.penDown = null;
     if (this.pinch) { if (this.pointers.size < 2) this.pinch = null; return; }
     const d = this.drag;
     if (!d || d.pointer !== e.pointerId) return;
     this.drag = null;
     this.stage.classList.remove('panning');
     try { this.stage.releasePointerCapture(e.pointerId); } catch { /* released */ }
+    if (d.type === 'ink') {
+      this.invalidateOverlay();
+      if (!cancelled) this.cb.stroke?.(d.brush, d.samples);
+      return;
+    }
+    if (d.type === 'erase') {
+      if (e.pointerType !== 'mouse') this.cursorPt = null;
+      this.invalidateOverlay();
+      if (cancelled) { this.doc.items = d.before; this.invalidate(); return; }
+      if (d.gone.size) this.cb.commit?.('erase', d.before);
+      return;
+    }
     if (d.type === 'move' && d.moved) {
       if (cancelled) { this.doc.items = d.before; this.invalidate(); return; }
       reparent(this.doc, [...d.ids]);
@@ -890,8 +976,45 @@ export class Board {
     this.invalidateOverlay();
   }
 
+  /** Samples of a stroke being drawn: every coalesced event (pens report faster than frames), ~1.5 px apart. */
+  #inkMove(e, d) {
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+    const r = this.stage.getBoundingClientRect();
+    let added = false;
+    for (const s of evs.length ? evs : [e]) {
+      if (d.samples.length >= MAX_SAMPLES) break;
+      const dx = s.clientX - d.cx;
+      const dy = s.clientY - d.cy;
+      if (dx * dx + dy * dy < 2.25) continue;
+      d.cx = s.clientX;
+      d.cy = s.clientY;
+      const w = this.toWorld(s.clientX - r.left, s.clientY - r.top);
+      d.samples.push({ x: w.x, y: w.y, p: pressureOf(s), t: twistOf(s) });
+      added = true;
+    }
+    if (added) { d.moved = true; this.invalidateOverlay(); }
+  }
+
+  /** Object eraser: every stroke the eraser's circle touches between a and b goes (one undo step per gesture). */
+  #eraseAlong(a, b) {
+    const d = this.drag;
+    const r = ERASER / this.view.z;
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (r * 0.75)));
+    let hit = false;
+    for (const it of this.doc.items) {
+      if (it.type !== 'stroke' || it.locked || d.gone.has(it.id)) continue;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        if (strokeHits(it, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, r)) { d.gone.add(it.id); hit = true; break; }
+      }
+    }
+    if (!hit) return;
+    this.doc.items = this.doc.items.filter((it) => !d.gone.has(it.id));
+    this.invalidate();
+  }
+
   #hover(p) {
-    if (this.tool === 'hand' || this.space || MAKERS.has(this.tool)) return;
+    if (this.tool === 'hand' || this.space || MAKERS.has(this.tool) || DRAWS.has(this.tool)) return;
     const hit = this.hitTest(p.x, p.y);
     const hot = hit.kind === 'dot' ? `${hit.id}:${hit.side}` : null;
     if (hot !== this.hotDot) { this.hotDot = hot; this.invalidateOverlay(); }
@@ -1006,7 +1129,7 @@ export class Board {
     const sel = new Set(d.startSel);
     for (const it of this.doc.items) {
       const b = itemBounds(it);
-      if (it.type === 'group') { if (b.x >= r.x && b.y >= r.y && b.x + b.w <= r.x + r.w && b.y + b.h <= r.y + r.h) sel.add(it.id); } else if (intersects(b, r)) sel.add(it.id);
+      if (it.type === 'group') { if (b.x >= r.x && b.y >= r.y && b.x + b.w <= r.x + r.w && b.y + b.h <= r.y + r.h) sel.add(it.id); } else if (it.type === 'stroke' ? strokeInRect(it, r) : intersects(b, r)) sel.add(it.id);
     }
     // a group and what is inside it: keep the group
     const keep = new Set(outermost(this.doc, [...sel]));

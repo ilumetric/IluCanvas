@@ -69,6 +69,9 @@
             "$ref": "#/$defs/connector"
           },
           {
+            "$ref": "#/$defs/stroke"
+          },
+          {
             "$ref": "#/$defs/other"
           }
         ]
@@ -214,7 +217,7 @@
       }
     },
     "other": {
-      "description": "Item types from newer versions (stroke, video…): kept and drawn as a box.",
+      "description": "Item types from newer versions (video…): kept and drawn as a box.",
       "allOf": [
         {
           "$ref": "#/$defs/box"
@@ -228,7 +231,8 @@
               "group",
               "note",
               "shape",
-              "connector"
+              "connector",
+              "stroke"
             ]
           }
         }
@@ -551,6 +555,78 @@
         "label": {
           "type": "string",
           "description": "Text in the middle of the line."
+        }
+      }
+    },
+    "stroke": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/box"
+        }
+      ],
+      "required": [
+        "tool",
+        "color",
+        "width",
+        "pts"
+      ],
+      "description": "Freehand ink. pts are measured in a vw × vh box and drawn stretched into x, y, w, h.",
+      "properties": {
+        "type": {
+          "const": "stroke"
+        },
+        "tool": {
+          "enum": [
+            "pen",
+            "highlighter",
+            "tape"
+          ]
+        },
+        "nib": {
+          "const": "italic",
+          "description": "Pens only; round when left out."
+        },
+        "color": {
+          "enum": [
+            "white",
+            "grey",
+            "black",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "violet",
+            "pink"
+          ]
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Line width in the stroke's own units."
+        },
+        "vw": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Width of the box pts are measured in (w when left out)."
+        },
+        "vh": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "pts": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Flat samples: x, y, pressure (0…1), x, y, pressure, …"
+        },
+        "tw": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Stylus barrel rotation per sample, degrees."
         }
       }
     }

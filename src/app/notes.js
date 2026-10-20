@@ -9,6 +9,8 @@ import { toggleTask, MARK_COLORS } from '../core/markdown.js';
 import { NoteEditor } from './editor.js';
 import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
 import { FILL, LINE_COLOR } from './shapes.js';
+import { INK_COLOR } from './ink.js';
+import { INK_TOOLS, INK_WIDTHS, inkScale, reframe, strokeScale } from '../core/ink.js';
 import { h, icon, openMenu, promptDialog } from './ui.js';
 import { t } from './i18n.js';
 
@@ -267,6 +269,7 @@ export class NotesUI {
     else if (!ro && only('note')) this.#noteBar(all);
     else if (!ro && only('shape')) this.#shapeBar(all);
     else if (!ro && only('connector')) this.#connectorBar(all);
+    else if (!ro && only('stroke')) this.#strokeBar(all);
     else { bar.hidden = true; bar.replaceChildren(); return; }
     bar.hidden = false;
     this.place();
@@ -387,6 +390,34 @@ export class NotesUI {
       this.#btn('dash', t('conn.dash'), () => set('dash', (c) => ({ dash: !one.dash || undefined })), !!one.dash),
     ];
     if (cs.length === 1) parts.push(h('span.sb-sep'), this.#btn('text', t('conn.label'), () => this.editLabel(one.id), !!one.label));
+    this.bar.replaceChildren(...parts);
+  }
+
+  /** Selected strokes: tool, colour, width (a new width or tool measures the stroke's frame again). */
+  #strokeBar(ks) {
+    const one = ks[0];
+    const z = this.board.view.z;
+    const restroke = (label, changes) => this.#set(label, (k) => { const n = reframe(k, changes(k)); return { ...n, tw: n.tw, nib: n.nib }; }, 'stroke');
+    const colorBtn = this.#btn(null, t('ink.color'), () => openMenu(colorBtn, PAINT.map((c) => ({
+      label: t(`paint.${c}`), swatch: INK_COLOR[c], checked: ks.every((k) => k.color === c), onClick: () => this.#set('color', () => ({ color: c }), 'stroke'),
+    }))));
+    colorBtn.append(h('span.sb-swatch', { style: { background: INK_COLOR[one.color] || INK_COLOR.white } }));
+    const tool = ks.every((k) => k.tool === one.tool) ? one.tool : null;
+    const parts = [
+      ...INK_TOOLS.map((tl) => this.#btn(tl, t(`tool.${tl}`), () => restroke('tool', (k) => ({ tool: tl, nib: tl === 'pen' ? k.nib : undefined })), tool === tl)),
+      h('span.sb-sep'), colorBtn,
+    ];
+    if (tool) {
+      // the presets as they look on screen at this zoom
+      parts.push(h('span.sb-sep'));
+      INK_WIDTHS[tool].forEach((w, i) => {
+        const bw = w * inkScale(z);
+        const on = ks.every((k) => Math.abs(k.width * strokeScale(k) - bw) < bw * 0.05);
+        const b = this.#btn(null, `${t('ink.width')} ${w}`, () => restroke('width', () => ({ width: bw })), on);
+        b.append(h('span.ink-dot', { style: { width: `${4 + i * 2.5}px`, height: `${4 + i * 2.5}px` } }));
+        parts.push(b);
+      });
+    }
     this.bar.replaceChildren(...parts);
   }
 

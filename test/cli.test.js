@@ -94,8 +94,11 @@ for (const [label, cli] of CLIS) {
       const [b] = runJson('shape', f, 'diamond', 'Ок?', '--fill', 'yellow', '--at', '400,0').created;
       const [c] = runJson('connect', f, a, b, '--label', 'да', '--route', 'elbow').created;
       runJson('connect', f, b, '900,300', '--end', 'dot', '--dash');
+      run('stroke', f, '-20,300 100,340,0.9 220,300', '--color', 'red', '--width', '6');
       const text = run('ls', f);
-      assert.match(text, /1 notes · 2 shapes · 2 connectors/);
+      assert.match(text, /1 notes · 2 shapes · 2 connectors · 1 strokes/);
+      assert.match(text, /stroke {2}pen {2}red {2}width=6 {2}3 points/);
+      assert.equal(spawnSync(process.execPath, [cli, 'stroke', f, '1,2,3,4']).status, 2);
       assert.match(text, new RegExp(`${c}  connector  ${a} → ${b}  "да"  elbow end=arrow  grey`));
       assert.match(text, /shape {2}diamond {2}"Ок\?" {2}fill=yellow/);
       const bad = spawnSync(process.execPath, [cli, 'shape', f, 'blob'], { encoding: 'utf8' });

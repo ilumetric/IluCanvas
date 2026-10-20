@@ -11,9 +11,11 @@ import { APP_VERSION } from '../core/version.js';
 import {
   GROUP_COLORS, serialize, byId, itemBounds, unionBounds, withChildren, removeItems, groupItems, ungroup, fitGroup,
   arrangeItems, restack, patchItems, addItems, newId, dropLayout, fitSize, reparent, childrenOf, groupsOf, validate, contentBounds,
-  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS,
+  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, groupAround,
 } from '../core/model.js';
-import { applyOps } from '../core/ops.js';
+import { applyOps, newStroke } from '../core/ops.js';
+import { INK_WIDTHS, INK_DEFAULTS, inkScale } from '../core/ink.js';
+import { listText } from '../core/describe.js';
 import { isImageName } from '../core/imageinfo.js';
 import { deadBytes, readPreview } from '../core/canvasfile.js';
 import { blobReader } from '../core/zip.js';
@@ -26,7 +28,7 @@ import { Background, BACKGROUNDS, STYLE_BACKGROUND, tileUrl } from './background
 import { Store } from './store.js';
 import { NotesUI, KIND_ICON, ROUTE_ICON } from './notes.js';
 import { resetTextCache } from './text.js';
-import { plainText } from '../core/markdown.js';
+import { INK_COLOR } from './ink.js';
 import * as disk from './disk.js';
 import * as remote from './remote.js';
 
@@ -358,6 +360,11 @@ function renderToolbar() {
     readOnly() ? null : noteTool(),
     readOnly() ? null : tool('shape', shapeIcon, t('tool.shape'), 'S'),
     readOnly() ? null : tool('connector', 'connector', t('tool.connector'), 'X'),
+    readOnly() ? null : h('span.tool-sep'),
+    readOnly() ? null : tool('pen', 'pen', t('tool.pen'), 'P'),
+    readOnly() ? null : tool('highlighter', 'highlighter', t('tool.highlighter'), 'Shift+P'),
+    readOnly() ? null : tool('tape', 'tape', t('tool.tape'), 'T'),
+    readOnly() ? null : tool('eraser', 'eraser', t('tool.eraser'), 'E'),
   );
   renderToolOptions();
   function noteTool() {
@@ -385,9 +392,10 @@ function renderToolOptions() {
   } else if (tool === 'connector') {
     const cur = pref.get('route', 'elbow');
     items = ['straight', 'elbow', 'curve'].map((r) => opt(ROUTE_ICON[r], t(`route.${r}`), cur === r, () => { pref.set('route', r); renderToolOptions(); }));
-  }
+  } else if (INK_WIDTHS[tool]) items = inkOptions(tool);
   if (!items || !doc()) { box.hidden = true; box.replaceChildren(); return; }
   box.hidden = false;
+  box.classList.toggle('row', !!INK_WIDTHS[tool]);
   box.replaceChildren(...items);
   // next to the tool's button
   const btn = [...$('toolbar').querySelectorAll('.tool')].find((b) => b.classList.contains('on'));
@@ -399,6 +407,56 @@ function renderToolOptions() {
     box.style.left = `${(tr.right + 8) / ui}px`;
     box.style.top = `${Math.max(8, r.top + r.height / 2 - bh / 2) / ui}px`;
   }
+}
+
+/** A drawing tool's settings (this browser): colour, width preset, nib. */
+function brush(tool) {
+  const def = INK_DEFAULTS[tool] || INK_DEFAULTS.pen;
+  const p = pref.get(`ink.${tool}`, {}) || {};
+  return {
+    tool,
+    color: PAINT.includes(p.color) ? p.color : def.color,
+    width: INK_WIDTHS[tool]?.includes(p.width) ? p.width : def.width,
+    nib: tool === 'pen' && p.nib === 'italic' ? 'italic' : undefined,
+  };
+}
+
+function setBrush(tool, patch) {
+  pref.set(`ink.${tool}`, { ...brush(tool), ...patch });
+  renderToolOptions();
+}
+
+/** Pen / highlighter / tape options: nib (pen), width presets, colours. */
+function inkOptions(tool) {
+  const b = brush(tool);
+  const btn = (cls, label, on, onclick, ...kids) => h(`button.${cls}${on ? '.on' : ''}`, { type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(on), onclick }, ...kids);
+  const parts = [];
+  if (tool === 'pen') {
+    parts.push(
+      btn('tool.small', t('ink.round'), !b.nib, () => setBrush(tool, { nib: undefined }), h('span.nib-round')),
+      btn('tool.small', t('ink.italic'), b.nib === 'italic', () => setBrush(tool, { nib: 'italic' }), h('span.nib-italic')),
+      h('span.opt-sep'));
+  }
+  INK_WIDTHS[tool].forEach((w, i) => parts.push(btn('tool.small', `${t('ink.width')} ${w}`, b.width === w, () => setBrush(tool, { width: w }), h('span.ink-dot', { style: { width: `${4 + i * 2.5}px`, height: `${4 + i * 2.5}px` } }))));
+  parts.push(h('span.opt-sep'));
+  for (const c of PAINT) parts.push(btn('ink-swatch', t(`paint.${c}`), b.color === c, () => setBrush(tool, { color: c }), h('span', { style: { background: INK_COLOR[c] } })));
+  return parts;
+}
+
+/** A finished stroke from the board: added (one undo step); drawn over a group, it joins it. */
+function addStroke(b, samples) {
+  const width = b.width * inkScale(S.board.view.z);
+  if (b.tool === 'tape') {
+    // a tape needs some length to show its torn ends
+    let len = 0;
+    for (let i = 1; i < samples.length; i++) len += Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y);
+    if (len < width * 0.6) return;
+  }
+  edit('draw', (d) => {
+    const k = newStroke(d, { tool: b.tool, nib: b.nib, color: b.color, width, samples });
+    const g = groupAround(d, k);
+    if (g) patchItems(d, { [k.id]: { parent: g.id } });
+  });
 }
 
 function renderMapBar() {
@@ -1556,6 +1614,7 @@ addEventListener('keydown', (e) => {
     if (k === 'v') { e.preventDefault(); flip('flipY'); return; }
     if (k === 'r') { e.preventDefault(); rotate(90); return; }
     if (k === 'a') { e.preventDefault(); arrangeSelection(); return; }
+    if (k === 'p' && !readOnly()) { e.preventDefault(); setTool('highlighter'); return; }
   }
   switch (e.key) {
     case 'Delete': case 'Backspace': e.preventDefault(); if (!readOnly()) deleteSelection(); return;
@@ -1595,6 +1654,9 @@ addEventListener('keydown', (e) => {
   else if (k === 'n' && !readOnly()) setTool('note');
   else if (k === 's' && !readOnly()) setTool('shape');
   else if (k === 'x' && !readOnly()) setTool('connector');
+  else if (k === 'p' && !readOnly()) setTool('pen');
+  else if (k === 't' && !readOnly()) setTool('tape');
+  else if (k === 'e' && !readOnly()) setTool('eraser');
   else if (k === 'm') toggleMap();
 });
 
@@ -1640,28 +1702,7 @@ function agentApi() {
         images: d.items.filter((i) => i.type === 'image').length, groups: groupsOf(d).length, selection: selIds(), view: { ...S.board.view },
       } : { open: false, folders: S.folders.map((f) => f.name), links: S.links.map((l) => l.title) };
     },
-    list() {
-      need();
-      const d = doc();
-      const pos = (it) => `x=${Math.round(it.x)} y=${Math.round(it.y)} w=${Math.round(it.w)} h=${Math.round(it.h)}`;
-      const first = (it) => plainText(it.text).split('\n').find((l) => l.trim()) || '';
-      const line = (it, ind) => (it.type === 'group'
-        ? `${ind}${it.id}  group  "${it.name}"  ${it.color}  ${pos(it)}`
-        : it.type === 'note'
-          ? `${ind}${it.id}  note  "${first(it).slice(0, 60)}"  ${it.color}${it.fit ? ' sticky' : ''}  ${pos(it)}`
-          : it.type === 'shape'
-            ? `${ind}${it.id}  shape  ${it.kind}  "${first(it).slice(0, 60)}"  fill=${it.fill}  ${pos(it)}`
-            : it.type === 'connector'
-              ? `${ind}${it.id}  connector  ${it.from.id || `(${Math.round(it.from.x)},${Math.round(it.from.y)})`} → ${it.to.id || `(${Math.round(it.to.x)},${Math.round(it.to.y)})`}${it.label ? `  "${it.label}"` : ''}  ${it.route || 'straight'}`
-          : `${ind}${it.id}  ${it.type}  "${d.assets[it.asset]?.name || it.asset}"  ${pos(it)}${it.note ? `  note="${it.note}"` : ''}`);
-      const out = [];
-      const walk = (parent, ind) => {
-        for (const it of d.items) if (it.type === 'group' && (it.parent || null) === parent) { out.push(line(it, ind)); walk(it.id, `${ind}  `); }
-        for (const it of d.items) if (it.type !== 'group' && (it.parent || null) === parent) out.push(line(it, ind));
-      };
-      walk(null, '');
-      return out.join('\n');
-    },
+    list() { need(); return listText(doc()); },
     json() { need(); return serialize(doc()); },
     async apply(ops) {
       need();
@@ -1762,6 +1803,8 @@ async function start() {
       selection: () => S.notes?.render(),
       create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : S.notes.create(where, o)),
       connect: (from, to) => S.notes.connect(from, to),
+      brush,
+      stroke: addStroke,
       toggleTask: (id, block) => S.notes.toggleTask(id, block),
       pointerDown: () => { if (S.notes.editing) S.notes.close(); },
       view: () => {

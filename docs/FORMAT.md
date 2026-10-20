@@ -174,7 +174,28 @@ ends move — read them, do not edit them. Connectors never have a `parent`.
 {"id":"c4n8w2pd","type":"connector","from":{"id":"s1a2b3c4"},"to":{"id":"s7f2k1qa","side":"left"},"route":"elbow","end":"arrow","color":"grey","label":"yes","x":200,"y":60,"w":120,"h":40}
 ```
 
-Planned item types (not in this version yet): `stroke`, `video` — see [ROADMAP.md](ROADMAP.md).
+**stroke** — freehand ink: pen, highlighter or tape.
+
+| field | |
+|---|---|
+| `tool` | `pen` (pressure changes thickness), `highlighter` (40 % opaque, flat ends), `tape` (55 % opaque ribbon with torn ends) |
+| `nib` | `italic` — a pen with a broad, slanted nib (stylus barrel rotation turns it); round when left out |
+| `color` | `white grey black red orange yellow green blue violet pink` |
+| `width` | line width in the stroke's own units |
+| `pts` | the samples, flat: `x, y, pressure, x, y, pressure, …` — pressure 0…1 (0.5 for a mouse) |
+| `tw` | optional, one number per sample: the stylus barrel rotation in degrees |
+| `vw`, `vh` | the size of the box `pts` are measured in, from its top-left |
+
+The points are drawn stretched from `vw × vh` into `x, y, w, h`, so moving
+and resizing a stroke never rewrites them (a stroke made twice as big draws
+twice as thick). `x y w h` hug the ink. Changing `width` or `tool` with the
+tools measures the stroke again (`vw = w` afterwards, `width` in board units).
+
+```json
+{"id":"k9f2m1qa","type":"stroke","tool":"pen","color":"red","width":4,"x":96,"y":46,"w":108,"h":38,"vw":108,"vh":38,"pts":[4.2,4.2,0.3,54.2,30.1,0.8,104.2,8.6,0.5]}
+```
+
+Planned item type (not in this version yet): `video` — see [ROADMAP.md](ROADMAP.md).
 
 ## Checks (`ilucanvas validate`)
 

@@ -54,6 +54,8 @@ node ilucanvas.mjs note refs.ilucanvas 'Warm vs cool' --group g4k2x9q           
 node ilucanvas.mjs shape refs.ilucanvas diamond 'Approved?' --fill yellow --at 320,0   # a shape with text
 node ilucanvas.mjs connect refs.ilucanvas s1a2b3c s7f2k1q --label yes --route elbow    # an arrow between two items
 node ilucanvas.mjs connect refs.ilucanvas s7f2k1q 900,300 --end dot --dash             # to a free point
+node ilucanvas.mjs stroke refs.ilucanvas "0,0 60,40,0.9 120,10" --color red --width 6   # ink through points (X,Y or X,Y,PRESSURE)
+node ilucanvas.mjs stroke refs.ilucanvas "0,300 400,300" --tool highlighter --color yellow
 node ilucanvas.mjs rm refs.ilucanvas i8k2m1q [--keep-children]
 node ilucanvas.mjs front|back refs.ilucanvas i8k2m1q
 node ilucanvas.mjs apply refs.ilucanvas ops.json                      # many changes, one write (below)
@@ -96,6 +98,7 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
   { "op": "shape", "kind": "diamond", "text": "Approved?", "fill": "yellow", "x": 320, "y": 1960, "as": "$b" },
   { "op": "connect", "from": "$a", "to": "$b", "label": "send", "route": "elbow" },
   { "op": "connect", "from": "$b", "fromSide": "right", "to": { "x": 900, "y": 2060 }, "dash": true },
+  { "op": "stroke", "points": [[40, 40], [300, 90, 0.8], [560, 40]], "tool": "highlighter", "color": "green", "group": "$light" },
   { "op": "add", "paths": ["refs/rim.jpg", "refs/night/"], "group": "$light" },
   { "op": "add", "urls": ["https://example.com/sky.jpg"], "x": 4000, "y": 0, "max": 800 },
   { "op": "group", "ids": ["i8k2m1q", "i3x9a0b"], "name": "Poses", "as": "$poses" },
@@ -117,9 +120,10 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 | `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
 | `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
 | `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`straight elbow curve`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
+| `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `group`, `as` |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
-| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label` (`null` removes a field) |
+| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label`, strokes `tool nib color width` (`null` removes a field) |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
 | `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
 | `fit` | `id` of a group: the frame hugs its items |
@@ -131,7 +135,7 @@ Group colours: `violet blue orange green pink yellow red amber grey`. Note colou
 `yellow orange pink green blue violet grey paper none`. Note text is Markdown —
 headings, lists, `- [ ]` checklists, quotes, bold / italic / strike / `<u>`,
 `==highlight==`, `[text]{.red}` colours, links ([FORMAT.md](FORMAT.md#note-text-markdown-subset)).
-Shape fills, outlines and connector colours: `white grey black red orange yellow green blue violet pink`
+Shape fills, outlines, connector and ink colours: `white grey black red orange yellow green blue violet pink`
 (shape `fill` also `none`).
 Coordinates are board units (1 unit = 1 CSS pixel at 100% zoom), y down.
 Moving a group moves everything inside it (nested groups too).

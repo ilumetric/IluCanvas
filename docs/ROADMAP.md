@@ -6,7 +6,7 @@ new features are new item types, not new subsystems.
 ## Principles
 
 - **Everything is an item** in `canvas.json` `items`: today `image`, `group`,
-  `note`, `shape`, `connector`; next `stroke`, `video`. Every type gets the same
+  `note`, `shape`, `connector`, `stroke`; next `video`. Every type gets the same
   selection, move, resize, groups, undo, autosave, minimap, agent ops.
 - **Drawn on the canvas**, like images (fast with thousands of items; correct
   stacking — a note can lie under a picture). Real DOM appears only while
@@ -15,7 +15,7 @@ new features are new item types, not new subsystems.
 - **Fixed colours** for ink, shapes and text marks (they do not change with
   the Fun / Calm / Oli style). The UI chrome keeps following the style.
 - **No dependencies**: perfect-freehand (MIT) is vendored as one file in
-  `src/core/vendor/`.
+  `src/app/vendor/` (only drawing needs it).
 - Unknown item types keep round-tripping (already true), so older app versions
   do not destroy new content. Format stays `version: 1`; types are additive.
 
@@ -94,19 +94,21 @@ Behaviour from GuitarCanvas (`E:\Git\GuitarCanvas\src\core\ink.ts`), storage our
 - **Tape**: washi tape, serrated torn ends, 55 % opacity — its own toolbar button.
 - **Eraser**: removes whole strokes it touches (object eraser); the stylus
   back end erases too.
-- Palette: 5 fixed colours (Apple Notes dark: white, blue, green, yellow, pink)
-  + a custom colour wheel; 5 width presets per tool; every tool remembers its
-  own colour / width / nib (browser preference).
+- Palette: the ten fixed colours shared with shapes and connectors (Apple
+  dark-mode shades; no custom wheel — fixed colours, as agreed); 5 width
+  presets per tool, as sizes on screen (drawn zoomed out, ink is wider); every
+  tool remembers its own colour / width / nib (browser preference).
 - Input: coalesced pointer events, touch ignored while a pen is down (palm
   rejection), mouse = constant pressure.
 
 ```json
-{"id":"k9…","type":"stroke","tool":"pen","nib":"round","color":"#0a84ff","size":3.5,"x":10,"y":20,"w":180,"h":64,"pts":[0.5,12.25,0.5, 3,11,0.62]}
+{"id":"k9…","type":"stroke","tool":"pen","color":"blue","width":3.5,"x":10,"y":20,"w":180,"h":64,"vw":180,"vh":64,"pts":[0.5,12.25,0.5, 3,11,0.62]}
 ```
 
-`pts` is a flat array `x, y, pressure[, twist]` relative to `x, y`
-(1–2 decimals). Resizing rewrites the points. The outline (a Path2D) is
-computed once per stroke object and cached.
+`pts` is a flat array `x, y, pressure` (2 decimals) measured in a `vw × vh`
+box, drawn stretched into `x y w h` — resizing does not rewrite the points;
+`tw` holds the stylus twist per sample. The outline (a Path2D) is computed
+once per `pts` array and cached. Details: [FORMAT.md](FORMAT.md).
 
 ## 6. Video by link (`video`)
 
@@ -140,7 +142,7 @@ connectors as `s1 → s2 "yes"`.
 
 1. UI scale; the text engine (Markdown subset → layout → canvas, editor). Notes. *(done)*
 2. Shapes and connectors. *(done)*
-3. Ink: pen, highlighter, tape, eraser. *(independent of 1–2)*
+3. Ink: pen, highlighter, tape, eraser. *(done)*
 4. Video. *(independent of 1–3)*
 5. PureRef on our rails: a `.pur` opens as ordinary IluCanvas items — its
    groups become our groups, its text notes our notes, its drawings our strokes.

@@ -12,9 +12,10 @@
 // after putting the assets into doc.assets.
 
 import { ROUTES, HEADS, SIDES } from './connectors.js';
+import { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } from './ink.js';
 import {
   NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
-  removeItems, groupItems, ungroup, fitGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
+  removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
 } from './model.js';
 
 export class OpError extends Error {}
@@ -36,8 +37,9 @@ const EDITABLE = {
   text: 'text', fit: 'bool', size: 'enum', align: 'enum', ratio: 'enum', scale: 'pos',
   kind: 'enum', fill: 'paint', stroke: 'paint',
   from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
+  tool: 'enum', nib: 'enum',
 };
-const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS, kind: SHAPE_KINDS, route: ROUTES, start: HEADS, end: HEADS };
+const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS, kind: SHAPE_KINDS, route: ROUTES, start: HEADS, end: HEADS, tool: INK_TOOLS, nib: NIBS };
 export const EDITABLE_KEYS = Object.keys(EDITABLE);
 
 /** A checked patch from loose input (strings from the command line, JSON from agents); `item` is the target. */
@@ -69,12 +71,12 @@ export function cleanPatch(doc, input, item = null) {
       patch[k] = end;
     } else if (t === 'color') {
       need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
-      const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' ? PAINT : GROUP_COLORS;
+      const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' || item?.type === 'stroke' ? PAINT : GROUP_COLORS;
       need(list.includes(raw), `color must be one of ${list.join(', ')}`);
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
-      patch[k] = raw;
+      patch[k] = k === 'nib' && raw === 'round' ? undefined : raw;
     }
     else if (t === 'ref') {
       const g = byId(doc).get(raw);
@@ -203,6 +205,35 @@ export function newConnector(doc, { from, to, route, start, end = 'arrow', color
   return byId(doc).get(c.id);
 }
 
+/**
+ * A new ink stroke through `samples` ([{ x, y, p? , t? }] in board units):
+ * its frame hugs the ink, the points are stored relative to it (ink.js).
+ */
+export function newStroke(doc, { tool = 'pen', nib, color, width, samples, group = null, by = 'human' } = {}) {
+  const def = INK_DEFAULTS[tool] || INK_DEFAULTS.pen;
+  const w = Number(width) || def.width;
+  const f = strokeFrame({ tool, width: w }, samples);
+  need(f, 'a stroke needs at least one point');
+  const k = { id: newId('stroke'), type: 'stroke', tool, color: color || def.color, width: w, ...f };
+  if (tool === 'pen' && nib === 'italic') k.nib = 'italic';
+  if (group) k.parent = group;
+  addItems(doc, [k], by);
+  if (group) growGroup(doc, group, k, { by });
+  return k;
+}
+
+/** Points an agent gives ([[x, y], [x, y, pressure], { x, y, p }]) → samples. */
+function samplesOf(points) {
+  need(Array.isArray(points) && points.length, 'stroke needs "points": [[x, y], [x, y, pressure], …] in board units');
+  need(points.length <= 50000, 'a stroke takes at most 50000 points');
+  return points.map((q) => {
+    const s = Array.isArray(q) ? { x: Number(q[0]), y: Number(q[1]), p: q[2] } : { x: Number(q?.x), y: Number(q?.y), p: q?.p ?? q?.pressure };
+    need(Number.isFinite(s.x) && Number.isFinite(s.y), 'stroke points must be [x, y] numbers');
+    s.p = Number.isFinite(Number(s.p)) && s.p !== undefined && s.p !== null ? Math.min(1, Math.max(0, Number(s.p))) : 0.5;
+    return s;
+  });
+}
+
 /** x / y given, the bottom of `group`, or right of everything. */
 function placeNew(doc, it, x, y, group) {
   const g = group ? byId(doc).get(group) : null;
@@ -295,6 +326,16 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           log.push(`connector ${c.id}`);
           break;
         }
+        case 'stroke': {
+          const group = o.group ? ref(o.group) : null;
+          if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const { op, as, group: _g, points, ...fields } = o;
+          const k = newStroke(doc, { ...cleanPatch(doc, fields, { type: 'stroke' }), samples: samplesOf(points), group, by });
+          if (as) named.set(as, k.id);
+          created.push(k.id);
+          log.push(`stroke ${k.id} ${k.tool}`);
+          break;
+        }
         case 'newgroup': {
           const g = newGroup(doc, { ...o, by });
           if (o.as) named.set(o.as, g.id);
@@ -323,7 +364,16 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
             break;
           }
           idsExist(doc, [id]);
-          patchItems(doc, { [id]: cleanPatch(doc, fields, byId(doc).get(id)) }, by);
+          const item = byId(doc).get(id);
+          const patch = cleanPatch(doc, fields, item);
+          // a stroke's new width / tool: measure its frame again (width in board units)
+          if (item.type === 'stroke' && (patch.width !== undefined || patch.tool !== undefined)) {
+            const { width, tool, ...rest } = patch;
+            const n = reframe(item, { ...(width !== undefined ? { width } : {}), ...(tool !== undefined ? { tool } : {}) });
+            doc.items = doc.items.map((it) => (it.id === id ? n : it));
+            patchItems(doc, { [id]: rest }, by);
+            if (n.parent) growGroup(doc, n.parent, n, { by });
+          } else patchItems(doc, { [id]: patch }, by);
           log.push(`set ${id}`);
           break;
         }

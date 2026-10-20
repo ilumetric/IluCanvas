@@ -30,6 +30,9 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
   between anything (X, or drag from the dots around a hovered item) —
   straight, elbow or curved, with heads, labels and dashes; they follow the
   items they connect.
+- **Ink**: pen (P) with pressure and an italic nib, highlighter (Shift+P),
+  washi tape (T) and an eraser (E) that removes whole strokes; a stylus
+  draws, its back end erases, fingers pan. Ten fixed colours.
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
 - **PureRef:** `.pur` files open for viewing — just the pictures and their
