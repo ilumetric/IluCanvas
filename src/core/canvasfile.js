@@ -8,7 +8,7 @@
 //                       (.jpg / .png where the browser cannot write WebP: Safari)
 //
 // Saving never rewrites what did not change. A save is a "plan": a file offset
-// and the chunks to write there (Uint8Array | Blob | { range: [offset, length] }
+// and the chunks to write there (Uint8Array | Blob | { range: [offset, length], size }
 // of the current file). Three modes:
 //   tail   — overwrite from where canvas.json / preview.webp start (they are
 //            always the last records). For writers that replace the file
@@ -118,9 +118,9 @@ export async function planSave({ base = null, doc, add = new Map(), preview = nu
   return { at: out.start, chunks: out.chunks, size: out.size, index: out.index, mode };
 }
 
-/** A chunk that copies `length` bytes of the current file from `offset`. */
+/** A chunk that copies `length` bytes of the current file from `offset` (`size`: the writer counts it). */
 function rangeOf(reader, offset, length) {
-  return reader.blob ? reader.blob.slice(offset, offset + length) : { range: [offset, length] };
+  return reader.blob ? reader.blob.slice(offset, offset + length) : { range: [offset, length], size: length };
 }
 
 /** Choose a save mode: compaction when much of the file is dead space. */

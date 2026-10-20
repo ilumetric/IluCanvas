@@ -64,7 +64,10 @@ export function itemLine(doc, it) {
 /** The whole board (or one group), groups first, children indented under their group. */
 export function listText(doc, { group = null } = {}) {
   const lines = [headerLine(doc)];
+  const seen = new Set(); // groups inside each other in a circle (a hand-made file) are listed once
   const walk = (parent, ind) => {
+    if (seen.has(parent)) return;
+    seen.add(parent);
     for (const g of doc.items) if (g.type === 'group' && (g.parent || null) === parent) { lines.push(ind + itemLine(doc, g)); walk(g.id, `${ind}  `); }
     // a table's rows come on lines of their own, under it
     for (const it of doc.items) if (it.type !== 'group' && (it.parent || null) === parent) lines.push(...itemLine(doc, it).split('\n').map((l, i) => `${ind}${i ? '    ' : ''}${l}`));

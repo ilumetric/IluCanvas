@@ -24,33 +24,48 @@ export function parseTime(v) {
 
 /** 83.5 → "1:23", 3725 → "1:02:05" (with `digits` 1 or 2: "1:23.5", "1:23.50"). */
 export function formatTime(t, { tenths = false, digits = tenths ? 1 : 0 } = {}) {
-  const v = Math.max(0, Number(t) || 0);
-  const h = Math.floor(v / 3600);
-  const m = Math.floor((v % 3600) / 60);
-  const s = v % 60;
-  const ss = digits ? s.toFixed(digits).padStart(3 + digits, '0') : String(Math.floor(s)).padStart(2, '0');
+  const v = Math.max(0, Number.isFinite(Number(t)) ? Number(t) : 0);
+  // whole steps first (1 s, or 1/10, 1/100), then split: 59.96 is 1:00.0, never 0:60.0
+  const k = 10 ** digits;
+  const n = digits ? Math.round(v * k) : Math.floor(v);
+  const h = Math.floor(n / (3600 * k));
+  const m = Math.floor(n / (60 * k)) % 60;
+  const s = (n % (60 * k)) / k;
+  const ss = digits ? s.toFixed(digits).padStart(3 + digits, '0') : String(s).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+/** The watch page of a video (from `start` seconds), or null when the id is not a YouTube id. */
+export function watchUrl(videoId, start = 0) {
+  if (typeof videoId !== 'string' || !YT_ID.test(videoId)) return null;
+  const t = Math.floor(Number(start) || 0);
+  return `https://www.youtube.com/watch?v=${videoId}${t >= 1 ? `&t=${t}s` : ''}`;
 }
 
 /**
  * A YouTube link → { provider: 'youtube', videoId, url, start?, short? } or null.
- * watch?v=, youtu.be/, shorts/, embed/, live/, m. and music. hosts; t= / start= become start.
+ * watch?v=, youtu.be/, shorts/, embed/, live/, m. and music. hosts, with or without
+ * https://; t= / start= become start.
  */
 export function parseVideoUrl(input) {
+  let s = String(input).trim();
+  if (!/^[a-z][\w+.-]*:\/\//i.test(s)) s = `https://${s}`; // "youtu.be/…", "www.youtube.com/watch?v=…"
   let u;
-  try { u = new URL(String(input).trim()); } catch { return null; }
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
   const host = u.hostname.replace(/^(www|m|music)\./, '');
   let id = null;
   if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
   else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
     if (u.pathname === '/watch') id = u.searchParams.get('v');
     else {
-      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([\w-]{11})/);
+      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([\w-]{11})(?:\/|$)/);
       if (m) id = m[1];
     }
   }
-  if (!id || !YT_ID.test(id)) return null;
-  const out = { provider: 'youtube', videoId: id, url: `https://www.youtube.com/watch?v=${id}` };
+  // embed/videoseries?list=… is a playlist, though "videoseries" has the length of an id
+  if (!id || !YT_ID.test(id) || id === 'videoseries') return null;
+  const out = { provider: 'youtube', videoId: id, url: watchUrl(id) };
   if (u.pathname.startsWith('/shorts/')) out.short = true; // vertical
   const start = parseTime(u.searchParams.get('t') ?? u.searchParams.get('start') ?? (u.hash.match(/t=([^&]+)/)?.[1] || null));
   if (start) out.start = start;

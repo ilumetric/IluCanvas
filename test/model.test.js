@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   emptyCanvas, normalize, validate, serialize, groupItems, ungroup, removeItems, reparent, withChildren, moveItems,
-  arrangeRows, merge3, assetPath, depthOf, groupsByDepth, itemBounds,
+  arrangeRows, merge3, assetPath, depthOf, groupsByDepth, itemBounds, pruneAssets,
 } from '../src/core/model.js';
 
 function sample() {
@@ -103,6 +103,65 @@ test('assetPath: safe, unique names for images/', () => {
   assert.equal(assetPath('кот: рыжий?.png', 'jpg', taken), 'images/кот_ рыжий_ (2).jpg');
   assert.equal(assetPath('CON', 'png', taken), 'images/_CON.png');
   assert.equal(assetPath('', 'png', taken), 'images/image.png');
+});
+
+test('assetPath: a long name is cut between characters, never inside an emoji', () => {
+  const p = assetPath(`${'a'.repeat(79)}\u{1F600}tail.png`, 'png', new Set());
+  assert.equal(p, `images/${'a'.repeat(79)}\u{1F600}.png`);
+  assert.equal(new TextDecoder().decode(new TextEncoder().encode(p)), p, 'the same name in UTF-8 (the ZIP)');
+  assert.equal(assetPath('half \ud83d here', 'png', new Set()), 'images/half _ here.png');
+});
+
+test('validate: asset paths must stay inside the file', () => {
+  const d = sample();
+  for (const [file, thumb] of [['images/../../x.png'], ['/etc/x.png'], ['images\\..\\x.png'], ['images/a.jpg', 'thumbs/../../t.webp']]) {
+    d.assets.a = { file, thumb, type: 'image/png', w: 1, h: 1 };
+    assert.ok(validate(d).errors.some((e) => /plain path inside the file/.test(e.msg)), `${file} ${thumb}`);
+  }
+  d.assets.a = { file: 'images/a b..c.jpg', thumb: 'thumbs/a.webp', w: 1, h: 1 };
+  assert.ok(validate(d).ok);
+});
+
+test('newer versions: unknown null fields, assets of unknown item types, odd types are kept', () => {
+  const d = normalize({ format: 'ilucanvas', future: null, assets: { a: { file: 'images/a.jpg', w: 1, h: 1, source: null }, z: { file: 'images/z.bin', w: 1, h: 1 } }, items: [
+    { id: 'i1', type: 'image', asset: 'a', x: 0, y: 0, w: 1, h: 1, later: null },
+    { id: 'w1', type: 'widget', asset: 'z', x: 0, y: 0, w: 1, h: 1 },
+    { type: 5, x: 0, y: 0, w: 1, h: 1 },
+  ] });
+  const text = serialize(d);
+  assert.match(text, /"future": null/);
+  assert.match(text, /"later":null/);
+  assert.doesNotMatch(text, /"source"/, 'a known field that is null is left out');
+  assert.deepEqual(pruneAssets(d), [], 'the widget keeps its file');
+  assert.ok(!validate(d).warnings.some((w) => /not used/.test(w.msg)));
+  assert.equal(d.items.length, 3);
+});
+
+test('groups: connectors stay out, ungroup leaves other items alone, circles break at the circle', () => {
+  const d = sample();
+  d.items.push({ id: 'c', type: 'connector', from: { id: 'i1' }, to: { id: 'i2' }, x: 0, y: 0, w: 1, h: 1 });
+  const g = groupItems(d, ['i1', 'c']);
+  assert.equal(d.items.find((i) => i.id === 'c').parent, undefined);
+  assert.equal(g.w, 400 + 2 * 16, 'the frame is around the image only');
+  ungroup(d, 'i2');
+  assert.ok(d.items.some((i) => i.id === 'i2'), 'not a group: not removed');
+  const n = normalize({ format: 'ilucanvas', items: [
+    { id: 'g0', type: 'group', parent: 'g1', x: 0, y: 0, w: 1, h: 1 },
+    { id: 'g1', type: 'group', parent: 'g2', x: 0, y: 0, w: 1, h: 1 },
+    { id: 'g2', type: 'group', parent: 'g1', x: 0, y: 0, w: 1, h: 1 },
+  ] });
+  assert.equal(n.items[0].parent, 'g1', 'g0 is only inside the circle: it stays where it was');
+  assert.ok(validate(n).ok);
+});
+
+test('merge3: our restacking survives their edits (unless they restacked too)', () => {
+  const mk = (items) => normalize({ format: 'ilucanvas', id: 'c1', title: 'T', items });
+  const [A, B, C] = ['a', 'b', 'c'].map((id) => ({ id, type: 'note', text: id, x: 0, y: 0, w: 10, h: 10 }));
+  const D = { id: 'd', type: 'note', text: 'd', x: 0, y: 0, w: 10, h: 10 };
+  let r = merge3(mk([A, B, C]), mk([B, C, A]), mk([A, B, { ...C, text: 'c2' }, D]));
+  assert.deepEqual(r.doc.items.map((i) => `${i.id}${i.text}`), ['bb', 'cc2', 'aa', 'dd']);
+  r = merge3(mk([A, B, C]), mk([B, C, A]), mk([C, A, B]));
+  assert.deepEqual(r.doc.items.map((i) => i.id), ['c', 'a', 'b'], 'both restacked: theirs');
 });
 
 test('itemBounds includes rotation', () => {

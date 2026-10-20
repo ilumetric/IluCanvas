@@ -14,11 +14,11 @@ import {
   pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, isHexColor, groupAround, hasAsset,
 } from '../core/model.js';
 import { applyOps, newStroke, newVideo } from '../core/ops.js';
-import { parseVideoUrl, posterUrls, oembedUrl } from '../core/video.js';
+import { parseVideoUrl, posterUrls, oembedUrl, watchUrl } from '../core/video.js';
 import { INK_WIDTHS, INK_DEFAULTS, inkScale } from '../core/ink.js';
 import { listText } from '../core/describe.js';
 import { ROUTES } from '../core/connectors.js';
-import { isImageName } from '../core/imageinfo.js';
+import { isImageName, sniffType } from '../core/imageinfo.js';
 import { deadBytes, readPreview } from '../core/canvasfile.js';
 import { blobReader } from '../core/zip.js';
 import { h, icon, iconBtn, openDialog, confirmDialog, promptDialog, openMenu, closeMenu, toast } from './ui.js';
@@ -152,9 +152,13 @@ function drawBackground() {
 
 const snapshot = () => ({ items: doc().items, assets: doc().assets, title: doc().title });
 
-function commit(label, before) {
-  S.undo.push({ label, ...before });
+function pushUndo(step) {
+  S.undo.push(step);
   if (S.undo.length > 300) S.undo.shift();
+}
+
+function commit(label, before) {
+  pushUndo({ label, ...before });
   S.redo = [];
   changed();
 }
@@ -208,6 +212,8 @@ function restore(s) {
 }
 
 function undo() {
+  if (S.notes?.editing) S.notes.close();
+  closeColorPicker(); // its preview goes first: it is not part of any step
   if (!S.undo.length || readOnly()) return;
   S.redo.push({ label: S.undo[S.undo.length - 1].label, ...snapshot() });
   restore(S.undo.pop());
@@ -215,6 +221,8 @@ function undo() {
 }
 
 function redo() {
+  if (S.notes?.editing) S.notes.close();
+  closeColorPicker();
   if (!S.redo.length || readOnly()) return;
   S.undo.push({ label: S.redo[S.redo.length - 1].label, ...snapshot() });
   restore(S.redo.pop());
@@ -750,8 +758,10 @@ function setSidebar(open) {
 /** Before leaving the open canvas: save it, or ask. false = stay. */
 async function leaveCurrent() {
   if (S.notes?.editing) S.notes.close();
-  if (!S.store || !isDirty()) return true;
-  if (S.store.writable) { await save(); return !isDirty() || confirmDialog({ title: t('leave.title'), text: t('leave.failed'), ok: t('leave.discard'), danger: true }); }
+  closeColorPicker();
+  if (!S.store || (!isDirty() && !S.saving)) return true;
+  if (S.store.writable) { await saveAll(); return !isDirty() || confirmDialog({ title: t('leave.title'), text: t('leave.failed'), ok: t('leave.discard'), danger: true }); }
+  if (!isDirty()) return true;
   return new Promise((resolve) => {
     let r = false;
     openDialog({
@@ -785,7 +795,9 @@ async function openSource(source, { active = null, link = null, readOnly: ro = f
 
 async function setStore(store, { active = null, link = null, view = null } = {}) {
   clearTimeout(S.saveTimer);
+  closeColorPicker();
   S.video?.close();
+  S.toldUnreadable = new Set();
   S.store = store;
   S.undo = [];
   S.redo = [];
@@ -889,6 +901,8 @@ async function refreshRecent() {
 
 async function closeCanvas() {
   if (!(await leaveCurrent())) return;
+  clearTimeout(S.saveTimer);
+  closeColorPicker();
   S.video?.close();
   S.store = null;
   S.active = null;
@@ -901,9 +915,9 @@ async function closeCanvas() {
 }
 
 /** New canvas: inside the open library folder, or wherever the user picks; unsaved if they cancel. */
-async function newCanvas() {
+async function newCanvas(name) {
   if (!(await leaveCurrent())) return;
-  const title = t('new.title');
+  const title = typeof name === 'string' && name.trim() ? name.trim().replace(/[\\/:*?"<>|]+/g, '_') : t('new.title');
   const store = Store.blank(title);
   const folder = S.folders.find((f) => f.granted);
   try {
@@ -957,7 +971,68 @@ function scheduleSave(delay) {
   // every change waits a moment for the next one, but steady work is still saved every few seconds
   const now = performance.now();
   if (!S.saveFirst) S.saveFirst = now;
-  S.saveTimer = setTimeout(() => save(), Math.max(0, Math.min(d, S.saveFirst + Math.max(3000, d) - now)));
+  const fire = () => {
+    // not in the middle of a gesture that is changing the items: once it is let go
+    if (S.board.drag?.before) { S.saveTimer = setTimeout(fire, 400); return; }
+    save();
+  };
+  S.saveTimer = setTimeout(fire, Math.max(0, Math.min(d, S.saveFirst + Math.max(3000, d) - now)));
+}
+
+/**
+ * Write the open board `st` as it is now. An outside change found first, or met
+ * while writing (an agent wrote the file in between), is merged in and the write
+ * made again. → { r, rev } (rev: what the file now has).
+ */
+async function writeStore(st, opts = {}) {
+  if (S.polling) await S.polling;
+  if (await st.changedOnDisk()) await absorbOutside();
+  for (let tries = 0; ; tries++) {
+    if (S.store !== st) throw new Error('another board was opened');
+    const rev = S.rev;
+    try {
+      const r = await st.save({ keep: historyFiles(), preview: await makePreview(), ...opts });
+      return { r, rev };
+    } catch (e) {
+      if (!e.changed || tries >= 2) throw e;
+      await absorbOutside();
+    }
+  }
+}
+
+/** New images whose files could not be read (moved or changed since they were dropped): said once. */
+function reportUnreadable(st) {
+  const told = (S.toldUnreadable ||= new Set());
+  const fresh = [...st.unreadable].filter(([id]) => !told.has(id));
+  if (!fresh.length) return;
+  for (const [id] of fresh) told.add(id);
+  toast(t('save.unreadable', { n: fresh.length, names: fresh.slice(0, 3).map(([, n]) => n).join(', ') }), { kind: 'warn', timeout: 12000 });
+}
+
+/**
+ * A write of the open board other than autosave (save as, keep in browser,
+ * compact): after the save running, if any; autosaves wait for it.
+ */
+async function exclusive(fn) {
+  while (S.saving) await S.saving;
+  clearTimeout(S.saveTimer);
+  let release;
+  S.saving = new Promise((r) => { release = r; });
+  renderTopbar();
+  try {
+    return await fn();
+  } finally {
+    S.saving = null;
+    release();
+    renderTopbar();
+    if (S.saveAgain || (S.store?.writable && isDirty() && !S.saveError)) { S.saveAgain = false; scheduleSave(); }
+  }
+}
+
+/** Save and wait until all that is pending is on disk (a save already running is followed by one more). */
+async function saveAll() {
+  while (S.saving) await S.saving;
+  if (S.store?.writable && isDirty()) await save();
 }
 
 async function save() {
@@ -970,16 +1045,17 @@ async function save() {
   S.saving = (async () => {
     renderTopbar();
     try {
-      if (await st.changedOnDisk()) await absorbOutside(true);
-      const rev = S.rev;
-      const r = await st.save({ keep: historyFiles(), preview: await makePreview() });
+      const { r, rev } = await writeStore(st);
       if (S.store === st) {
         S.savedRev = rev;
         S.saveError = null;
         S.dirtySince = 0; // saved: what changed meanwhile has its own few seconds
+        S.images.retryFailed(); // a picture read while the file was being written may have failed
+        reportUnreadable(st);
         if (r.mode === 'full' && r.size > 32 * 1024 * 1024) toast(t('save.compacted'), { kind: 'ok' });
       }
     } catch (e) {
+      if (S.store !== st) return; // that board is closed: its error is not this one's
       S.saveError = e.message === 'permission' ? t('open.permission') : e.message;
       toast(t('save.failed', { msg: S.saveError }), { kind: 'error', timeout: 8000, action: { label: t('top.saveAs'), onClick: saveAs } });
     } finally {
@@ -998,12 +1074,16 @@ async function saveAs() {
   if (!disk.fsaSupported()) return inBrowser() && st.source?.kind !== 'local' ? keepInBrowser() : downloadCopy();
   let handle;
   try { handle = await disk.pickSaveFile(`${safeName(st.doc.title)}.ilucanvas`); } catch { return; }
+  if (S.store !== st) return;
   const busy = toast(t('save.writing'), { timeout: 0 });
   try {
     const src = disk.fsaSource(handle);
-    if (st.kind === 'pur' || !st.source?.writable) st.doc.title = handle.name.replace(/\.ilucanvas$/i, '');
-    await st.save({ target: src, preview: await makePreview() });
-    S.savedRev = S.rev;
+    await exclusive(async () => {
+      if (st.kind === 'pur' || !st.source?.writable) st.doc.title = handle.name.replace(/\.ilucanvas$/i, '');
+      const rev = S.rev;
+      await st.save({ target: src, keep: historyFiles(), preview: await makePreview() });
+      S.savedRev = rev;
+    });
     S.saveError = null;
     S.link = null;
     const key = await disk.rememberFile(handle, handle.name, st.doc.title);
@@ -1053,8 +1133,11 @@ async function keepInBrowser() {
   try {
     try { await navigator.storage.persist?.(); } catch { /* best effort */ }
     const src = disk.localSource(disk.newLocalEntry(st.doc.title));
-    await st.save({ target: src, preview: await makePreview() });
-    S.savedRev = S.rev;
+    await exclusive(async () => {
+      const rev = S.rev;
+      await st.save({ target: src, keep: historyFiles(), preview: await makePreview() });
+      S.savedRev = rev;
+    });
     S.saveError = null;
     S.link = null;
     S.active = { kind: 'local', key: `local:${src.key}` };
@@ -1131,26 +1214,44 @@ async function makePreview() {
 
 // ---- outside changes (agents, other apps) ------------------------------------------------------------------
 
-async function poll() {
+function poll() {
   const st = S.store;
-  if (!st || S.saving || S.board.drag || document.hidden) return;
-  try {
-    if (await st.changedOnDisk()) await absorbOutside(isDirty());
-  } catch { /* file gone or busy: try again later */ }
+  if (!st || S.saving || S.polling || S.applying || S.board.drag || document.hidden) return;
+  // one at a time; a save waits for it (and reads what it found)
+  S.polling = (async () => {
+    try {
+      if (await st.changedOnDisk() && S.store === st && !S.saving) await absorbOutside();
+    } catch { /* file gone or busy: try again later */ } finally { S.polling = null; }
+  })();
 }
 
 /** The file changed on disk: read it again (merging local edits when there are any). */
-async function absorbOutside(dirty) {
-  if (S.notes?.editing) { S.notes.close(); dirty = isDirty(); }
+async function absorbOutside() {
+  if (S.notes?.editing) S.notes.close();
+  closeColorPicker();
+  S.board.cancelDrag(); // its items are the old document's
   const st = S.store;
-  const before = snapshot();
-  const known = new Set(before.items.map((i) => i.id));
-  const { conflicts } = await st.reload({ dirty });
+  let before = null;
+  let known = null;
+  let dirty = false;
+  const { conflicts, changedAssets } = await st.reload({
+    // asked once the new file is read: edits made meanwhile are merged too
+    dirty: () => {
+      if (S.store !== st) return false;
+      if (S.notes?.editing) S.notes.close();
+      S.board.cancelDrag();
+      before = snapshot();
+      known = new Set(before.items.map((i) => i.id));
+      return (dirty = isDirty());
+    },
+  });
   if (S.store !== st) return;
   S.board.doc = st.doc;
-  S.undo.push({ label: 'outside', ...before });
+  pushUndo({ label: 'outside', ...before });
   S.redo = [];
   if (!dirty) S.savedRev = S.rev + 1;
+  for (const id of changedAssets) S.images.forget(id);
+  S.images.retryFailed();
   changed({ save: dirty });
   const fresh = st.doc.items.filter((i) => !known.has(i.id)).map((i) => i.id);
   if (fresh.length) S.board.flash?.(fresh);
@@ -1265,7 +1366,7 @@ function videoLinkFrom(dt) {
 // ---- video ------------------------------------------------------------------------------------------------
 
 /** The title (oEmbed) and the poster of a video, imported as an image asset: { title, asset, assets }. */
-async function fetchVideoMeta(v) {
+async function fetchVideoMeta(v, st = S.store) {
   const meta = {};
   try {
     const r = await fetch(oembedUrl(v.url));
@@ -1274,7 +1375,7 @@ async function fetchVideoMeta(v) {
   for (const u of posterUrls(v.videoId)) {
     try {
       const blob = await fetchImage(u);
-      const res = await S.store.importImages([new File([blob], `youtube-${v.videoId}.jpg`, { type: blob.type || 'image/jpeg' })]);
+      const res = await st.importImages([new File([blob], `youtube-${v.videoId}.jpg`, { type: blob.type || 'image/jpeg' })]);
       const x = res.list[0];
       if (!x || x.error) continue;
       meta.asset = x.id;
@@ -1290,9 +1391,11 @@ async function addVideo(url, at = null) {
   if (!doc() || readOnly()) return null;
   const v = parseVideoUrl(url);
   if (!v) { toast(t('video.badLink'), { kind: 'warn' }); return null; }
+  const st = S.store;
   const busy = toast(t('video.loading'), { timeout: 0 });
   let meta = {};
-  try { meta = await fetchVideoMeta(v); } finally { busy.close(); }
+  try { meta = await fetchVideoMeta(v, st); } finally { busy.close(); }
+  if (S.store !== st || readOnly()) return null; // another board meanwhile
   const p = at || S.board.toWorld(S.board.size.w / 2, S.board.size.h / 2);
   const w = (v.short ? 360 : 640) * inkScale(S.board.view.z);
   const hh = v.short ? w * (16 / 9) : (w * 9) / 16;
@@ -1467,7 +1570,7 @@ function nudge(dx, dy) {
   d.items = d.items.map((it) => (all.has(it.id) && !it.locked ? { ...it, x: it.x + dx * k, y: it.y + dy * k } : it));
   // consecutive nudges are one undo step
   const last = S.undo[S.undo.length - 1];
-  if (last?.label === 'nudge' && performance.now() - (S.lastNudge || 0) < 1000) changed();
+  if (last?.label === 'nudge' && !S.redo.length && performance.now() - (S.lastNudge || 0) < 1000) changed();
   else commit('nudge', before);
   S.lastNudge = performance.now();
 }
@@ -1528,7 +1631,13 @@ async function exportImages(items = selImages()) {
 
 async function openOriginal(it) {
   const f = await S.store.originalFile(it.asset);
-  if (f) window.open(URL.createObjectURL(f), '_blank', 'noopener');
+  if (!f) return;
+  // shown as what its bytes are, never as the type the file says (a shared board could say text/html)
+  const type = sniffType(new Uint8Array(await f.slice(0, 64).arrayBuffer()));
+  if (!type) { disk.download(f.name, f); return; }
+  const url = URL.createObjectURL(new Blob([f], { type }));
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ---- clipboard ----------------------------------------------------------------------------------------------
@@ -1571,6 +1680,7 @@ async function toPng(blob) {
 async function pasteClip(at) {
   const c = S.clip;
   const d = doc();
+  const st = S.store;
   if (!c || !d || readOnly()) return;
   // images from another canvas come in as new files
   const missing = Object.keys(c.assets).filter((id) => !d.assets[id]);
@@ -1582,8 +1692,9 @@ async function pasteClip(at) {
       if (!b) continue;
       try { await b.slice(0, 1).arrayBuffer(); blobs.push(new File([b], c.assets[id].name || 'image', { type: b.type })); } catch { /* source file changed since the copy */ }
     }
-    const res = await S.store.importImages(blobs);
+    const res = await st.importImages(blobs);
     extraAssets = res.assets;
+    if (S.store !== st || doc() !== d) return; // another board meanwhile
   }
   const b = unionBounds(c.items.map(itemBounds));
   const p = at || S.mouse || S.board.toWorld(S.board.size.w / 2, S.board.size.h / 2);
@@ -1642,16 +1753,25 @@ function canvasMenu() {
 }
 
 async function compact() {
+  const st = S.store;
+  if (!st?.writable) return;
   const busy = toast(t('save.compacting'), { timeout: 0 });
   try {
-    await S.store.save({ keep: historyFiles(), mode: 'full', preview: await makePreview() });
-    S.savedRev = S.rev;
+    await exclusive(async () => {
+      const { rev } = await writeStore(st, { mode: 'full' });
+      if (S.store === st) S.savedRev = rev;
+    });
     toast(t('save.compacted'), { kind: 'ok' });
   } catch (e) { toast(t('save.failed', { msg: e.message }), { kind: 'error' }); } finally { busy.close(); renderTopbar(); }
 }
 
 async function reloadFromDisk() {
   if (isDirty() && !(await confirmDialog({ title: t('menu.reload'), text: t('reload.confirm'), ok: t('menu.reload'), danger: true }))) return;
+  // what is not saved goes, as the dialog said: it is not saved on the way out
+  if (S.notes?.editing) S.notes.editor.close({ commit: false });
+  while (S.saving) await S.saving;
+  clearTimeout(S.saveTimer);
+  S.savedRev = S.rev;
   await openSource(S.store.source, { active: S.active, view: { ...S.board.view } });
 }
 
@@ -1704,7 +1824,7 @@ function contextMenu(pt, hit, world) {
     imgs.length === 1 ? { label: t('ctx.zoomTo'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() } : { label: t('zoom.selection'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() },
     imgs.length === 1 ? { label: t('ctx.openOriginal'), icon: 'eye', onClick: () => openOriginal(imgs[0]) } : null,
     s.length === 1 && s[0].type === 'video' ? { label: t('video.play'), icon: 'play', onClick: () => S.video.play(s[0].id) } : null,
-    s.length === 1 && s[0].type === 'video' ? { label: t('video.openYoutube'), icon: 'external', onClick: () => window.open(s[0].url + (s[0].start ? `&t=${Math.floor(s[0].start)}s` : ''), '_blank', 'noopener') } : null,
+    s.length === 1 && s[0].type === 'video' ? { label: t('video.openYoutube'), icon: 'external', onClick: () => { const u = watchUrl(s[0].videoId, s[0].start); if (u) window.open(u, '_blank', 'noopener'); } } : null, // from the id: a shared file's url may be anything
     !ro && notes.length === 1 && s.length === 1 ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(notes[0].id) } : null,
     !ro && s.length === 1 && s[0].type === 'shape' ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(s[0].id) } : null,
     !ro && s.length === 1 && s[0].type === 'connector' ? { label: t('conn.label'), icon: 'text', hint: 'Enter', onClick: () => S.notes.editLabel(s[0].id) } : null,
@@ -2016,9 +2136,16 @@ function showShortcuts() {
 
 const isTyping = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
+/** The key as on a Latin layout: letters and brackets typed on another one (Cyrillic) by their place. */
+function keyOf(e) {
+  if (/^Key[A-Z]$/.test(e.code) && !/^[a-z]$/i.test(e.key)) return e.code.slice(3).toLowerCase();
+  if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !/^[\x20-\x7e]$/.test(e.key)) return e.code === 'BracketLeft' ? '[' : ']';
+  return e.key.toLowerCase();
+}
+
 addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
-  const k = e.key.toLowerCase();
+  const k = keyOf(e);
   const inDialog = !!document.querySelector('dialog[open]');
   if (mod && k === 's') { e.preventDefault(); if (!inDialog) { if (e.shiftKey) saveAs(); else save(); } return; }
   if (mod && k === 'o') { e.preventDefault(); if (!inDialog) openFile(); return; }
@@ -2063,23 +2190,24 @@ addEventListener('keydown', (e) => {
     case 'ArrowRight': e.preventDefault(); nudge(e.shiftKey ? 10 : 1, 0); return;
     case 'ArrowUp': e.preventDefault(); nudge(0, e.shiftKey ? -10 : -1); return;
     case 'ArrowDown': e.preventDefault(); nudge(0, e.shiftKey ? 10 : 1); return;
-    case ']': restackSelection('front'); return;
-    case '[': restackSelection('back'); return;
     case '+': case '=': S.board.zoomCenter(1.5); return;
     case '-': case '_': S.board.zoomCenter(1 / 1.5); return;
     case 'F2': { const g = sel().find((it) => it.type === 'group'); if (g) { e.preventDefault(); renameGroup(g.id); } return; }
     default:
   }
-  // typing on a selected empty note or shape starts its text
+  if (e.key === ']' || e.key === '[') { restackSelection(e.key === ']' ? 'front' : 'back'); return; }
+  // typing on a selected empty note or shape starts its text (Space pans)
   {
     const s = sel();
-    if (e.key.length === 1 && !readOnly() && s.length === 1 && (s[0].type === 'note' || s[0].type === 'shape') && !s[0].text) {
+    if (e.key.length === 1 && e.key !== ' ' && !readOnly() && s.length === 1 && (s[0].type === 'note' || s[0].type === 'shape') && !s[0].text) {
       e.preventDefault();
       S.notes.open(s[0].id);
       document.execCommand('insertText', false, e.key);
       return;
     }
   }
+  // the bracket keys on another layout (Cyrillic х ъ): after typing, which they are in an empty note
+  if (k === ']' || k === '[') { restackSelection(k === ']' ? 'front' : 'back'); return; }
   if (e.shiftKey) return;
   if (k === 'v') setTool('select');
   else if (k === 'h') setTool('hand');
@@ -2104,15 +2232,17 @@ addEventListener('beforeunload', (e) => {
 /** Agents that drive this page in a browser call these from the console. */
 function agentApi() {
   const need = () => { if (!doc()) throw new Error('no canvas is open: ilucanvas.newCanvas(title) or open one in the boards bar'); };
-  const urlAdder = async (o) => {
+  // images and posters go into the board the ops were started on, whatever is open by then
+  const urlAdder = (st, d) => async (o) => {
     const urls = [].concat(o.url || o.urls || []);
     if (!urls.length) throw new Error('in the browser, add takes "urls" (paths are for the CLI)');
     const blobs = [];
     for (const u of urls) blobs.push(await fetchImage(u));
-    const res = await S.store.importImages(blobs);
-    doc().assets = { ...doc().assets, ...res.assets };
+    const res = await st.importImages(blobs);
+    d.assets = { ...d.assets, ...res.assets };
     return res.list.filter((x) => !x.error).map((x) => ({ asset: x.id, w: x.w, h: x.h, name: x.name }));
   };
+  const problems = (d) => new Set(validate(d).errors.map((e) => `${e.id ?? e.path}|${e.msg}`));
   return {
     version: APP_VERSION,
     help() {
@@ -2141,12 +2271,28 @@ function agentApi() {
     async apply(ops) {
       need();
       if (readOnly()) throw new Error('this canvas is read only');
+      if (S.notes?.editing) S.notes.close(); // its text first (an open cell must not land in a moved one)
+      closeColorPicker(); // and a colour being previewed is not the board's yet
+      const st = S.store;
+      const d = st.doc;
       const before = snapshot();
+      const gone = () => S.store !== st || st.doc !== d; // another board, or the file read again
+      const videoMeta = async (v) => { const m = await fetchVideoMeta(v, st); if (m.assets) d.assets = { ...d.assets, ...m.assets }; return m; };
       let r;
-      const videoMeta = async (v) => { const m = await fetchVideoMeta(v); if (m.assets) doc().assets = { ...doc().assets, ...m.assets }; return m; };
-      try { r = await applyOps(doc(), ops, { by: 'agent', addImages: urlAdder, videoMeta }); } catch (e) { restore(before); throw e; }
-      S.notes.fitHeights(doc(), r.created);
-      commit('agent', before);
+      S.applying = true;
+      try {
+        r = await applyOps(d, ops, { by: 'agent', addImages: urlAdder(st, d), videoMeta });
+      } catch (e) {
+        if (!gone()) { restore(before); changed(); }
+        throw e;
+      } finally { S.applying = false; }
+      if (gone()) throw new Error('the canvas changed while applying (another board was opened, or its file was read again): nothing applied — read it and apply again');
+      // what the CLI refuses after its ops (a cycle of groups, NaN positions) is refused here too
+      const had = problems({ ...d, items: before.items, assets: before.assets });
+      const bad = validate(d).errors.filter((e) => !had.has(`${e.id ?? e.path}|${e.msg}`));
+      if (bad.length) { restore(before); changed(); throw new Error(`the result is not valid, nothing applied: ${bad[0].path}: ${bad[0].msg}`); }
+      S.notes.fitHeights(d, r.created);
+      if (d.items !== before.items || d.assets !== before.assets || d.title !== before.title) commit('agent', before);
       return r;
     },
     async addUrls(urls, { x, y, group } = {}) { return this.apply([{ op: 'add', urls: [].concat(urls), x, y, group }]); },
@@ -2168,7 +2314,7 @@ function agentApi() {
     save: () => save(),
     undo: () => undo(),
     redo: () => redo(),
-    newCanvas: () => newCanvas(),
+    newCanvas: (title) => newCanvas(title),
   };
 }
 
@@ -2318,7 +2464,7 @@ async function start() {
   setTimeout(checkLinks, 4000);
   document.addEventListener('visibilitychange', () => {
     // hidden: save now — iPad / iPhone may close a tab in the background
-    if (document.hidden) { if (S.store?.writable && isDirty() && pref.get('autosave', true)) save(); return; }
+    if (document.hidden) { if (S.store?.writable && (isDirty() || S.saving) && pref.get('autosave', true)) saveAll(); return; }
     poll();
     for (const f of S.folders) scanFolder(f);
   });

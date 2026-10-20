@@ -65,9 +65,10 @@ node ilucanvas.mjs new refs.ilucanvas --title "Character refs"
 node ilucanvas.mjs add refs.ilucanvas photos/ a.jpg https://example.com/b.png --new-group "Lighting"
 node ilucanvas.mjs add refs.ilucanvas c.jpg --group g4k2x9q          # at the bottom of that group
 node ilucanvas.mjs add refs.ilucanvas d.jpg --at 4000,0 --max 800    # top-left at a point, longest side 800
+node ilucanvas.mjs add refs.ilucanvas "https://…/download?id=7" --name "rim light"   # one image, named
 node ilucanvas.mjs set refs.ilucanvas i8k2m1q note="rim light" rot=90 flipX=true
 node ilucanvas.mjs set refs.ilucanvas canvas title="Character refs v2"
-node ilucanvas.mjs move refs.ilucanvas i8k2m1q i3x9a0b --by 200,0     # or --to X,Y
+node ilucanvas.mjs move refs.ilucanvas i8k2m1q i3x9a0b --by 200,0     # or --to X,Y (--by human may come too)
 node ilucanvas.mjs group refs.ilucanvas i8k2m1q i3x9a0b --name "Poses" --color blue
 node ilucanvas.mjs ungroup refs.ilucanvas g4k2x9q                     # its items move up to its parent
 node ilucanvas.mjs arrange refs.ilucanvas g4k2x9q                     # justified rows, aspect kept
@@ -94,8 +95,11 @@ node ilucanvas.mjs from-pur board.pur [out.ilucanvas]                 # convert 
 
 `--json` gives machine output for `ls`, `info`, `add`, `apply` and the other
 write commands (`{ created: [ids], log: [...] }`). Unknown commands, unknown
-fields and unknown ids exit with code 2 and write nothing. `--by human`
-records the change as the human's (default `agent`).
+fields, unknown ids and bad values (a word where a number goes, a group inside
+itself) exit with code 2 and write nothing. If the file changed while a
+command ran (the human's app saved it), nothing is written and the exit code
+is 1: run the command again. `--by human` records the change as the human's
+(default `agent`); `--by X,Y` is `move`'s offset (both can be given).
 
 `ls` prints:
 
@@ -120,7 +124,8 @@ of their text.
 One JSON array of ops, applied in order, written once (`node ilucanvas.mjs
 apply refs.ilucanvas ops.json`, or `-` for stdin). The same vocabulary works in
 the browser (`await ilucanvas.apply([...])`). `"as": "$name"` names an id made
-in the batch; later ops refer to it as `"$name"`.
+in the batch; later ops refer to it as `"$name"` (in `set` too: `parent`,
+`from`, `to`).
 
 ```json
 [
@@ -156,31 +161,34 @@ in the batch; later ops refer to it as `"$name"`.
 
 | op | fields |
 |---|---|
-| `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200), `as` |
-| `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` plain text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit`, `group`, `as` — sizes default sensibly; documents grow to fit their text |
+| `add` | `paths` (CLI: files, folders, http(s) URLs) or `urls` (browser), `group`, `x`/`y` (top-left), `max` (longest side, default 1200; never bigger than the picture itself), `name` (CLI, one image: its file name), `as` |
+| `note` | `text` (Markdown), `color` (`yellow`… sticky, `paper` document, `none` plain text), `x`, `y`, `w`, `h`, `size`, `scale`, `align`, `ratio`, `fit` (stickies default `true`; `false`: the text keeps its size), `group`, `as` — sizes default sensibly; documents grow to fit their text |
 | `shape` | `kind`, `text` (Markdown), `fill`, `stroke`, `strokeWidth`, `dash`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
 | `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`), `route` (`dubins` default, `curve straight elbow`), `start` / `end` heads (`none arrow dot`; default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `dash`, `end` (`arrow`), `group`, `as` |
 | `video` | `url` (YouTube: watch, youtu.be, shorts, embed, live), `title`, `start` (seconds or `1:23`), `rate` (0.25…2), `loop` (`{ a, b }`), `marks` (`[{ t, label, end? }]`), `x`, `y`, `w`, `h` (default 640×360; shorts 360×640), `group`, `as` |
-| `table` | `cells` (rows of cells: text, or `{ text, fill, align }`) or `rows` × `cols` empty ones (numbers; default 3 × 3; or lists of heights / widths), `width` / `height` of each column / row (default 200 / 56), `fill`, `size`, `scale`, `align`, `clickCopy` (`false`: clicks do not copy), `x`, `y`, `group`, `as` |
+| `table` | `cells` (rows of cells: text, or `{ text, fill, align }`) or `rows` × `cols` empty ones (numbers; default 3 × 3; or lists of heights / widths — with `cells` they only add empty rows / columns, never cut cells), `width` / `height` of each column / row (default 200 / 56), `fill`, `size`, `scale`, `align`, `clickCopy` (`false`: clicks do not copy), `x`, `y`, `group`, `as` |
 | `cell` | `id` (a table), `row`, `col` (0-based; negative counts from the end), and `text` (Markdown), `fill`, `align` (`null` removes the cell's own fill / align) |
 | `row`, `col` | `id` (a table), `at` (where the new one goes, default the end), `cells` (its cells), `height` / `width`; or `remove: true` with `at` (and `to` for a range) |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
-| `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
+| `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there (not connectors: they follow their ends) |
 | `set` | `id` (or `"canvas"` with `title`) and any editable field of that item (section 4); `null` removes a field |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
-| `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
+| `arrange` | `id` of a group (its images) or `ids`; `width` (> 0), `gap` (≥ 0) |
 | `fit` | `id` of a group: the frame hugs its items |
 | `front`, `back` | `ids` |
-| `ungroup` | `id` |
+| `ungroup` | `id` of a group |
 | `rm` | `ids`, `keepChildren` |
 
-`set` takes: all items `x y w h rot parent locked note`; images `name flipX
+`set` takes: all items `x y w h rot parent locked note` (connectors: no
+`parent`; a group never goes inside itself or its own groups); images `flipX
 flipY opacity crop`; groups `name color`; notes `text color fit size scale
 align ratio`; shapes `kind text fill stroke strokeWidth dash size scale align`;
 connectors `from to route start end color width dash label`; strokes `tool
 nib color width dash end`; videos `title start rate loop marks`; tables `cells cols rows fill size scale
-align clickCopy` (`cells` replaces them all — prefer `cell`, `row`, `col`).
+align clickCopy` (`cells` replaces them all and the table takes their size —
+prefer `cell`, `row`, `col`). Setting a field to its default (`size: "m"`,
+`route: "straight"`, `opacity: 1`…) leaves it out of the file.
 
 ## 4. What is on a board (canvas.json)
 
@@ -250,7 +258,7 @@ Unknown types and fields are kept as they are.
 | `**bold**` `*italic*` `~~strike~~` `<u>underline</u>` | marks |
 | `==text==` | yellow highlight |
 | `[text]{.red}` · `[text]{.hl-green}` | text colour / highlight: `red orange yellow green blue violet pink grey` |
-| `[text](https://…)` | link |
+| `[text](https://…)` | link (`(`, `)` and spaces in the address as `%28 %29 %20`) |
 | `\*` | a literal character |
 
 Full field-by-field reference: [FORMAT.md](FORMAT.md); JSON Schema:
@@ -385,7 +393,8 @@ file to `.zip`).
 
 | problem | what to do |
 |---|---|
-| exit code 2 | an unknown command / field / id — read the message, `ls` again |
+| exit code 2 | an unknown command / field / id or a bad value — read the message, `ls` again |
+| exit code 1, "changed while this command ran" | the app saved the file meanwhile; nothing was written — run the command again |
 | `add` of a web image fails in the browser | the site blocks CORS: download it and `add` the file with the CLI |
 | the human does not see your change | they may have a different file open; `ilucanvas.state().file` in the page, or ask |
 | a Google Drive link does not open | the site needs an API key — see [SHARING.md](SHARING.md) |

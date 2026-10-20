@@ -49,6 +49,10 @@ function workers() {
       p.w.busy--;
       if (data.ok) p.resolve(data.result); else p.reject(new Error(data.error));
     };
+    // the worker did not load or died: what waits for it fails instead of hanging
+    w.onerror = w.onmessageerror = () => {
+      for (const [id, p] of waiting) if (p.w === w) { waiting.delete(id); w.busy--; p.reject(new Error('image worker failed')); }
+    };
     return w;
   });
   return pool;
@@ -77,9 +81,12 @@ async function scaled(bitmap, w, h, quality) {
   } catch { /* no resize options */ }
   const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
   const ctx = c.getContext('2d');
+  if (!ctx) throw new Error('no canvas memory');
   ctx.imageSmoothingQuality = quality;
   ctx.drawImage(bitmap, 0, 0, w, h);
-  return createImageBitmap(c);
+  const out = await createImageBitmap(c);
+  c.width = c.height = 0; // its memory back now, not at the next GC (iOS)
+  return out;
 }
 
 // ---- the cache -------------------------------------------------------------------------------
@@ -117,10 +124,21 @@ export class ImageCache {
     this.generation++;
   }
 
-  /** Drop the bitmaps of one asset (its file changed). */
+  /** Drop the bitmaps of one asset (its file changed); decodes of the old bytes still running are not kept. */
   forget(asset) {
     for (const [k, e] of this.map) if (k.startsWith(`${asset}:`)) { e.bitmap.close(); this.bytes -= e.bytes; this.map.delete(k); }
+    for (const k of this.inflight.keys()) if (k.startsWith(`${asset}:`)) this.inflight.set(k, -1);
     this.failed.delete(asset);
+  }
+
+  /**
+   * Try failed images again: a read can fail for a moment (the file was being
+   * written by the app or by an agent) without the image being broken.
+   */
+  retryFailed() {
+    if (!this.failed.size) return;
+    this.failed.clear();
+    this.onLoad?.();
   }
 
   beginFrame() { this.frame++; this.wants.clear(); }
@@ -177,19 +195,24 @@ export class ImageCache {
       const side = Math.max(bitmap.width, bitmap.height);
       if (side > target * 1.05 && !(fromThumb && level === 1)) {
         const k = target / side;
-        const small = await scaled(bitmap, Math.max(1, Math.round(bitmap.width * k)), Math.max(1, Math.round(bitmap.height * k)), level <= 1 ? 'high' : 'medium');
+        let small;
+        try {
+          small = await scaled(bitmap, Math.max(1, Math.round(bitmap.width * k)), Math.max(1, Math.round(bitmap.height * k)), level <= 1 ? 'high' : 'medium');
+        } catch (e) { bitmap.close(); throw e; } // a full-size original is not left for the GC
         if (small !== bitmap) bitmap.close();
         bitmap = small;
       }
-      if (gen !== this.generation) { bitmap.close(); return; }
+      // another board, or the asset's file changed meanwhile (forget)
+      if (gen !== this.generation || this.inflight.get(key) !== gen) { bitmap.close(); return; }
       const bytes = bitmap.width * bitmap.height * 4;
       this.map.set(key, { bitmap, bytes, used: this.frame, natural });
       this.bytes += bytes;
     } catch (e) {
       // an original that cannot be decoded: stay on the preview; nothing at all: broken
-      if (gen === this.generation) this.failed.set(asset, level >= 2 ? Math.min(this.failed.get(asset) ?? 99, 2) : 0);
+      if (gen === this.generation && this.inflight.get(key) === gen) this.failed.set(asset, level >= 2 ? Math.min(this.failed.get(asset) ?? 99, 2) : 0);
     } finally {
-      if (this.inflight.get(key) === gen) this.inflight.delete(key);
+      const v = this.inflight.get(key);
+      if (v === gen || v === -1) this.inflight.delete(key);
       if (gen === this.generation) this.onLoad?.();
     }
   }

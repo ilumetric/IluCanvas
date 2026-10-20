@@ -46,26 +46,35 @@ export function imageInfo(u) {
   let w = 0;
   let h = 0;
   let orientation = 1;
+  const n = u.length;
   try {
-    if (type === 'image/png') { w = be32(u, 16); h = be32(u, 20); }
+    if (type === 'image/png') { if (n >= 24) { w = be32(u, 16); h = be32(u, 20); } }
     else if (type === 'image/gif') { w = le16(u, 6); h = le16(u, 8); }
-    else if (type === 'image/bmp') { w = Math.abs(le32(u, 18) | 0); h = Math.abs(le32(u, 22) | 0); }
+    else if (type === 'image/bmp') ({ w, h } = bmpSize(u));
     else if (type === 'image/webp') ({ w, h } = webpSize(u));
     else if (type === 'image/jpeg') ({ w, h, orientation } = jpegSize(u));
     else if (type === 'image/avif') ({ w, h } = avifSize(u));
   } catch { /* truncated header: size unknown */ }
+  if (!(w > 0 && h > 0 && Number.isFinite(w) && Number.isFinite(h))) { w = 0; h = 0; } // never NaN or half a size
   if (orientation >= 5 && orientation <= 8) [w, h] = [h, w];
   return { type, ext: IMAGE_TYPES[type], w, h, orientation };
 }
 
+function bmpSize(u) {
+  if (u.length < 26) return { w: 0, h: 0 };
+  // OS/2 1.x core header (12 bytes): 16-bit sides; the later ones 32-bit (negative height: top-down)
+  if (le32(u, 14) === 12) return { w: le16(u, 18), h: le16(u, 20) };
+  return { w: Math.abs(le32(u, 18) | 0), h: Math.abs(le32(u, 22) | 0) };
+}
+
 function webpSize(u) {
   const chunk = ascii(u, 12, 4);
-  if (chunk === 'VP8 ') return { w: le16(u, 26) & 0x3fff, h: le16(u, 28) & 0x3fff };
-  if (chunk === 'VP8L') {
+  if (chunk === 'VP8 ' && u.length >= 30) return { w: le16(u, 26) & 0x3fff, h: le16(u, 28) & 0x3fff };
+  if (chunk === 'VP8L' && u.length >= 25) {
     const b = le32(u, 21);
     return { w: (b & 0x3fff) + 1, h: ((b >>> 14) & 0x3fff) + 1 };
   }
-  if (chunk === 'VP8X') return { w: 1 + (u[24] | (u[25] << 8) | (u[26] << 16)), h: 1 + (u[27] | (u[28] << 8) | (u[29] << 16)) };
+  if (chunk === 'VP8X' && u.length >= 30) return { w: 1 + (u[24] | (u[25] << 8) | (u[26] << 16)), h: 1 + (u[27] | (u[28] << 8) | (u[29] << 16)) };
   return { w: 0, h: 0 };
 }
 
@@ -78,7 +87,7 @@ function jpegSize(u) {
     if (m === 0xff) { o++; continue; }
     if (m === 0xd8 || (m >= 0xd0 && m <= 0xd7) || m === 0x01) { o += 2; continue; }
     const len = be16(u, o + 2);
-    if (m === 0xe1 && ascii(u, o + 4, 4) === 'Exif') orientation = exifOrientation(u, o + 10) || orientation;
+    if (m === 0xe1 && orientation === 1 && ascii(u, o + 4, 4) === 'Exif') orientation = exifOrientation(u, o + 10, Math.min(u.length, o + 2 + len)) || 1;
     if ((m >= 0xc0 && m <= 0xcf) && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
       return { h: be16(u, o + 5), w: be16(u, o + 7), orientation };
     }
@@ -88,16 +97,19 @@ function jpegSize(u) {
   return { w: 0, h: 0, orientation };
 }
 
-function exifOrientation(u, t) {
+/** The orientation tag of the TIFF block at t, read only inside its APP1 segment (end); 0 when absent or not 1–8. */
+function exifOrientation(u, t, end) {
+  if (t + 8 > end || u[t] !== u[t + 1] || (u[t] !== 0x49 && u[t] !== 0x4d)) return 0;
   const le = u[t] === 0x49;
   const r16 = (o) => (le ? le16(u, o) : be16(u, o));
   const r32 = (o) => (le ? le32(u, o) : be32(u, o));
   const ifd = t + r32(t + 4);
+  if (ifd + 2 > end) return 0;
   const n = r16(ifd);
   for (let i = 0; i < n; i++) {
     const e = ifd + 2 + i * 12;
-    if (e + 12 > u.length) break;
-    if (r16(e) === 0x0112) return r16(e + 8);
+    if (e + 12 > end) break;
+    if (r16(e) === 0x0112) { const v = r16(e + 8); return v >= 1 && v <= 8 ? v : 0; }
   }
   return 0;
 }

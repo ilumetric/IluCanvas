@@ -26,7 +26,13 @@ function viaWorker(msg) {
     worker.onmessage = ({ data }) => {
       const p = waiting.get(data.id);
       waiting.delete(data.id);
-      if (data.ok) p?.resolve(data); else p?.reject(new Error(data.error));
+      if (data.ok) p?.resolve(data); else p?.reject(Object.assign(new Error(data.error), { changed: data.changed }));
+    };
+    // the worker did not load (offline before it was cached) or died: saves fail instead of hanging
+    worker.onerror = worker.onmessageerror = () => {
+      for (const p of waiting.values()) p.reject(new Error('storage worker failed'));
+      waiting.clear();
+      worker = null;
     };
   }
   const id = ++seq;
@@ -39,14 +45,17 @@ function viaWorker(msg) {
 /**
  * Write `chunks` (Uint8Array | Blob) into file `name` in folder `path` from
  * offset `at` and end the file there. keep: false starts from an empty file.
+ * expect: { size, mtime } the file must still have (another tab did not write
+ * it meanwhile), else nothing is written and the error says `changed`.
  * Returns the file as it is now.
  */
-export async function opfsWrite(path, name, at, chunks, { keep = true } = {}) {
+export async function opfsWrite(path, name, at, chunks, { keep = true, expect = null } = {}) {
   const dir = await opfsDir(...path);
   const fh = await dir.getFileHandle(name, { create: true });
   if (opfsAtomic()) {
     const w = await fh.createWritable({ keepExistingData: keep });
     try {
+      if (expect && changedSince(await fh.getFile(), expect)) throw changedError();
       let pos = at;
       for (const c of chunks) {
         await w.write({ type: 'write', position: pos, data: c });
@@ -58,9 +67,13 @@ export async function opfsWrite(path, name, at, chunks, { keep = true } = {}) {
       throw e;
     }
     await w.close();
-  } else await viaWorker({ path, name, at, chunks, keep, truncate: true });
+  } else await viaWorker({ path, name, at, chunks, keep, truncate: true, expectSize: expect?.size ?? null });
   return fh.getFile();
 }
+
+/** Is `file` (a File, or { size, mtime }) not the one a save was planned on (`expect`: { size, mtime })? */
+export const changedSince = (file, expect) => file.size !== expect.size || (expect.mtime != null && Math.abs((file.lastModified ?? file.mtime) - expect.mtime) > 1);
+export const changedError = () => Object.assign(new Error('the file changed on disk'), { changed: true });
 
 /** Stream a response body into a file (a shared link's download). Returns the file. */
 export async function opfsStream(path, name, stream, { signal } = {}) {

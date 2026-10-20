@@ -112,10 +112,13 @@ export function promptDialog({ title, label, value = '', placeholder = '', ok = 
 // ---- menus -----------------------------------------------------------------------
 
 let openMenuNode = null;
+let menuOutside = null; // the document listener that closes it on a click elsewhere
 
 export function closeMenu() {
   openMenuNode?.remove();
   openMenuNode = null;
+  if (menuOutside) document.removeEventListener('pointerdown', menuOutside, true);
+  menuOutside = null;
 }
 
 /**
@@ -155,14 +158,12 @@ export function openMenu(anchor, items, { align = 'left', up = false } = {}) {
   openMenuNode = menu;
   menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   setTimeout(() => {
-    const off = (e) => {
-      if (!openMenuNode || openMenuNode.contains(e.target)) return;
-      closeMenu();
-      document.removeEventListener('pointerdown', off, true);
-    };
-    document.addEventListener('pointerdown', off, true);
+    if (openMenuNode !== menu) return; // closed already
+    menuOutside = (e) => { if (!menu.contains(e.target)) closeMenu(); };
+    document.addEventListener('pointerdown', menuOutside, true);
   });
   menu.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // keys in the menu are the menu's, not the board's shortcuts
     const btns = [...menu.querySelectorAll('button:not(:disabled)')];
     const i = btns.indexOf(document.activeElement);
     if (e.key === 'Escape') { closeMenu(); anchor.focus?.(); }

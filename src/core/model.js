@@ -89,7 +89,7 @@ export function normalize(raw) {
   for (const it of Array.isArray(src.items) ? src.items : []) {
     if (!it || typeof it !== 'object') continue;
     const n = { ...it };
-    if (typeof n.id !== 'string' || !n.id || seen.has(n.id)) n.id = newId(n.type || 'item');
+    if (typeof n.id !== 'string' || !n.id || seen.has(n.id)) n.id = newId(typeof n.type === 'string' && n.type ? n.type : 'item');
     seen.add(n.id);
     n.x = num(n.x);
     n.y = num(n.y);
@@ -182,13 +182,14 @@ export function normalize(raw) {
     if (it.type !== 'connector') continue;
     for (const k of ['from', 'to']) if (it[k].id && !ids.has(it[k].id)) it[k] = k === 'from' ? { x: it.x, y: it.y } : { x: it.x + it.w, y: it.y + it.h };
   }
-  // a group inside itself (a cycle of parents) would never be drawn: break it
+  // a group inside itself (a cycle of parents) would never be drawn: break it (at a group of the circle,
+  // not at one merely inside it)
   const parentOf = new Map(items.map((i) => [i.id, i.parent]));
   for (const it of items) {
     if (it.type !== 'group' || !it.parent) continue;
-    const seen = new Set([it.id]);
-    for (let p = it.parent; p; p = parentOf.get(p)) {
-      if (seen.has(p)) { delete it.parent; parentOf.set(it.id, undefined); break; }
+    const seen = new Set();
+    for (let p = it.parent; p && !seen.has(p); p = parentOf.get(p)) {
+      if (p === it.id) { delete it.parent; parentOf.set(it.id, undefined); break; }
       seen.add(p);
     }
   }
@@ -228,6 +229,9 @@ export function cleanTable(t) {
 
 // ---- validate --------------------------------------------------------------------------------------
 
+/** A file name inside the ZIP that stays inside a folder it is extracted to. */
+const safePath = (p) => typeof p === 'string' && !!p && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
+
 /** { ok, errors: [{ id?, path, msg }], warnings } — errors make the file unusable by other tools. */
 export function validate(doc, { files = null } = {}) {
   const errors = [];
@@ -239,9 +243,11 @@ export function validate(doc, { files = null } = {}) {
   for (const [id, a] of Object.entries(doc.assets || {})) {
     const p = `assets.${id}`;
     if (typeof a.file !== 'string' || !a.file) err(`${p}.file`, 'missing', id);
+    else if (!safePath(a.file)) err(`${p}.file`, `"${a.file}" must be a plain path inside the file (no "..", "\\" or leading "/")`, id);
     else if (files && !files.has(a.file)) err(`${p}.file`, `"${a.file}" is not in the file`, id);
     if (!(a.w > 0 && a.h > 0)) warn(`${p}.w`, 'size unknown', id);
-    if (a.thumb && files && !files.has(a.thumb)) warn(`${p}.thumb`, `"${a.thumb}" is missing (will be regenerated)`, id);
+    if (a.thumb && !safePath(a.thumb)) err(`${p}.thumb`, `"${a.thumb}" must be a plain path inside the file (no "..", "\\" or leading "/")`, id);
+    else if (a.thumb && files && !files.has(a.thumb)) warn(`${p}.thumb`, `"${a.thumb}" is missing (will be regenerated)`, id);
   }
   const ids = new Set();
   const groups = new Set();
@@ -282,6 +288,7 @@ export function validate(doc, { files = null } = {}) {
       if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id);
       used.add(it.asset);
     }
+    if (typeof it.asset === 'string') used.add(it.asset); // item types from newer versions too
     if (it.parent !== undefined && !groups.has(it.parent)) err(`${p}.parent`, `unknown group "${it.parent}"`, it.id);
     if (it.type === 'group' && it.parent && depthOf(doc, it.id) < 0) err(`${p}.parent`, 'groups inside each other in a circle', it.id);
     for (const k of ['x', 'y', 'w', 'h']) if (typeof it[k] !== 'number' || !Number.isFinite(it[k])) err(`${p}.${k}`, 'must be a number', it.id);
@@ -293,12 +300,18 @@ export function validate(doc, { files = null } = {}) {
 
 // ---- serialize ---------------------------------------------------------------------------------------
 
-function ordered(obj, keys) {
+/**
+ * `keys` in their order, then the other keys sorted. A null known field (of
+ * `known`) is left out; an unknown one (a newer version's) is kept as it is.
+ */
+function ordered(obj, keys, known = keys) {
   const out = {};
   for (const k of keys) if (obj[k] !== undefined && obj[k] !== null) out[k] = obj[k];
-  for (const k of Object.keys(obj).sort()) if (!(k in out) && obj[k] !== undefined && obj[k] !== null) out[k] = obj[k];
+  for (const k of Object.keys(obj).sort()) if (!(k in out) && obj[k] !== undefined && (obj[k] !== null || !known.includes(k))) out[k] = obj[k];
   return out;
 }
+/** Every field some item type knows (and `opacity`, which any item may have). */
+const ALL_ITEM_KEYS = [...new Set([...Object.values(ITEM_KEYS).flat(), 'opacity'])];
 
 const round = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
 function roundItem(it) {
@@ -319,7 +332,7 @@ export function serialize(doc) {
   if (assets.length) lines.push('  },');
   const items = doc.items || [];
   lines.push(`  "items": [${items.length ? '' : ']'}`);
-  items.forEach((it, i) => lines.push(`    ${JSON.stringify(ordered(roundItem(it), ITEM_KEYS[it.type] || ['id', 'type']))}${i < items.length - 1 ? ',' : ''}`));
+  items.forEach((it, i) => lines.push(`    ${JSON.stringify(ordered(roundItem(it), ITEM_KEYS[it.type] || ['id', 'type'], ALL_ITEM_KEYS))}${i < items.length - 1 ? ',' : ''}`));
   if (items.length) lines.push('  ]');
   lines.push('}');
   return `${lines.join('\n')}\n`;
@@ -425,9 +438,10 @@ export function isInside(doc, id, gid) {
 /** Items that show an image asset: pictures, and videos (their poster). */
 export const hasAsset = (it) => (it.type === 'image' || it.type === 'video') && typeof it.asset === 'string' && !!it.asset;
 
+/** Asset ids in use: any item's `asset` counts (item types from newer versions too, so their files stay). */
 export function usedAssets(doc) {
   const s = new Set();
-  for (const it of doc.items) if (hasAsset(it)) s.add(it.asset);
+  for (const it of doc.items) if (typeof it.asset === 'string' && it.asset) s.add(it.asset);
   return s;
 }
 
@@ -581,8 +595,8 @@ export function restack(doc, ids, where = 'front', by = 'human') {
 /** Wrap items in a new group frame (padding around their bounds). Returns the group. */
 export function groupItems(doc, ids, { name = 'Group', color, padding, by = 'human' } = {}) {
   const map = byId(doc);
-  // members must not contain each other: keep the outermost
-  const members = outermost(doc, ids).map((id) => map.get(id)).filter(Boolean);
+  // members must not contain each other: keep the outermost; connectors never join a group (they follow their ends)
+  const members = outermost(doc, ids).map((id) => map.get(id)).filter((it) => it && it.type !== 'connector');
   const b = unionBounds(members.map(itemBounds)) || { x: 0, y: 0, w: 400, h: 300 };
   const pad = padding ?? Math.max(16, Math.round(Math.max(b.w, b.h) * 0.04));
   const used = new Set(groupsOf(doc).map((g) => g.color));
@@ -600,8 +614,9 @@ export function groupItems(doc, ids, { name = 'Group', color, padding, by = 'hum
   return g;
 }
 
-/** Remove a group frame, keeping its items (they move up to its parent). */
+/** Remove a group frame, keeping its items (they move up to its parent). Anything but a group is left alone. */
 export function ungroup(doc, gid, by = 'human') {
+  if (byId(doc).get(gid)?.type !== 'group') return new Set();
   return removeItems(doc, [gid], { keepChildren: true, by });
 }
 
@@ -679,8 +694,10 @@ export function fitGroup(doc, gid, { padding, by = 'human' } = {}) {
  * Justified rows (like a photo grid): every row has the same width, images
  * keep their aspect. `rects`: [{ id, w, h }] → Map id → { x, y, w, h } from (x0, y0).
  * `width` defaults to what makes the block roughly as wide as `aspect` × tall.
+ * `upscale: false`: no row is taller than `rowHeight` (new images: never past
+ * their own size — full rows are never taller anyway, a short last row could be).
  */
-export function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, rowHeight } = {}) {
+export function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, rowHeight, upscale = true } = {}) {
   const out = new Map();
   if (!rects.length) return out;
   const hs = rects.map((r) => r.h).sort((a, b) => a - b);
@@ -696,7 +713,7 @@ export function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, r
     if (!row.length) return;
     const avail = W - g * (row.length - 1);
     let h = avail / rowAr;
-    if (last && h > rh * 1.15) h = rh; // a short last row keeps the usual height
+    if (last && h > rh * (upscale ? 1.15 : 1)) h = rh; // a short last row keeps the usual height
     let x = x0;
     for (const it of row) {
       const w = it.ar * h;
@@ -732,7 +749,7 @@ export function arrangeItems(doc, ids, { by = 'human', ...opts } = {}) {
 /** Positions for `sizes` ([{ w, h }]) dropped at a point: one row or a grid, centred on (cx, cy). */
 export function dropLayout(sizes, cx, cy, { gap = 24 } = {}) {
   const rects = sizes.map((s, i) => ({ id: i, w: s.w, h: s.h }));
-  const layout = arrangeRows(rects, { gap, rowHeight: Math.min(...sizes.map((s) => s.h)) });
+  const layout = arrangeRows(rects, { gap, rowHeight: Math.min(...sizes.map((s) => s.h)), upscale: false });
   const b = unionBounds([...layout.values()]);
   return sizes.map((_, i) => {
     const r = layout.get(i);
@@ -752,7 +769,9 @@ export function fitSize(w, h, max = 1200) {
 /** A file name for images/ that is safe on every OS and unique among `taken`. */
 export function assetPath(name, ext, taken) {
   let base = String(name || 'image').replace(/\.[^.]{1,5}$/, '');
-  base = base.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 80) || 'image';
+  // cut by code points, not UTF-16 units: half an emoji would not survive UTF-8 (the ZIP name would differ)
+  base = base.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '');
+  base = Array.from(base).slice(0, 80).join('') || 'image';
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) base = `_${base}`;
   let path = `images/${base}.${ext}`;
   for (let i = 2; taken.has(path.toLowerCase()); i++) path = `images/${base} (${i}).${ext}`;
@@ -769,7 +788,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /**
  * Three-way merge by item / asset id: changes from `theirs` (the file on disk)
  * and `ours` (the open canvas) since `base`. Where both changed the same item,
- * ours wins and the id is reported. Order follows theirs, with our new items on top.
+ * ours wins and the id is reported. Order follows theirs, with our new items on
+ * top — unless only we restacked: then the items both kept follow ours.
  */
 export function merge3(base, ours, theirs) {
   const conflicts = [];
@@ -793,6 +813,15 @@ export function merge3(base, ours, theirs) {
     if (placed.has(o.id)) continue;
     if (bMap.has(o.id) && !tMap.has(o.id)) { if (!same(o, bMap.get(o.id))) { conflicts.push(o.id); out.push(o); } continue; } // they deleted it
     if (!bMap.has(o.id)) out.push(o); // ours, new
+  }
+  // only we restacked the items both sides kept: they take our order (in the places they have in theirs)
+  const kept = new Set(ours.items.filter((o) => bMap.has(o.id) && tMap.has(o.id)).map((o) => o.id));
+  const order = (list) => list.filter((it) => kept.has(it.id)).map((it) => it.id);
+  const [bo, oo, to] = [order(base.items), order(ours.items), order(theirs.items)];
+  if (!same(oo, bo) && same(to, bo)) {
+    const byOut = new Map(out.map((it) => [it.id, it]));
+    let k = 0;
+    out.forEach((it, i) => { if (kept.has(it.id)) out[i] = byOut.get(oo[k++]); });
   }
   const assets = { ...theirs.assets };
   for (const [id, a] of Object.entries(ours.assets)) if (!assets[id]) assets[id] = a;

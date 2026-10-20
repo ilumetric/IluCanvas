@@ -184,7 +184,19 @@ export async function scanLocalHeaders(reader) {
   while (pos + 30 <= reader.size) {
     const h = await reader.read(pos, 30);
     const hv = view(h);
-    if (hv.getUint32(0, true) !== SIG_LOCAL) break;
+    // append saves leave old directories between the records: step over them to the later saves
+    const sig = hv.getUint32(0, true);
+    if (sig === SIG_CENTRAL) {
+      const c = await reader.read(pos, 46);
+      if (c.length < 46) break;
+      const cv = view(c);
+      pos += 46 + cv.getUint16(28, true) + cv.getUint16(30, true) + cv.getUint16(32, true);
+      continue;
+    }
+    if (sig === SIG_EOCD) { pos += 22 + hv.getUint16(20, true); continue; }
+    if (sig === SIG_LOC64) { pos += 20; continue; }
+    if (sig === SIG_EOCD64) { pos += 12 + u64(hv, 4); continue; }
+    if (sig !== SIG_LOCAL) break;
     const flags = hv.getUint16(6, true);
     const nameLen = hv.getUint16(26, true);
     const extraLen = hv.getUint16(28, true);

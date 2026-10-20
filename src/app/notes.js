@@ -6,10 +6,10 @@
 import { newId, addItems, patchItems, reparent, byId, itemBounds, unionBounds, refreshConnectors, NOTE_COLORS, RATIO_K, SHAPE_KINDS, PAINT, isHexColor } from '../core/model.js';
 import { connectorPath, midpoint, ROUTES } from '../core/connectors.js';
 import { toggleTask, MARK_COLORS } from '../core/markdown.js';
-import { NoteEditor } from './editor.js';
-import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
+import { NoteEditor, safeLink } from './editor.js';
+import { neededHeight, isLight, NOTE_BG, MARK_ON_LIGHT, MARK_ON_DARK, HIGHLIGHT } from './text.js';
 import { tableLayout } from './table.js';
-import { TABLE_COL, TABLE_ROW, cellOf, mapCells, insertRow, insertCol, removeRows, removeCols, cellsText, cellsHtml, hasMark, setMark, isList, setList } from '../core/table.js';
+import { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, cellOf, mapCells, insertRow, insertCol, removeRows, removeCols, cellsText, cellsHtml, hasMark, setMark, isList, setList } from '../core/table.js';
 import { cleanTable } from '../core/model.js';
 import { FILL, LINE_COLOR, fillColor, lineColor } from './shapes.js';
 import { INK_COLOR, inkColor } from './ink.js';
@@ -55,7 +55,7 @@ export class NotesUI {
     const ce = this.cellEdit;
     if (ce && this.editor.el) {
       const md = this.editor.markdown();
-      if (this.board.tableDraft?.text !== md) { this.board.tableDraft = { ...ce, text: md }; this.board.invalidate(); }
+      if (this.board.tableDraft?.text !== md) { this.board.tableDraft = { id: ce.id, r: ce.r, c: ce.c, text: md }; this.board.invalidate(); }
     }
     this.render();
   }
@@ -227,7 +227,8 @@ export class NotesUI {
       this.board.tableDraft = null;
       const d = this.app.doc();
       const tb = d && byId(d).get(ce.id);
-      if (tb && md !== null) this.#editTable('text', ce.id, (x) => mapCells(x, { r0: ce.r, c0: ce.c }, (cell) => ({ ...cell, text: md })));
+      // rows or columns came or went meanwhile: (r, c) may be another cell now — the text is not put anywhere
+      if (this.#sameGrid(tb, ce) && md !== null) this.#editTable('text', ce.id, (x) => mapCells(x, { r0: ce.r, c0: ce.c }, (cell) => ({ ...cell, text: md })));
       else this.board.invalidate();
       this.render();
       return;
@@ -274,8 +275,10 @@ export class NotesUI {
     if (!id) return;
     const it = byId(this.app.doc()).get(id);
     if (this.cellEdit) {
+      // the table gone, or rows / columns added or removed (undo, an agent, a reload): the cell's
+      // place may hold another cell now, so the editor closes without writing anything
       const ce = this.cellEdit;
-      if (!it || it.type !== 'table' || ce.r >= it.rows.length || ce.c >= it.cols.length) this.editor.close({ commit: false });
+      if (!this.#sameGrid(it, ce)) this.editor.close({ commit: false });
       else this.editor.update(tableLayout(it, this.family, this.board.tableDraft).cells[ce.r][ce.c]);
       return;
     }
@@ -288,8 +291,7 @@ export class NotesUI {
   #notes() { return this.board.selectedItems().filter((it) => it.type === 'note'); }
   #ofType(type) { return this.board.selectedItems().filter((it) => it.type === type); }
 
-  #set(label, fn, type = 'note') {
-    const items = this.#ofType(type);
+  #set(label, fn, type = 'note', items = this.#ofType(type)) {
     if (!items.length) return;
     this.app.edit(label, (d) => {
       patchItems(d, Object.fromEntries(items.map((n) => [n.id, fn(n)])));
@@ -406,27 +408,46 @@ export class NotesUI {
   }
 
   /**
-   * A custom colour for one field of the selected items of a type: shown live
-   * while dragging, one undo step per colour chosen.
+   * The custom colour picker, shown live: while dragging, the board draws the
+   * items as `look(items, hex)` makes them (a preview — not kept, not undoable);
+   * a chosen colour goes in through `choose(hex)`, one undo step. Whatever else
+   * changes the board meanwhile (undo, an agent, a reload) wins over the
+   * preview; on another board the picker does nothing.
    */
+  #livePicker(anchor, color, key, look, choose) {
+    const doc = this.app.doc();
+    if (!doc) return;
+    let shown = null; // { base, items, swaps }: the board's own items, the preview drawn in their place, preview item → own item
+    const unshow = () => {
+      if (!shown) return;
+      if (doc.items === shown.items) doc.items = shown.base;
+      // the board moved on meanwhile (undo, an agent, a reload): its items stay — only those it
+      // left as they were in the preview go back to their own colour
+      else doc.items = doc.items.map((it) => shown.swaps.get(it) || it);
+      shown = null;
+    };
+    openColorPicker(anchor, color, (hex, done) => {
+      if (this.app.doc() !== doc) return;
+      unshow();
+      if (done) { choose(hex); return; }
+      const base = doc.items;
+      const items = look(base, hex);
+      const swaps = new Map();
+      items.forEach((it, i) => { if (it !== base[i]) swaps.set(it, base[i]); });
+      shown = { base, items, swaps };
+      doc.items = items;
+      this.board.invalidate();
+    }, { key, place: 'below', onClose: () => { if (shown) { unshow(); this.board.invalidate(); } } });
+  }
+
+  /** A custom colour for one field of the selected items of a type: shown live while dragging, one undo step per colour chosen. */
   #customColor(anchor, type, field, shown, key) {
+    const first = this.#ofType(type)[0];
+    if (!first) return;
     const ids = new Set(this.#ofType(type).map((k) => k.id));
-    const d0 = this.app.doc();
-    if (!ids.size || !d0) return;
-    let before = d0.items;
-    const first = d0.items.find((it) => ids.has(it.id));
-    openColorPicker(anchor, shown(first[field]), (hex, done) => {
-      const d = this.app.doc();
-      if (!d) return;
-      if (!done) {
-        d.items = d.items.map((it) => (ids.has(it.id) ? { ...it, [field]: hex } : it));
-        this.board.invalidate();
-        return;
-      }
-      d.items = before;
-      this.#set(field, () => ({ [field]: hex }), type);
-      before = d.items;
-    }, { key, place: 'below' });
+    this.#livePicker(anchor, shown(first[field]), key,
+      (items, hex) => items.map((it) => (ids.has(it.id) ? { ...it, [field]: hex } : it)),
+      (hex) => this.#set(field, () => ({ [field]: hex }), type, this.app.doc().items.filter((it) => ids.has(it.id))));
   }
 
   #shapeBar(shapes) {
@@ -552,12 +573,24 @@ export class NotesUI {
     if (!tb || tb.type !== 'table') return;
     r = Math.max(0, Math.min(tb.rows.length - 1, r));
     c = Math.max(0, Math.min(tb.cols.length - 1, c));
-    this.cellEdit = { id, r, c };
+    this.cellEdit = { id, r, c, R: tb.rows.length, C: tb.cols.length }; // R × C: the grid the cell was opened in
     this.board.editingCell = { id, r, c };
     this.board.tableDraft = null;
     this.board.selectCells(id, r, c);
     this.editor.open(tableLayout(tb, this.family).cells[r][c], opts);
     this.render();
+  }
+
+  /** Is `tb` still the table grid the cell edit `ce` was opened in (same rows and columns)? */
+  #sameGrid(tb, ce) {
+    return !!tb && tb.type === 'table' && tb.rows.length === ce.R && tb.cols.length === ce.C;
+  }
+
+  /** Room for a table of `rows` × `cols`? More cells than TABLE_MAX_CELLS would be dropped when the file is read again. */
+  #fits(rows, cols) {
+    if (rows * cols <= TABLE_MAX_CELLS) return true;
+    toast(t('table.tooBig', { n: TABLE_MAX_CELLS }), { kind: 'warn' });
+    return false;
   }
 
   /** Tab while editing a cell: the next one (Shift: the one before); past the last cell a new row. */
@@ -569,6 +602,7 @@ export class NotesUI {
     const i = ce.r * C + ce.c + (back ? -1 : 1);
     if (i < 0) return;
     if (i >= tb.rows.length * C) {
+      if (!this.#fits(tb.rows.length + 1, C)) return;
       this.editor.close();
       this.#editTable('row', ce.id, (x) => insertRow(x));
       this.openCell(ce.id, tb.rows.length, 0);
@@ -622,6 +656,7 @@ export class NotesUI {
     const tb = byId(this.app.doc()).get(hit.id);
     if (!tb || this.app.readOnly()) return;
     const col = hit.axis === 'col';
+    if (!this.#fits(tb.rows.length + (col ? 0 : 1), tb.cols.length + (col ? 1 : 0))) return;
     const at = hit.kind === 'tableAdd' ? (col ? tb.cols.length : tb.rows.length) : hit.i;
     this.#editTable(col ? 'column' : 'row', tb.id, (x) => (col ? insertCol(x, at) : insertRow(x, at)));
     if (col) this.board.selectCells(tb.id, 0, at, tb.rows.length - 1, at);
@@ -712,11 +747,13 @@ export class NotesUI {
     const r1 = sel ? sel.r1 : r0;
     const c0 = sel ? sel.c0 : tb.cols.length - 1;
     const c1 = sel ? sel.c1 : c0;
+    const row = (at) => { if (this.#fits(tb.rows.length + 1, tb.cols.length)) set('row', (x) => insertRow(x, at)); };
+    const column = (at) => { if (this.#fits(tb.rows.length, tb.cols.length + 1)) set('column', (x) => insertCol(x, at)); };
     const menuBtn = this.#btn('table', t('table.menu'), () => openMenu(menuBtn, [
-      { label: t('table.rowAbove'), icon: 'rowAbove', onClick: () => set('row', (x) => insertRow(x, r0)) },
-      { label: t('table.rowBelow'), icon: 'rowBelow', onClick: () => set('row', (x) => insertRow(x, r1 + 1)) },
-      { label: t('table.colLeft'), icon: 'colLeft', onClick: () => set('column', (x) => insertCol(x, c0)) },
-      { label: t('table.colRight'), icon: 'colRight', onClick: () => set('column', (x) => insertCol(x, c1 + 1)) },
+      { label: t('table.rowAbove'), icon: 'rowAbove', onClick: () => row(r0) },
+      { label: t('table.rowBelow'), icon: 'rowBelow', onClick: () => row(r1 + 1) },
+      { label: t('table.colLeft'), icon: 'colLeft', onClick: () => column(c0) },
+      { label: t('table.colRight'), icon: 'colRight', onClick: () => column(c1 + 1) },
       tb.rows.length > r1 - r0 + 1 ? { label: r1 > r0 ? t('table.rowsRemove', { n: r1 - r0 + 1 }) : t('table.rowRemove'), icon: 'rowRemove', onClick: () => { this.board.clearCells(); set('remove', (x) => removeRows(x, r0, r1)); } } : null,
       tb.cols.length > c1 - c0 + 1 ? { label: c1 > c0 ? t('table.colsRemove', { n: c1 - c0 + 1 }) : t('table.colRemove'), icon: 'colRemove', onClick: () => { this.board.clearCells(); set('remove', (x) => removeCols(x, c0, c1)); } } : null,
       { label: t('table.clear'), icon: 'eraser', onClick: () => set('clear', (x) => mapCells(x, scope, (cell) => ({ ...cell, text: '' }))) },
@@ -727,21 +764,10 @@ export class NotesUI {
 
   /** A custom fill for the selected cells (or the table): shown live while dragging, one undo step when chosen. */
   #tableCustomFill(anchor, id, sel, now) {
-    const d0 = this.app.doc();
-    let before = d0.items;
     const apply = (x, hex) => (sel ? mapCells(x, sel, (cell) => ({ ...cell, fill: hex })) : { ...x, fill: hex });
-    openColorPicker(anchor, fillColor(now === 'none' ? 'white' : now), (hex, done) => {
-      const d = this.app.doc();
-      if (!d) return;
-      if (!done) {
-        d.items = before.map((it) => (it.id === id ? apply(it, hex) : it));
-        this.board.invalidate();
-        return;
-      }
-      d.items = before;
-      this.#editTable('fill', id, (x) => apply(x, hex));
-      before = d.items;
-    }, { key: 'table-fill', place: 'below' });
+    this.#livePicker(anchor, fillColor(now === 'none' ? 'white' : now), 'table-fill',
+      (items, hex) => items.map((it) => (it.id === id && it.type === 'table' ? apply(it, hex) : it)),
+      (hex) => this.#editTable('fill', id, (x) => apply(x, hex)));
   }
 
   #formatBar() {
@@ -756,8 +782,8 @@ export class NotesUI {
       { label: t('fmt.quote'), icon: 'quote', hint: '>', checked: s.block === 'quote', onClick: () => ed.command('block', 'quote') },
     ]), false, blockLabel);
     blockBtn.append(icon('chevronDown', 14));
-    const it = byId(this.app.doc()).get(ed.id);
-    const textColors = it?.color === 'none' ? MARK_ON_LIGHT : MARK_ON_LIGHT;
+    // the swatches show what command('color') puts on this paper (light: dark ink; text on the board, dark fills: light)
+    const textColors = ed.item && !isLight(ed.item) ? MARK_ON_DARK : MARK_ON_LIGHT;
     const colorBtn = this.#btn('palette', t('fmt.color'), () => openMenu(colorBtn, [
       { label: t('fmt.noColor'), icon: 'x', onClick: () => ed.command('color', null) },
       ...MARK_COLORS.map((c) => ({ label: t(`markColor.${c}`), swatch: textColors[c], onClick: () => ed.command('color', c) })),
@@ -770,11 +796,13 @@ export class NotesUI {
       if (s.link) { ed.command('link', null); return; }
       const sel = document.getSelection();
       const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-      const url = await promptDialog({ title: t('fmt.link'), label: t('fmt.linkUrl'), placeholder: 'https://' });
-      if (!url) return;
+      const raw = await promptDialog({ title: t('fmt.link'), label: t('fmt.linkUrl'), placeholder: 'https://' });
+      if (!raw?.trim()) return;
       ed.el?.focus();
       if (range) { sel.removeAllRanges(); sel.addRange(range); }
-      ed.command('link', /^[a-z]+:/i.test(url) ? url : `https://${url}`);
+      // web and mail links only (a bare address gets https://)
+      const url = safeLink(raw);
+      if (url) ed.command('link', url); else toast(t('fmt.linkBad'), { kind: 'warn' });
     }, s.link);
     this.bar.replaceChildren(
       blockBtn,

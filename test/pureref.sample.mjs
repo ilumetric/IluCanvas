@@ -102,7 +102,9 @@ for (const it of pur.items) {
 }
 for (const t of pur.texts) {
   // Fixed-size notes rotate about their centre (like images); auto-sized ones about x, y.
-  const tf = `rotate(${t.rotation}deg) scale(${(t.flipX ? -1 : 1) * (t.scale || 1)},${(t.flipY ? -1 : 1) * (t.scale || 1)})`;
+  // A fixed-size box is already in scene units (its `scale` is the text's).
+  const k = t.w ? 1 : t.scale || 1;
+  const tf = `rotate(${t.rotation}deg) scale(${(t.flipX ? -1 : 1) * k},${(t.flipY ? -1 : 1) * k})`;
   els.push(`<div class="text" style="left:${(t.x - minX) * scale}px;top:${(t.y - minY) * scale}px;${t.w ? `width:${t.w * scale}px;height:${t.h * scale}px;transform-origin:50% 50%;` : ''}color:${t.color || '#fff'};background:${t.background || 'transparent'};z-index:${Math.round(t.z * 1000)};transform:${tf}">${t.text.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`);
 }
 writeFileSync(join(outDir, 'layout.html'), `<!doctype html><meta charset="utf-8"><title>PureRef layout</title>

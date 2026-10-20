@@ -17,6 +17,11 @@ function strokeLine(it) {
   return out;
 }
 
+const ENDS = ['pointerup', 'pointercancel', 'lostpointercapture'];
+
+/** The CSS zoom on the panel (the interface scale): its box on screen over its own size. */
+const zoomOf = (el) => (el.clientWidth ? el.getBoundingClientRect().width / el.clientWidth : 1) || 1;
+
 export class Minimap {
   constructor(canvas, board) {
     this.canvas = canvas;
@@ -26,13 +31,22 @@ export class Minimap {
     this.contentDirty = true;
     this.cache = null;
     canvas.addEventListener('pointerdown', (e) => {
-      canvas.setPointerCapture(e.pointerId);
+      if (this.frozen) return; // a second finger
+      const id = e.pointerId;
+      try { canvas.setPointerCapture(id); } catch { /* not a live pointer */ }
       this.frozen = this.L || this.#layout(); // the map holds still while dragging in it
       this.#go(e);
-      const move = (ev) => this.#go(ev);
-      const up = () => { this.frozen = null; this.invalidate(); canvas.removeEventListener('pointermove', move); canvas.removeEventListener('pointerup', up); };
+      const move = (ev) => { if (ev.pointerId === id) this.#go(ev); };
+      // let go, cancelled (a system gesture) or the capture lost (another window): the drag ends
+      const end = (ev) => {
+        if (ev.pointerId !== id) return;
+        this.frozen = null;
+        this.invalidate();
+        canvas.removeEventListener('pointermove', move);
+        for (const t of ENDS) canvas.removeEventListener(t, end);
+      };
       canvas.addEventListener('pointermove', move);
-      canvas.addEventListener('pointerup', up);
+      for (const t of ENDS) canvas.addEventListener(t, end);
     });
     canvas.addEventListener('wheel', (e) => { e.preventDefault(); this.board.zoomCenter(Math.exp(-e.deltaY * 0.0016)); }, { passive: false });
   }
@@ -67,7 +81,7 @@ export class Minimap {
 
   #draw() {
     const c = this.canvas;
-    const dpr = devicePixelRatio || 1;
+    const dpr = (devicePixelRatio || 1) * zoomOf(c); // the interface scale zooms the panel: as many pixels as it covers
     const W = c.clientWidth;
     const H = c.clientHeight;
     this.redrew = false;
@@ -151,8 +165,9 @@ export class Minimap {
   #go(e) {
     const L = this.frozen || this.L || this.#layout();
     const r = this.canvas.getBoundingClientRect();
-    const wx = (e.clientX - r.left - L.ox) / L.k;
-    const wy = (e.clientY - r.top - L.oy) / L.k;
+    const s = zoomOf(this.canvas); // the layout is in the panel's own pixels, the event in the page's
+    const wx = ((e.clientX - r.left) / s - L.ox) / L.k;
+    const wy = ((e.clientY - r.top) / s - L.oy) / L.k;
     const { w, h } = this.board.size;
     const z = this.board.view.z;
     this.board.setView({ x: w / 2 - wx * z, y: h / 2 - wy * z, z });

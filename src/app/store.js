@@ -6,7 +6,7 @@
 
 import { blobReader, entryBlob, readEntry } from '../core/zip.js';
 import { openCanvas, planSave, chooseMode, deadBytes, referencedFiles, MIMETYPE } from '../core/canvasfile.js';
-import { emptyCanvas, normalize, serialize, merge3, assetPath, takenPaths, now } from '../core/model.js';
+import { emptyCanvas, normalize, serialize, merge3, assetPath, takenPaths, usedAssets, now } from '../core/model.js';
 import { imageInfo, IMAGE_TYPES } from '../core/imageinfo.js';
 import { parsePureRef } from '../core/pureref.js';
 import { purItems } from '../core/purdoc.js';
@@ -30,6 +30,8 @@ export class Store {
     this.pending = new Map(); // asset id → { blob, crc? } images not in the file yet
     this.thumbs = new Map(); // asset id → { blob, crc } previews not in the file yet
     this.purBlobs = new Map(); // asset id → Blob (PureRef images)
+    this.reserved = new Set(); // images/ paths given to new images not written yet (lower case)
+    this.unreadable = new Map(); // asset id → name: new images whose file can no longer be read (moved, changed)
     this.readOnly = false;
     this.warnings = [];
   }
@@ -142,11 +144,15 @@ export class Store {
   async importImages(blobs, { onProgress } = {}) {
     const out = [];
     const assets = {};
-    const taken = takenPaths(this.doc);
     let done = 0;
     const results = await Promise.all(blobs.map(async (b) => {
       try { return await work('import', b); } catch (e) { return { error: e.message }; } finally { onProgress?.(++done, blobs.length); }
     }));
+    // names are given out after the wait, all at once: a path is taken when the doc uses it, the
+    // file still has it (images only the undo history uses stay there) or an import alongside took it
+    const taken = takenPaths(this.doc);
+    for (const n of this.index?.byName.keys() ?? []) taken.add(n.toLowerCase());
+    for (const n of this.reserved) taken.add(n);
     results.forEach((r, i) => {
       const b = blobs[i];
       if (r.error) { out.push({ error: r.error, name: b.name || 'image' }); return; }
@@ -155,6 +161,7 @@ export class Store {
       if (!known) {
         const name = b.name || `pasted-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.${r.ext}`;
         assets[id] = { file: assetPath(name, r.ext, taken), type: r.type, w: r.w, h: r.h, bytes: r.bytes, sha256: r.sha256, thumb: thumbPath(id, r.thumbType), color: r.color, name, source: b.source || null, added: now() };
+        this.reserved.add(assets[id].file.toLowerCase());
         this.pending.set(id, { blob: b, crc: r.crc });
         this.thumbs.set(id, { blob: r.thumb, crc: r.thumbCrc });
       }
@@ -195,11 +202,16 @@ export class Store {
     const refs = referencedFiles(this.doc);
     for (const [id, a] of Object.entries(this.doc.assets)) {
       if (!refs.has(a.file)) continue;
-      const inFile = this.index?.byName.has(a.file);
+      // a new image is never "in the file" by its name alone (a deleted one of that name may be)
+      const inFile = !this.pending.has(id) && this.index?.byName.has(a.file);
       if (!inFile) {
         let p = this.pending.get(id);
         if (!p && this.purBlobs.has(id)) p = { blob: this.purBlobs.get(id) };
         if (!p) continue; // missing everywhere: validate() will report it
+        // a dropped file is read from the disk only now: moved or changed since, it cannot be —
+        // the save goes on without it (the person is told) instead of failing every time
+        try { await p.blob.slice(0, 1).arrayBuffer(); } catch { this.unreadable.set(id, a.name || a.file); continue; }
+        this.unreadable.delete(id);
         if (p.crc === undefined) {
           const r = await work('import', p.blob);
           p = { blob: p.blob, crc: r.crc };
@@ -233,20 +245,24 @@ export class Store {
     if (!dest?.writable) throw new Error('read only');
     const switching = target && target !== this.source;
     const add = await this.#additions();
+    // what is written, and what later merges start from: the doc as it is now (edits made
+    // while the file is being written are the next save's)
+    const doc = { ...this.doc };
     const base = !switching && this.kind === 'canvas' && this.index ? { index: this.index, reader: this.reader } : null;
     if (switching && this.kind === 'canvas' && this.index) {
-      // a new file: copy everything from the old one
-      for (const id of Object.keys(this.doc.assets)) {
-        const a = this.doc.assets[id];
-        for (const name of [a.file, a.thumb]) {
-          const e = name && !add.has(name) && this.index.byName.get(name);
-          if (e) add.set(name, { data: await entryBlob(this.reader, e), crc: e.crc });
-        }
+      // a new file: copy everything from the old one (and the images the undo history may bring back)
+      const names = new Set(keep);
+      for (const a of Object.values(doc.assets)) { if (a.file) names.add(a.file); if (a.thumb) names.add(a.thumb); }
+      for (const name of names) {
+        const e = !add.has(name) && this.index.byName.get(name);
+        if (e) add.set(name, { data: await entryBlob(this.reader, e), crc: e.crc });
       }
     }
     mode ||= base ? chooseMode({ index: this.index, size: this.file.size, atomic: dest.atomic }) : 'full';
-    const plan = await planSave({ base, doc: this.doc, add, preview, mode, keep });
-    const res = await dest.write(plan, this.file);
+    const plan = await planSave({ base, doc, add, preview, mode, keep });
+    // the file must still be the one this plan was made from: an agent may have written it meanwhile
+    const expect = !switching && this.file && this.kind === 'canvas' ? { size: this.file.size, mtime: this.mtime } : null;
+    const res = await dest.write(plan, this.file, expect);
     // the file as it is now
     let file;
     if (dest.kind === 'fsa' || dest.kind === 'local') file = await dest.getFile(); // a fresh File: the old one may not read after a write
@@ -261,10 +277,11 @@ export class Store {
     this.reader = blobReader(file);
     this.index = plan.index;
     this.mtime = res?.mtime ?? file.lastModified ?? Date.now();
-    this.base = serialize(this.doc);
+    this.base = serialize(doc);
     // written: these now come from the file
-    for (const [id, a] of Object.entries(this.doc.assets)) {
-      if (this.index.byName.has(a.file)) { this.pending.delete(id); this.purBlobs.delete(id); }
+    for (const [id, a] of Object.entries(doc.assets)) {
+      if (this.pending.has(id) && !add.has(a.file)) continue; // not written (could not be read): still new
+      if (this.index.byName.has(a.file)) { this.pending.delete(id); this.purBlobs.delete(id); this.reserved.delete(a.file.toLowerCase()); }
       if (a.thumb && this.index.byName.has(a.thumb)) this.thumbs.delete(id);
     }
     return { mode: plan.mode, size: plan.size, dead: deadBytes(this.index, plan.size) };
@@ -277,11 +294,13 @@ export class Store {
     if (!this.source || this.source.kind === 'memory' || this.source.kind === 'cache') return false;
     const st = await this.source.stat();
     if (!st) return false;
+    if (st.size != null && this.file && st.size !== this.file.size) return true;
     return this.mtime != null && Math.abs(st.mtime - this.mtime) > 1;
   }
 
   /**
-   * Read the file again. With local edits (`dirty`), merge them in by item id.
+   * Read the file again. With local edits (`dirty`: a boolean, or a function asked
+   * once the file is read, so edits made meanwhile count), merge them in by item id.
    * Returns { conflicts, changedAssets }.
    */
   async reload({ dirty = false } = {}) {
@@ -290,10 +309,13 @@ export class Store {
     const c = await openCanvas(reader);
     let doc = c.doc;
     let conflicts = [];
-    if (dirty && this.base) {
-      const r = merge3(normalize(this.base), this.doc, c.doc);
+    if ((typeof dirty === 'function' ? dirty() : dirty) && this.base) {
+      // ours as it would be written (numbers rounded, keys in order): compared raw, every item
+      // touched this session differs from the base and the outside edits to it are lost
+      const r = merge3(normalize(this.base), normalize(serialize(this.doc)), c.doc);
       doc = normalize(r.doc);
       conflicts = r.conflicts;
+      await this.#keepOurFiles(doc, c, conflicts);
     }
     const changedAssets = Object.keys(doc.assets).filter((id) => this.doc.assets[id] && this.doc.assets[id].sha256 !== doc.assets[id].sha256);
     this.file = file;
@@ -303,6 +325,46 @@ export class Store {
     this.base = serialize(c.doc);
     this.doc = doc;
     return { conflicts, changedAssets };
+  }
+
+  /**
+   * After a merge, images we keep whose file the new file does not have. Ours not
+   * saved yet keep their bytes, under another name if the outside file has theirs;
+   * ones the outside save dropped (an agent deleted the image, we still use it) are
+   * read from the old file while it still reads, else their items go (reported).
+   */
+  async #keepOurFiles(doc, theirs, conflicts) {
+    const { index } = theirs;
+    const taken = new Set([...index.byName.keys()].map((n) => n.toLowerCase()));
+    for (const a of Object.values(doc.assets)) if (a.file) taken.add(String(a.file).toLowerCase());
+    const used = usedAssets(doc);
+    const lost = new Set();
+    for (const [id, a] of Object.entries(doc.assets)) {
+      if (!used.has(id) || !a.file) continue;
+      // the same picture was added outside too (same id: same bytes) and their file has it
+      if (theirs.doc.assets[id] && index.byName.has(a.file)) { this.pending.delete(id); this.purBlobs.delete(id); continue; }
+      if (this.pending.has(id) || this.purBlobs.has(id)) {
+        if (index.byName.has(a.file)) {
+          const file = assetPath(a.name || a.file.replace(/^images\//, ''), a.file.split('.').pop(), taken);
+          this.reserved.add(file.toLowerCase());
+          doc.assets = { ...doc.assets, [id]: { ...a, file } };
+        }
+        continue;
+      }
+      if (index.byName.has(a.file)) continue;
+      const e = this.index?.byName.get(a.file);
+      try {
+        if (!e) throw new Error('missing');
+        const bytes = await (await entryBlob(this.reader, e, a.type)).arrayBuffer();
+        this.pending.set(id, { blob: new Blob([bytes], { type: a.type }), crc: e.crc });
+      } catch { lost.add(id); continue; }
+      if (a.thumb && !index.byName.has(a.thumb)) { const { thumb, ...rest } = a; doc.assets = { ...doc.assets, [id]: rest }; } // made again
+    }
+    if (lost.size) {
+      // a picture without its bytes goes; a video only loses its poster
+      for (const it of doc.items) if (lost.has(it.asset) && it.type !== 'video') conflicts.push(it.id);
+      doc.items = doc.items.filter((it) => !lost.has(it.asset) || it.type === 'video').map((it) => (lost.has(it.asset) ? (({ asset, ...rest }) => rest)(it) : it));
+    }
   }
 
   /** The original bytes of an asset as a File-like Blob with its name (export, copy). */

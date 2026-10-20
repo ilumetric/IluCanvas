@@ -1,6 +1,7 @@
 // Writes into the browser's private storage (OPFS) through a sync access
 // handle — the only way Safari writes there. In place: what is not written
-// stays. { id, path, name, at, chunks: (Uint8Array | Blob)[], keep, truncate }
+// stays. { id, path, name, at, chunks: (Uint8Array | Blob)[], keep, truncate, expectSize? }
+// expectSize: the file must still be that long (no one else wrote it), else nothing is written.
 
 const PIECE = 8 * 1024 * 1024;
 
@@ -15,13 +16,16 @@ async function put(h, u8, at) {
 }
 
 self.onmessage = async ({ data }) => {
-  const { id, path, name, at, chunks, keep, truncate } = data;
+  const { id, path, name, at, chunks, keep, truncate, expectSize } = data;
   let h = null;
+  let wrote = false;
   try {
     let dir = await navigator.storage.getDirectory();
     for (const p of path) dir = await dir.getDirectoryHandle(p, { create: true });
     const fh = await dir.getFileHandle(name, { create: true });
     h = await fh.createSyncAccessHandle();
+    if (expectSize != null && (await h.getSize()) !== expectSize) throw Object.assign(new Error('the file changed on disk'), { changed: true });
+    wrote = true;
     if (!keep) await h.truncate(0);
     let pos = at;
     for (const c of chunks) {
@@ -43,7 +47,9 @@ self.onmessage = async ({ data }) => {
     h = null;
     self.postMessage({ id, ok: true, size });
   } catch (e) {
+    // an append that failed half way (no space, the tab going away): the file as it was before
+    if (h && wrote && keep) { try { await h.truncate(at); await h.flush(); } catch { /* as it is */ } }
     try { await h?.close(); } catch { /* closed */ }
-    self.postMessage({ id, ok: false, error: e?.message || String(e) });
+    self.postMessage({ id, ok: false, error: e?.message || String(e), changed: !!e?.changed });
   }
 };

@@ -41,6 +41,7 @@ const RU = {
   'new.title': 'Новый канвас',
   'reload.confirm': 'Несохранённые изменения пропадут. Перечитать файл?',
 
+  'save.unreadable': 'Не удалось прочитать {n} из добавленных картинок ({names}): файл переместили или изменили. Добавьте их ещё раз.',
   'save.failed': 'Не сохранилось: {msg}', 'save.writing': 'Сохраняю…', 'save.packing': 'Собираю файл…', 'save.savedAs': 'Сохранено: {name}',
   'save.compacted': 'Файл сжат: удалённые картинки больше не занимают место', 'save.compacting': 'Сжимаю файл…',
 
@@ -133,6 +134,7 @@ const RU = {
   'fmt.ul': 'Список', 'fmt.ol': 'Нумерованный список', 'fmt.task': 'Чек-лист',
   'fmt.color': 'Цвет текста', 'fmt.noColor': 'Обычный цвет', 'fmt.highlight': 'Маркер', 'fmt.noHighlight': 'Без маркера',
   'fmt.link': 'Ссылка', 'fmt.linkUrl': 'Адрес', 'fmt.done': 'Готово',
+  'fmt.linkBad': 'Ссылка может вести только на сайт (http, https) или почту (mailto)', 'table.tooBig': 'В таблице может быть не больше {n} ячеек',
   'markColor.red': 'Красный', 'markColor.orange': 'Оранжевый', 'markColor.yellow': 'Жёлтый', 'markColor.green': 'Зелёный',
   'markColor.blue': 'Синий', 'markColor.violet': 'Фиолетовый', 'markColor.pink': 'Розовый', 'markColor.grey': 'Серый',
   'demo.title': 'Демо', 'demo.group1': 'Свет', 'demo.group2': 'Цвет', 'demo.group3': 'Формы',
@@ -179,6 +181,7 @@ const EN = {
   'new.title': 'New canvas',
   'reload.confirm': 'Unsaved changes will be lost. Read the file again?',
 
+  'save.unreadable': 'Could not read {n} of the added pictures ({names}): the file was moved or changed. Add them again.',
   'save.failed': 'Not saved: {msg}', 'save.writing': 'Saving…', 'save.packing': 'Packing the file…', 'save.savedAs': 'Saved: {name}',
   'save.compacted': 'File compacted: deleted pictures no longer take space', 'save.compacting': 'Compacting…',
 
@@ -271,6 +274,7 @@ const EN = {
   'fmt.ul': 'List', 'fmt.ol': 'Numbered list', 'fmt.task': 'Checklist',
   'fmt.color': 'Text colour', 'fmt.noColor': 'Plain colour', 'fmt.highlight': 'Highlight', 'fmt.noHighlight': 'No highlight',
   'fmt.link': 'Link', 'fmt.linkUrl': 'Address', 'fmt.done': 'Done',
+  'fmt.linkBad': 'A link can only lead to a website (http, https) or an email address (mailto)', 'table.tooBig': 'A table holds at most {n} cells',
   'markColor.red': 'Red', 'markColor.orange': 'Orange', 'markColor.yellow': 'Yellow', 'markColor.green': 'Green',
   'markColor.blue': 'Blue', 'markColor.violet': 'Violet', 'markColor.pink': 'Pink', 'markColor.grey': 'Grey',
   'demo.title': 'Demo', 'demo.group1': 'Light', 'demo.group2': 'Colour', 'demo.group3': 'Shapes',

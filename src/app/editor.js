@@ -21,8 +21,9 @@ function spansToHtml(spans, light) {
     if (s.u) h = `<u>${h}</u>`;
     if (s.i) h = `<i>${h}</i>`;
     if (s.b) h = `<b>${h}</b>`;
-    if (s.hl) h = `<mark data-hl="${s.hl}" style="background:${HIGHLIGHT[s.hl]}">${h}</mark>`;
-    if (s.color) h = `<span data-color="${s.color}" style="color:${colors[s.color]}">${h}</span>`;
+    // colours as plain styled spans: the browser's colour commands (and Clear) change the style
+    if (s.hl) h = `<span style="background-color:${HIGHLIGHT[s.hl]}">${h}</span>`;
+    if (s.color) h = `<span style="color:${colors[s.color]}">${h}</span>`;
     if (s.link) h = `<a href="${esc(s.link)}">${h}</a>`;
     return h;
   }).join('') || '<br>';
@@ -46,7 +47,12 @@ export function blocksToHtml(blocks, light) {
       if (lists.length > level + 1) closeLists(level + 1);
       if (lists.length === level + 1 && lists[level] !== want) closeLists(level);
       if (lists.length === level + 1) html += '</li>';
-      while (lists.length < level + 1) { html += `<${want}>`; lists.push(want); }
+      while (lists.length < level + 1) {
+        // a numbered list keeps its first number ("5. five" stays 5)
+        const start = b.type === 'ol' && lists.length === level && Number.isInteger(b.n) && b.n !== 1 ? ` start="${b.n}"` : '';
+        html += `<${want}${start}>`;
+        lists.push(want);
+      }
       html += `<li${b.type === 'task' ? ` data-checked="${b.checked ? 'true' : 'false'}"` : ''}>${inner}`;
       continue;
     }
@@ -98,26 +104,29 @@ function marksOf(el, m) {
   if (tag === 'U' || /underline/.test(deco)) n.u = true;
   if (tag === 'S' || tag === 'STRIKE' || tag === 'DEL' || /line-through/.test(deco)) n.s = true;
   if (tag === 'A' && el.getAttribute('href')) n.link = el.getAttribute('href');
-  if (el.dataset?.hl && MARK_COLORS.includes(el.dataset.hl)) n.hl = el.dataset.hl;
+  // colours: the inline style first (recolouring, removing a colour and Clear change it);
+  // data-* and <mark> only from older markup
+  if (st.backgroundColor) { const h = nearest(st.backgroundColor, HL_PAIRS); if (h) n.hl = h; else delete n.hl; }
+  else if (el.dataset?.hl && MARK_COLORS.includes(el.dataset.hl)) n.hl = el.dataset.hl;
   else if (tag === 'MARK') n.hl = 'yellow';
-  else if (st.backgroundColor) { const h = nearest(st.backgroundColor, HL_PAIRS); if (h) n.hl = h; else delete n.hl; }
-  if (el.dataset?.color && MARK_COLORS.includes(el.dataset.color)) n.color = el.dataset.color;
-  else {
-    const c = (tag === 'FONT' && el.getAttribute('color')) || st.color;
-    if (c) {
-      const name = nearest(c, TEXT_PAIRS);
-      if (name) n.color = name; else delete n.color;
-    }
-  }
+  const c = st.color || (tag === 'FONT' && el.getAttribute('color'));
+  if (c) { const name = nearest(c, TEXT_PAIRS); if (name) n.color = name; else delete n.color; }
+  else if (el.dataset?.color && MARK_COLORS.includes(el.dataset.color)) n.color = el.dataset.color;
   return n;
 }
 
 const BLOCK_TAGS = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE']);
 
-/** Inline content of a node → lines of spans (BR splits lines). Nested blocks are skipped. */
+/** Inline content of a node → lines of spans (BR splits lines, and so does a "\n": Shift+Enter in pre-wrap text). Nested blocks are skipped. */
 function inlineLines(node, marks, out = [[]]) {
   for (const ch of node.childNodes) {
-    if (ch.nodeType === 3) { out[out.length - 1].push({ text: ch.nodeValue.replace(/ /g, ' ').replace(/\n/g, ' '), ...marks }); continue; }
+    if (ch.nodeType === 3) {
+      ch.nodeValue.replace(/\u00a0/g, ' ').split('\n').forEach((text, k) => {
+        if (k) out.push([]);
+        out[out.length - 1].push({ text, ...marks });
+      });
+      continue;
+    }
     if (ch.nodeType !== 1) continue;
     if (ch.tagName === 'BR') { out.push([]); continue; }
     if (BLOCK_TAGS.has(ch.tagName)) continue;
@@ -145,20 +154,22 @@ export function htmlToBlocks(root) {
       loose = [];
     };
     for (const ch of [...el.childNodes]) {
-      if (ch.nodeType === 3 || (ch.nodeType === 1 && !BLOCK_TAGS.has(ch.tagName) && ch.tagName !== 'BR')) { if (ch.nodeType === 1 || ch.nodeValue.trim() || loose.length) loose.push(ch); continue; }
+      // text, inline elements and BRs between blocks are one run of lines (a list turned off
+      // leaves "<span>a</span><br><span>b</span>": two lines, not three)
+      if (ch.nodeType === 3 || (ch.nodeType === 1 && !BLOCK_TAGS.has(ch.tagName))) { if (ch.nodeType === 1 || ch.nodeValue.trim() || loose.length) loose.push(ch); continue; }
       flushLoose();
       if (ch.nodeType !== 1) continue;
       const tag = ch.tagName;
-      if (tag === 'BR') { blocks.push({ type: ctx.quote ? 'quote' : 'p', level: 0, spans: [] }); continue; }
       if (tag === 'BLOCKQUOTE') { walk(ch, { ...ctx, quote: true }); continue; }
       if (tag === 'UL' || tag === 'OL') {
         const level = ctx.level ?? 0;
         const tasks = ch.classList.contains('tasks');
+        const start = tag === 'OL' && Number.isInteger(ch.start) ? ch.start : 1; // a numbered list may start at any number
         for (const li of ch.children) {
           if (li.tagName !== 'LI') { if (li.tagName === 'UL' || li.tagName === 'OL') walk({ childNodes: [li] }, { ...ctx, level: level + 1 }); continue; }
           const task = tasks || li.hasAttribute('data-checked');
           const lines = inlineLines(li, {});
-          pushLines(lines.length ? lines : [[]], () => (task ? { type: 'task', level, checked: li.dataset.checked === 'true' } : { type: tag === 'OL' ? 'ol' : 'ul', level, n: 1 }));
+          pushLines(lines.length ? lines : [[]], () => (task ? { type: 'task', level, checked: li.dataset.checked === 'true' } : tag === 'OL' ? { type: 'ol', level, n: start } : { type: 'ul', level }));
           for (const sub of li.children) if (sub.tagName === 'UL' || sub.tagName === 'OL') walk({ childNodes: [sub] }, { ...ctx, level: level + 1 });
         }
         continue;
@@ -170,12 +181,12 @@ export function htmlToBlocks(root) {
     flushLoose();
   };
   walk(root, {});
-  // numbered lists count on
+  // numbered lists count on from their first number (as parseMarkdown does)
   const counters = [];
   for (const b of blocks) {
     if (b.type !== 'ol') { if (b.type !== 'ul' && b.type !== 'task') counters.length = 0; continue; }
     counters.length = b.level + 1;
-    counters[b.level] = (counters[b.level] || 0) + 1;
+    counters[b.level] = counters[b.level] === undefined ? b.n : counters[b.level] + 1;
     b.n = counters[b.level];
   }
   return blocks.length ? blocks : [{ type: 'p', level: 0, spans: [] }];
@@ -185,6 +196,25 @@ function clean(s) {
   const o = { text: s.text };
   for (const k of ['b', 'i', 'u', 's', 'hl', 'color', 'link']) if (s[k]) o[k] = s[k];
   return o;
+}
+
+const LINK_SCHEMES = ['http:', 'https:', 'mailto:'];
+
+/**
+ * A link that may be set or opened: http, https or mailto (a bare address
+ * such as "example.com" gets https://). Null for anything else (javascript:,
+ * data:, file:…) — files come from other people.
+ */
+export function safeLink(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  // "localhost:8080" is a host and a port, not a scheme
+  const url = /^[a-z][a-z\d+.-]*:(?!\d)/i.test(s) ? s : `https://${s.replace(/^\/+/, '')}`;
+  try {
+    const u = new URL(url);
+    if (!LINK_SCHEMES.includes(u.protocol)) return null;
+    return /\s/.test(url) ? u.href : url;
+  } catch { return null; }
 }
 
 // ---- the editor ---------------------------------------------------------------------------------------
@@ -235,7 +265,8 @@ export class NoteEditor {
         this.#refit();
       }
       const a = e.target.closest?.('a');
-      if (a && (e.ctrlKey || e.metaKey)) window.open(a.href, '_blank', 'noopener');
+      const url = a && (e.ctrlKey || e.metaKey) && safeLink(a.getAttribute('href'));
+      if (url) window.open(url, '_blank', 'noopener');
     });
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
     el.addEventListener('wheel', (e) => { if (!e.ctrlKey) e.stopPropagation(); }, { passive: true });
@@ -319,8 +350,20 @@ export class NoteEditor {
     // Markdown shortcuts at the start of a line: "# ", "- ", "1. ", "[ ] ", "> "
     // (after the event: the browser refuses editing commands nested inside another one)
     if (e.inputType === 'insertText' && e.data === ' ') setTimeout(() => { if (this.el) { this.#shortcut(); this.#refit(); } });
+    if (e.inputType === 'insertParagraph') this.#untickNew();
     this.#refit();
     this.onChange?.();
+  }
+
+  /** Enter in a ticked task: the browser copies the tick into the new, empty item — a new task starts unticked. */
+  #untickNew() {
+    const n = document.getSelection()?.anchorNode;
+    const li = (n?.nodeType === 1 ? n : n?.parentElement)?.closest?.('li');
+    if (!li || !this.el.contains(li)) return;
+    // its own text (not that of the items nested in it)
+    const empty = (x) => x?.tagName === 'LI' && ![...x.childNodes].some((c) => !(c.nodeType === 1 && /^(UL|OL)$/.test(c.tagName)) && c.textContent.trim());
+    // Enter at the end: the caret is in the new item; at the start: the new item is the one above
+    for (const x of [li, li.previousElementSibling]) if (empty(x) && x.dataset.checked === 'true') x.dataset.checked = 'false';
   }
 
   #shortcut() {
@@ -347,6 +390,8 @@ export class NoteEditor {
   }
 
   #key(e) {
+    // typing through an IME (Japanese, Chinese…): its Escape, Enter and Tab are its own
+    if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
     if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.close(); return; }
     if (e.key === 'Tab' && this.item?.type === 'cell' && this.onTab) { e.preventDefault(); e.stopPropagation(); this.onTab(e.shiftKey); return; }
@@ -356,8 +401,11 @@ export class NoteEditor {
       return;
     }
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.shiftKey && e.key.toLowerCase() === 'x') { e.preventDefault(); this.command('strike'); }
-    if (mod && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); this.command('highlight', 'yellow'); }
+    const k = e.key.toLowerCase();
+    if (mod && e.shiftKey && k === 'x') { e.preventDefault(); this.command('strike'); }
+    if (mod && e.shiftKey && k === 'h') { e.preventDefault(); this.command('highlight', 'yellow'); }
+    // Ctrl+S / Ctrl+O are the app's (save, open), not the browser's dialogs
+    if (mod && !e.altKey && (k === 's' || k === 'o')) return;
     e.stopPropagation();
   }
 

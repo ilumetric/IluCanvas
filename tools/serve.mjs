@@ -10,7 +10,8 @@
 //   GET  /__ilucanvas/list            { files: [.ilucanvas and .pur paths] }
 //   GET  /__ilucanvas/stat?path=p     { mtime, size }
 //   GET  /__ilucanvas/file?path=p     the file
-//   POST /__ilucanvas/write?path=p&at=N   keep the first N bytes, write the body after them
+//   POST /__ilucanvas/write?path=p&at=N[&size=S&mtime=M]   keep the first N bytes, write the body after them
+//        (with size / mtime: only if the file is still that one, else 409 — it changed meanwhile)
 //
 // Safety: 127.0.0.1 only; the Host header must be this server; writes need the
 // X-IluCanvas header (no page on another site can send it without a CORS
@@ -50,11 +51,9 @@ function parseArgs(argv) {
   return out;
 }
 
-/** A path inside `root`, or null when it would leave it or enter a dot folder. */
+/** A path inside `root`, or null when it would leave it or enter a dot folder. `rel` is decoded already. */
 function inside(root, rel) {
-  let p;
-  try { p = decodeURIComponent(rel); } catch { return null; }
-  p = p.replace(/\\/g, '/').replace(/^\/+/, '');
+  const p = String(rel).replace(/\\/g, '/').replace(/^\/+/, '');
   if (p.split('/').some((seg) => seg === '..' || (seg.startsWith('.') && seg !== '.'))) return null;
   const abs = path.resolve(root, p);
   const r = path.resolve(root);
@@ -99,18 +98,28 @@ async function api(req, res, url, folder) {
     try { const s = await fsp.stat(abs); return send(res, 200, { mtime: s.mtimeMs, size: s.size }); } catch { return send(res, 404, { error: 'not found' }); }
   }
   if (name === 'file' && req.method === 'GET') {
-    try {
-      const s = await fsp.stat(abs);
-      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': s.size, 'Cache-Control': 'no-store', 'X-Mtime': String(s.mtimeMs) });
-      return fs.createReadStream(abs).pipe(res);
-    } catch { return send(res, 404, { error: 'not found' }); }
+    let fh;
+    try { fh = await fsp.open(abs, 'r'); } catch { return send(res, 404, { error: 'not found' }); }
+    // size and time of the very file sent (it may be replaced meanwhile by a save)
+    const s = await fh.stat();
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': s.size, 'Cache-Control': 'no-store', 'X-Mtime': String(s.mtimeMs) });
+    const stream = fh.createReadStream({ end: Math.max(0, s.size - 1) });
+    stream.on('error', () => res.destroy());
+    return stream.pipe(res);
   }
   if (name === 'write' && req.method === 'POST') {
     if (req.headers['x-ilucanvas'] !== '1') return send(res, 403, { error: 'missing X-IluCanvas header' });
     if (!/\.ilucanvas$/i.test(abs)) return send(res, 403, { error: 'only .ilucanvas files can be written' });
     const at = Math.max(0, Number(url.searchParams.get('at')) || 0);
+    const size = url.searchParams.get('size');
+    const mtime = url.searchParams.get('mtime');
+    if (size !== null) {
+      // the save was planned on this file: not if an agent (the CLI) wrote it meanwhile
+      const s = await fsp.stat(abs).catch(() => null);
+      if (!s || s.size !== Number(size) || (mtime !== null && Math.abs(s.mtimeMs - Number(mtime)) > 1)) return send(res, 409, { error: 'the file changed on disk' });
+    }
     await fsp.mkdir(path.dirname(abs), { recursive: true });
-    const tmp = `${abs}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${abs}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
     try {
       if (at > 0) {
         // keep the first `at` bytes of the current file
@@ -142,7 +151,8 @@ async function api(req, res, url, folder) {
 /** The app's own files first, then the folder. */
 async function serveStatic(req, res, url, folder) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'method not allowed');
-  let rel = url.pathname;
+  let rel;
+  try { rel = decodeURIComponent(url.pathname); } catch { return send(res, 400, 'bad path'); }
   if (rel.endsWith('/')) rel += 'index.html';
   for (const root of folder === APP_ROOT ? [APP_ROOT] : [APP_ROOT, folder]) {
     const abs = inside(root, rel);

@@ -16,6 +16,7 @@ import { drawShapeBody, drawConnector, connectorWidth } from './shapes.js';
 import { strokeHits, strokeInRect } from '../core/ink.js';
 import { drawStroke, drawLive } from './ink.js';
 import { drawTable, tableLayout, cellAt } from './table.js';
+import { safeLink } from './editor.js';
 import { resizeCol, resizeRow, TABLE_MIN } from '../core/table.js';
 
 /** Tools that make things by clicking / dragging on the board. */
@@ -101,6 +102,9 @@ export class Board {
     this.stats = { drawn: 0, ms: 0 };
     this.#bind();
     new ResizeObserver(() => this.invalidate()).observe(stage);
+    // the window moved to a screen with another pixel density: same size in CSS px, other pixels
+    const dprWatch = () => matchMedia(`(resolution: ${devicePixelRatio || 1}dppx)`).addEventListener('change', () => { this.invalidate(); this.cb.view?.(); dprWatch(); }, { once: true });
+    dprWatch();
   }
 
   // ---- state -------------------------------------------------------------------------------
@@ -170,6 +174,23 @@ export class Board {
     this.cells = null;
     this.invalidateOverlay();
     this.cb.selection?.();
+  }
+
+  /**
+   * Give up a gesture that is changing the items (moving, resizing, erasing…):
+   * they go back to how they were. For a reload from outside (its items belong
+   * to the old document).
+   */
+  cancelDrag() {
+    const d = this.drag;
+    if (!d?.before) return;
+    this.drag = null;
+    clearTimeout(this.pressTimer);
+    this.doc.items = d.before;
+    this.stage.classList.remove('panning', 'zooming');
+    try { this.stage.releasePointerCapture(d.pointer); } catch { /* released */ }
+    this.pruneSelection();
+    this.invalidate();
   }
 
   /** Drop selected ids that no longer exist (after undo, reload). */
@@ -312,6 +333,8 @@ export class Board {
     this.labelRects = [];
     if (!this.doc) { this.images.flush(); return; }
     const vis = this.visibleWorld(2);
+    // for what reaches out of its box: group name tags, connector labels and arrowheads, shape outlines
+    const wide = this.visibleWorld(120);
     const theme = this.theme;
     const k = z * dpr;
     ctx.setTransform(k, 0, 0, k, vx * dpr, vy * dpr);
@@ -333,7 +356,7 @@ export class Board {
     // groups below everything, outer ones first
     const labels = [];
     for (const g of groupsByDepth(this.doc)) {
-      if (!intersects(g, vis)) continue;
+      if (!intersects(g, wide)) continue;
       const col = theme.colors[g.color] || theme.colors.grey;
       const r = Math.min(theme.rOuter / z, g.w / 2, g.h / 2);
       ctx.beginPath();
@@ -354,13 +377,13 @@ export class Board {
       if (it.type === 'group') continue;
       if (it.type === 'connector') {
         const path = connectorPath(it, look);
-        if (!intersects(pathBounds(path.pts), vis)) continue;
+        if (!intersects(pathBounds(path.pts), wide)) continue;
         drawn++;
         drawConnector(ctx, it, look, { px: k, theme, family: theme.font, path });
         continue;
       }
       const b = it.rot ? itemBounds(it) : it;
-      if (!intersects(b, vis)) continue;
+      if (!intersects(b, it.type === 'shape' ? wide : vis)) continue;
       drawn++;
       if (it.type === 'stroke' || it.type === 'note' || it.type === 'shape') {
         // turned about their centre (like images)
@@ -394,7 +417,9 @@ export class Board {
         continue;
       }
       const natural = a ? Math.max(a.w || 0, a.h || 0) : 0;
-      const level = levelFor(px, natural || LEVELS[3]);
+      // cropped: only part of the bitmap fills the box, so it needs that many more pixels
+      const cropK = it.crop && a?.w > 0 && a?.h > 0 && it.crop.w > 0 && it.crop.h > 0 ? Math.max(a.w / it.crop.w, a.h / it.crop.h) : 1;
+      const level = levelFor(px * cropK, natural || LEVELS[3]);
       const bmp = this.images.get(it.asset, level);
       // nearest to the centre of the screen first; anything not shown at all before refinements
       const s = this.toScreen(b.x + b.w / 2, b.y + b.h / 2);
@@ -1053,7 +1078,8 @@ export class Board {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (!LINKABLE.has(it.type) || it.id === not || it.id === self) continue;
-      if (p.x >= it.x - pad && p.y >= it.y - pad && p.x <= it.x + it.w + pad && p.y <= it.y + it.h + pad) return it;
+      const q = unturn(it, p);
+      if (q.x >= it.x - pad && q.y >= it.y - pad && q.x <= it.x + it.w + pad && q.y <= it.y + it.h + pad) return it;
     }
     return null;
   }
@@ -1098,7 +1124,13 @@ export class Board {
     for (const t of ['gesturestart', 'gesturechange', 'gestureend']) st.addEventListener(t, gesture, { passive: false });
     document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
     addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && !e.repeat && !isTyping(e.target)) { this.space = true; this.stage.classList.add('panning-ready'); if (e.target === document.body) e.preventDefault(); }
+      if (e.code === 'Space' && !e.repeat && !isTyping(e.target)) {
+        this.space = true;
+        this.stage.classList.add('panning-ready');
+        if (e.target === document.body) e.preventDefault();
+        // a button clicked a moment ago keeps the focus: Space would press it again
+        else if (e.target.closest?.('button, [role=button]') && !e.target.closest('dialog, .menu')) { e.preventDefault(); e.target.blur(); }
+      }
     });
     addEventListener('keyup', (e) => { if (e.code === 'Space') { this.space = false; this.stage.classList.remove('panning-ready'); } });
     addEventListener('blur', () => { this.space = false; this.stage.classList.remove('panning-ready'); });
@@ -1142,15 +1174,31 @@ export class Board {
 
   #down(e) {
     this.anim = null;
+    // the last drag of this pointer never saw its button go up (released in another window): it ends now
+    if (this.drag && this.drag.pointer === e.pointerId) this.#up(e);
     // palm rejection: while a stylus is on the board, fingers do nothing
     if (e.pointerType === 'touch' && this.penDown !== undefined && this.penDown !== null) return;
-    if (e.pointerType === 'pen') this.penSeen = true;
+    if (e.pointerType === 'pen') {
+      this.penSeen = true;
+      // a palm that came down first: the pencil wins (no pinch with it, no pan by it)
+      for (const [id, q] of this.pointers) {
+        if (!q.touch) continue;
+        this.pointers.delete(id);
+        if (this.drag?.pointer === id) {
+          const d = this.drag;
+          this.drag = null;
+          this.stage.classList.remove('panning', 'zooming');
+          if (d.before) { this.doc.items = d.before; this.invalidate(); }
+        }
+      }
+      if (this.pointers.size < 2) this.pinch = null;
+    }
     this.lastType = e.pointerType;
     this.coarse = e.pointerType !== 'mouse';
     this.pressedAt = performance.now();
     clearTimeout(this.pressTimer);
     if (document.activeElement && isTyping(document.activeElement)) document.activeElement.blur();
-    this.pointers.set(e.pointerId, this.#local(e));
+    this.pointers.set(e.pointerId, { ...this.#local(e), touch: e.pointerType === 'touch' });
     if (this.pointers.size === 2) { this.#startPinch(); return; }
     if (this.pointers.size > 2) return;
     const p = this.#local(e);
@@ -1276,10 +1324,11 @@ export class Board {
   }
 
   #move(e) {
-    if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, this.#local(e));
+    if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { ...this.#local(e), touch: e.pointerType === 'touch' });
     if (this.pinch) { this.#pinchMove(); return; }
     const p = this.#local(e);
     const d = this.drag;
+    if (d && d.pointer === e.pointerId && e.pointerType === 'mouse' && e.buttons === 0) { this.#up(e); return; }
     if (!d || d.pointer !== e.pointerId) {
       if (this.tool === 'eraser' && e.pointerType !== 'touch' && !e.buttons) { this.cursorPt = p; this.invalidateOverlay(); }
       if (e.pointerType === 'mouse' && !e.buttons) { this.coarse = false; this.#hover(p); }
@@ -1454,7 +1503,8 @@ export class Board {
         const p = unturn(it, { x: d.wx, y: d.wy });
         const box = !this.readOnly && checkAt(it, p, this.theme.font);
         if (box) { this.cb.toggleTask?.(it.id, box.block); this.invalidateOverlay(); return; }
-        const link = d.ctrl && linkAt(it, p, this.theme.font);
+        // web and mail links only (a shared board's note could hold javascript: or data:)
+        const link = d.ctrl && safeLink(linkAt(it, p, this.theme.font));
         if (link) { window.open(link, '_blank', 'noopener'); this.invalidateOverlay(); return; }
       }
     }
@@ -1701,8 +1751,10 @@ export class Board {
         const cols = s0.cols.map((v) => Math.max(min, (v * (x2 - x)) / s0.w));
         const rows = s0.rows.map((v) => Math.max(min, (v * (y2 - y)) / s0.h));
         const w2 = cols.reduce((a, b) => a + b, 0);
+        const h2 = Math.max(y2 - y, rows.reduce((a, b) => a + b, 0));
         if (d.handle.includes('w')) x = x2 - w2;
-        patch = new Map([[id, { x, y, w: w2, h: Math.max(y2 - y, rows.reduce((a, b) => a + b, 0)), cols, rows }]]);
+        if (d.handle.includes('n')) y = y2 - h2;
+        patch = new Map([[id, { x, y, w: w2, h: h2, cols, rows }]]);
       }
     } else {
       // uniform scale from the opposite corner (images keep their aspect)
@@ -1743,8 +1795,11 @@ export class Board {
 
   #startPinch() {
     clearTimeout(this.pressTimer);
-    if (this.drag?.type === 'move' && this.drag.moved) this.doc.items = this.drag.before;
+    // a second finger: what the first one was doing (moving, resizing, erasing…) is undone
+    const d = this.drag;
     this.drag = null;
+    this.stage.classList.remove('panning', 'zooming');
+    if (d?.before) { this.doc.items = d.before; this.pruneSelection(); this.invalidate(); }
     const [a, b] = [...this.pointers.values()];
     this.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), c: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, view: { ...this.view } };
   }
@@ -1799,9 +1854,10 @@ function unturn(it, p) {
 
 /** The side of `it` whose middle is near board point `p` (within 24 px on screen), if any. */
 function sideNear(it, p, z) {
-  const s = nearestSide(it, p);
+  const u = unturn(it, p); // sides are the item's own (connectors.js turns them with it)
+  const s = nearestSide(it, u);
   const q = sidePoint(it, s);
-  return Math.hypot(q.x - p.x, q.y - p.y) * z <= 24 ? s : null;
+  return Math.hypot(q.x - u.x, q.y - u.y) * z <= 24 ? s : null;
 }
 
 function inItem(it, p) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMarkdown, toMarkdown, parseInline, plainText } from '../src/core/markdown.js';
+import { parseMarkdown, toMarkdown, parseInline, plainText, merge } from '../src/core/markdown.js';
 
 const spans = (md) => parseInline(md);
 
@@ -54,6 +54,43 @@ test('writing blocks made by an editor', () => {
   assert.equal(back[2].type, 'task');
   assert.deepEqual(back[2].spans, [{ text: 'ok', color: 'green' }]);
   assert.deepEqual(back[3].spans, [{ text: 'x == y and ~~ and _under_score' }]);
+});
+
+const p = (spans) => [{ type: 'p', level: 0, spans }];
+
+test('marks written back: the longer run opens first, overlapping runs read back', () => {
+  const warm = [{ text: 'Warm', b: true, i: true }, { text: ' key light', i: true }];
+  assert.equal(toMarkdown(p(warm)), '***Warm** key light*');
+  assert.deepEqual(parseInline('***Warm** key light*'), warm);
+  const overlap = [{ text: 'a', b: true }, { text: 'b', b: true, i: true }, { text: 'c', i: true }];
+  assert.deepEqual(parseMarkdown(toMarkdown(p(overlap)))[0].spans, overlap);
+  // every mix of bold / italic / strike / underline / highlight over a few spans
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const sorted = (spans) => spans.map((s) => Object.fromEntries(Object.entries(s).sort()));
+  for (let n = 0; n < 3000; n++) {
+    const spans = Array.from({ length: 1 + Math.floor(rnd() * 5) }, () => {
+      const s = { text: ['a', 'b c', ' x ', 'Warm'][Math.floor(rnd() * 4)] };
+      for (const k of ['b', 'i', 's', 'u', 'hl']) if (rnd() < 0.4) s[k] = k === 'hl' ? 'yellow' : true;
+      return s;
+    });
+    const md = toMarkdown(p(spans));
+    assert.deepEqual(sorted(parseMarkdown(md)[0].spans), sorted(merge(spans)), `${JSON.stringify(spans)} → ${md}`);
+  }
+});
+
+test('links with brackets or spaces stay links; literal stars, tildes and indents stay text', () => {
+  const md = toMarkdown(p([{ text: 'Mercury', link: 'https://en.wikipedia.org/wiki/Mercury_(planet)' }, { text: ' and ' }, { text: 'site', link: 'https://x.io/a b' }]));
+  assert.equal(md, '[Mercury](https://en.wikipedia.org/wiki/Mercury_%28planet%29) and [site](https://x.io/a%20b)');
+  assert.deepEqual(parseInline(md), [{ text: 'Mercury', link: 'https://en.wikipedia.org/wiki/Mercury_%28planet%29' }, { text: ' and ' }, { text: 'site', link: 'https://x.io/a%20b' }]);
+  for (const spans of [
+    [{ text: '*aa' }, { text: 'b', i: true }],
+    [{ text: 'a~' }, { text: 'b', s: true }, { text: '~' }],
+    [{ text: 'x=' }, { text: 'y', hl: 'yellow' }],
+    [{ text: '  - not a list' }],
+    [{ text: ' 1. not numbered' }],
+    [{ text: '   ' }, { text: ' x', i: true }],
+  ]) assert.deepEqual(parseMarkdown(toMarkdown(p(spans)))[0], p(merge(spans))[0], JSON.stringify(spans));
 });
 
 test('toggleTask ticks one checklist line', async () => {

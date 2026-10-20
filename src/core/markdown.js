@@ -49,7 +49,8 @@ function parseLine(line) {
   if (m) return { type: 'ul', level: indent(m[1]), spans: parseInline(m[2]) };
   m = line.match(/^( *)(\d{1,6})[.)] (.*)$/);
   if (m) return { type: 'ol', level: indent(m[1]), n: Number(m[2]), spans: parseInline(m[3]) };
-  return { type: 'p', level: 0, spans: parseInline(line.replace(/^\\(?=[#>\-*+]|\d+[.)] )/, '')) };
+  // a "\" that keeps a paragraph from being a block goes; "\*" not before a space escapes a literal star
+  return { type: 'p', level: 0, spans: parseInline(line.replace(/^\\(?=[#>\-+]|\* |\d+[.)] | +(?:[-*+] |\d+[.)] ))/, '')) };
 }
 
 const indent = (s) => Math.min(4, Math.floor(s.length / 2));
@@ -152,13 +153,17 @@ export function merge(spans) {
 // ---- write ---------------------------------------------------------------------------------
 
 const escapeText = (t) => t.replace(/([\\*[\]~=<_])/g, (m, c, off, all) => {
-  if (c === '~' || c === '=') return all[off + 1] === c || all[off - 1] === c ? `\\${c}` : c;
+  // a ~ or = next to another, or at an edge (a ~~ / == of the neighbouring span may touch it)
+  if (c === '~' || c === '=') return all[off + 1] === c || all[off - 1] === c || off === 0 || off === all.length - 1 ? `\\${c}` : c;
   if (c === '<') return /^<\/?u>/.test(all.slice(off, off + 4)) ? `\\${c}` : c;
   if (c === '_') return /\w/.test(all[off - 1] || '') && /\w/.test(all[off + 1] || '') ? c : `\\${c}`;
   return `\\${c}`;
 });
 
-/** Spans → inline Markdown. Marks open and close around runs like a stack, so nesting stays valid. */
+/** A link's URL inside `(…)`: brackets and spaces percent-encoded (the same address; it would end the link otherwise). */
+const linkUrl = (url) => url.replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29')).replace(/\s/g, encodeURIComponent);
+
+/** Spans → inline Markdown. Marks open and close around runs like a stack, so nesting stays valid (runs that overlap: see marksToMarkdown). */
 export function inlineToMarkdown(spans) {
   let out = '';
   // runs of spans that share link / colour / non-yellow highlight become one [..]{} or [..]() group
@@ -170,7 +175,7 @@ export function inlineToMarkdown(spans) {
     const inner = marksToMarkdown(group);
     const g = group[0];
     const classes = [g.color ? `.${g.color}` : '', g.hl && g.hl !== 'yellow' ? `.hl-${g.hl}` : ''].filter(Boolean);
-    if (g.link) out += `[${classes.length ? `[${inner}]{${classes.join(' ')}}` : inner}](${g.link})`;
+    if (g.link) out += `[${classes.length ? `[${inner}]{${classes.join(' ')}}` : inner}](${linkUrl(g.link)})`;
     else if (classes.length) out += `[${inner}]{${classes.join(' ')}}`;
     else out += inner;
     i = j;
@@ -186,13 +191,13 @@ function marksToMarkdown(spans) {
   let out = '';
   const stack = [];
   const has = (s, k) => (k === 'hl' ? s.hl === 'yellow' : !!s[k]);
-  for (const s of spans) {
-    // close down to the first mark this span does not have
-    let keep = 0;
-    while (keep < stack.length && has(s, stack[keep])) keep++;
-    for (let k = stack.length - 1; k >= keep; k--) out += CLOSE[stack[k]];
-    stack.length = keep;
-    for (const k of ORDER) if (has(s, k) && !stack.includes(k)) { out += OPEN[k]; stack.push(k); }
+  for (const [i, s] of spans.entries()) {
+    // close the marks this span does not have (marks toggle: when runs overlap, **a*b**c*, one
+    // closes out of order rather than being closed and opened again — "****" would not read back)
+    for (let k = stack.length - 1; k >= 0; k--) if (!has(s, stack[k])) { out += CLOSE[stack[k]]; stack.splice(k, 1); }
+    // open the marks that run on longest first: they close last (***a** b* — not ***a**** b*)
+    const run = (k) => { let j = i; while (j < spans.length && has(spans[j], k)) j++; return j - i; };
+    for (const k of ORDER.filter((k) => has(s, k) && !stack.includes(k)).sort((a, b) => run(b) - run(a))) { out += OPEN[k]; stack.push(k); }
     out += escapeText(s.text);
   }
   for (let k = stack.length - 1; k >= 0; k--) out += CLOSE[stack[k]];
@@ -212,7 +217,7 @@ export function toMarkdown(blocks) {
       case 'ul': return `${pad}- ${text}`;
       case 'ol': return `${pad}${b.n || 1}. ${text}`;
       case 'task': return `${pad}- [${b.checked ? 'x' : ' '}] ${text}`;
-      default: return /^([#>]|[-*+] |\d+[.)] )/.test(text) ? `\\${text}` : text;
+      default: return /^([#>]|[-*+] |\d+[.)] | +(?:[-*+] |\d+[.)] ))/.test(text) ? `\\${text}` : text;
     }
   }).join('\n');
 }

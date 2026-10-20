@@ -1,6 +1,9 @@
 // Where canvases come from and go to. A "source" is
 //   { kind, name, path, writable, atomic, getFile() → File|Blob, stat() → { mtime, size } | null,
-//     write(plan) → { mtime, size }, handle? }
+//     write(plan, base, expect?) → { mtime, size }, handle? }
+// expect: { size, mtime } of the file the plan was made from. When the file on
+// disk is not that one any more (an agent wrote it meanwhile), nothing is written
+// and the error has `changed` set: the caller reads it again and saves again.
 // kinds:
 //   fsa    — a file handle (File System Access API, Chrome / Edge). Writes go to
 //            the browser's swap file and replace the file atomically on close.
@@ -11,7 +14,7 @@
 // Remembered folders and recent files (their handles) live in IndexedDB, and so
 // does the folder for boards downloaded from links (settings: linksDir).
 
-import { opfsSupported, opfsAtomic, opfsDir, opfsWrite, opfsRemove, opfsList } from './opfs.js';
+import { opfsSupported, opfsAtomic, opfsDir, opfsWrite, opfsRemove, opfsList, changedSince, changedError } from './opfs.js';
 import { readZip, blobReader } from '../core/zip.js';
 import { readTitle } from '../core/canvasfile.js';
 
@@ -48,10 +51,14 @@ export function fsaSource(handle, path = handle.name) {
     kind: 'fsa', name: handle.name, path, handle, writable: true, atomic: true,
     async getFile() { return handle.getFile(); },
     async stat() { try { const f = await handle.getFile(); return { mtime: f.lastModified, size: f.size }; } catch { return null; } },
-    async write(plan, base) {
+    async write(plan, base, expect = null) {
       if (!(await ensurePermission(handle, 'readwrite'))) throw new Error('permission');
       const w = await handle.createWritable({ keepExistingData: plan.mode !== 'full' });
-      try { await writePlan(w, plan, base); } catch (e) { await w.abort?.().catch(() => {}); throw e; }
+      try {
+        // the swap file is a copy of the file as it is now: it must be the one the plan was made from
+        if (expect && changedSince(await handle.getFile(), expect)) throw changedError();
+        await writePlan(w, plan, base);
+      } catch (e) { await w.abort?.().catch(() => {}); throw e; }
       await w.close();
       const f = await handle.getFile();
       return { mtime: f.lastModified, size: f.size };
@@ -120,9 +127,13 @@ export function localSource(entry) {
     kind: 'local', name: `${entry.title || 'Canvas'}.ilucanvas`, path: null, writable: true, atomic: opfsAtomic(), key: entry.key, entry,
     async getFile() { return (await (await opfsDir(...BOARDS)).getFileHandle(entry.name)).getFile(); },
     async stat() { try { const f = await src.getFile(); return { mtime: f.lastModified, size: f.size }; } catch { return null; } },
-    async write(plan, base) {
+    async write(plan, base, expect = null) {
       const chunks = plan.chunks.map((c) => (c.range ? base.slice(c.range[0], c.range[0] + c.range[1]) : c));
       let f;
+      if (expect && plan.mode === 'full' && !src.atomic) {
+        const now = await src.stat();
+        if (now && changedSince(now, expect)) throw changedError();
+      }
       if (plan.mode === 'full' && !src.atomic && (await src.stat())?.size) {
         // in place, a rewrite from 0 would overwrite what it copies: a new file, then the old one goes
         const next = `${entry.key}~${entry.gen + 1}.ilucanvas`;
@@ -131,7 +142,7 @@ export function localSource(entry) {
         entry.gen += 1;
         entry.name = next;
         await opfsRemove(BOARDS, old);
-      } else f = await opfsWrite(BOARDS, entry.name, plan.at, chunks, { keep: plan.mode !== 'full' });
+      } else f = await opfsWrite(BOARDS, entry.name, plan.at, chunks, { keep: plan.mode !== 'full', expect });
       return { mtime: f.lastModified, size: f.size };
     },
   };
@@ -291,9 +302,11 @@ export function serverSource(path) {
       const r = await fetch(`${API}stat?${q}`, { cache: 'no-store' });
       return r.ok ? r.json() : null;
     },
-    async write(plan, base) {
+    async write(plan, base, expect = null) {
       const parts = plan.chunks.map((c) => (c.range ? base.slice(c.range[0], c.range[0] + c.range[1]) : c));
-      const r = await fetch(`${API}write?${q}&at=${plan.mode === 'full' ? 0 : plan.at}`, { method: 'POST', body: new Blob(parts), headers: { 'X-IluCanvas': '1' } });
+      const check = expect ? `&size=${expect.size}${expect.mtime != null ? `&mtime=${expect.mtime}` : ''}` : '';
+      const r = await fetch(`${API}write?${q}&at=${plan.mode === 'full' ? 0 : plan.at}${check}`, { method: 'POST', body: new Blob(parts), headers: { 'X-IluCanvas': '1' } });
+      if (r.status === 409) throw changedError();
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       return r.json();
     },

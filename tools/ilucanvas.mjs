@@ -39,9 +39,11 @@ Write (re-read → change → write; the open app picks the change up within sec
   new <file> [--title T]                create an empty canvas (refuses to overwrite)
   add <file> <image|folder|url>…        add images; folders are read recursively
         [--group ID | --new-group NAME] [--at X,Y] [--max 1200] [--name N]
-        default place: right of everything (or at the bottom of --group)
+        default place: right of everything (or at the bottom of --group);
+        --name: the file name for a single image (a URL's own name is often poor)
   set <file> <id|canvas> key=value…     ${EDITABLE_KEYS.join(' ')}; canvas: title
   move <file> <id>… (--by DX,DY | --to X,Y)
+                                        --by X,Y moves by an offset (--by agent|human may come too)
   shape <file> <kind> ["text"] [--fill C] [--stroke C] [--stroke-width W] [--dash]
         [--at X,Y] [--w W] [--h H] [--group ID]
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
@@ -74,13 +76,19 @@ Write (re-read → change → write; the open app picks the change up within sec
 Options
   --by agent|human   recorded in updated_by (default agent)
   --json             machine-readable output (ls, info, add, apply)
-  --version, --help
+  --version (-v), --help (-h)
+Exit codes: 0 done; 1 an error (a bad file, the file changed meanwhile); 2 a bad command,
+  option, field or id — nothing was written
 Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 `;
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'no_copy', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'no_copy']);
+/** -h and -v alone; --h / --w are sizes (shape --h 200). */
+const SHORT = { '-h': 'help', '-v': 'version' };
+
+const PAIR = /^\s*(-?[\d.]+)\s*[,;x ]\s*(-?[\d.]+)\s*$/;
 
 function parseArgs(argv) {
   const pos = [];
@@ -88,7 +96,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { pos.push(...argv.slice(i + 1)); break; }
-    if (a.startsWith('--') || /^-[a-z]$/.test(a)) {
+    if (SHORT[a]) opt[SHORT[a]] = true;
+    else if (a.startsWith('--') || /^-[a-z]$/.test(a)) {
       let key = a.replace(/^--?/, '');
       let val;
       const eq = key.indexOf('=');
@@ -99,6 +108,8 @@ function parseArgs(argv) {
         else if (i + 1 < argv.length) val = argv[++i];
         else throw new UsageError(`option --${key} needs a value`);
       }
+      // --by is the author (agent | human), and for move an offset X,Y: both can be given
+      if (key === 'by' && PAIR.test(String(val))) key = 'offset';
       opt[key] = val;
     } else pos.push(a);
   }
@@ -106,7 +117,7 @@ function parseArgs(argv) {
 }
 
 const pair = (s, what) => {
-  const m = String(s).match(/^\s*(-?[\d.]+)\s*[,;x ]\s*(-?[\d.]+)\s*$/);
+  const m = String(s).match(PAIR);
   if (!m) throw new UsageError(`${what} must be "X,Y"`);
   return [Number(m[1]), Number(m[2])];
 };
@@ -115,9 +126,10 @@ const pair = (s, what) => {
 
 function nodeReader(file) {
   const fd = fs.openSync(file, 'r');
-  const size = fs.fstatSync(fd).size;
+  const { size, mtimeMs } = fs.fstatSync(fd);
   return {
     size,
+    mtimeMs,
     fd,
     async read(offset, length) {
       const len = Math.max(0, Math.min(length, size - offset));
@@ -161,10 +173,21 @@ async function writeChunk(fd, chunk, pos, src) {
   return writeChunk(fd, new Uint8Array(await chunk.arrayBuffer()), pos, src); // Blob
 }
 
+/** Refuse to write over a file someone else (the app) saved since we read it: their change would be lost. */
+function checkUnchanged(c) {
+  if (!c.reader) return;
+  let st;
+  try { st = fs.statSync(c.file); } catch { st = null; }
+  if (!st || st.size !== c.reader.size || st.mtimeMs !== c.reader.mtimeMs) {
+    throw new Error(`${c.file} changed while this command ran (saved by the app?) — nothing was written; run it again`);
+  }
+}
+
 /**
  * Write `doc` (+ new files) back. Small files and compaction: a new file
  * renamed over the old one. Big files: appended in place (nothing existing is
- * overwritten, so a crash cannot damage what was there).
+ * overwritten, so a crash cannot damage what was there). Nothing is written
+ * when the file changed since it was read.
  */
 async function save(c, doc, { add = new Map(), mode } = {}) {
   const size = c.reader?.size ?? 0;
@@ -173,15 +196,22 @@ async function save(c, doc, { add = new Map(), mode } = {}) {
   const plan = await planSave({ base: c.index ? { index: c.index, reader: c.reader } : null, doc, add, mode });
   if (plan.mode === 'full') {
     const tmp = `${c.file}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmp, 'w');
     try {
-      let pos = 0;
-      for (const ch of plan.chunks) pos = await writeChunk(fd, ch, pos, c.reader);
-      fs.fsyncSync(fd);
-    } finally { fs.closeSync(fd); }
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        let pos = 0;
+        for (const ch of plan.chunks) pos = await writeChunk(fd, ch, pos, c.reader);
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+      checkUnchanged(c);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* not made */ }
+      throw e;
+    }
     c.reader?.close();
     renameRetry(tmp, c.file);
   } else {
+    checkUnchanged(c);
     c.reader.close();
     const fd = fs.openSync(c.file, 'r+');
     const src = nodeReader(c.file);
@@ -235,27 +265,30 @@ async function fetchImage(url) {
   return { bytes, name, source: url };
 }
 
-/** Turn files / urls (or fetched { bytes, name, source }) into asset records + bytes. Duplicates (same content) are reused. */
-async function gatherImages(doc, inputs) {
+/**
+ * Turn files / urls (or fetched { bytes, name, source }) into asset records + bytes. Duplicates (same content) are reused.
+ * `name`: the file name of a single image (`add --name`).
+ */
+async function gatherImages(doc, inputs, { name: rename = null } = {}) {
   const taken = takenPaths(doc);
   const out = [];
   const add = new Map();
-  for (const input of inputs) {
-    const sources = typeof input === 'object' ? [input] : /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }));
-    for (const s of sources) {
-      const bytes = s.bytes || new Uint8Array(fs.readFileSync(s.file));
-      const name = s.name || path.basename(s.file);
-      const info = imageInfo(bytes);
-      if (!info) { process.stderr.write(`skipped (not a supported image): ${s.file || s.source}\n`); continue; }
-      const sha = createHash('sha256').update(bytes).digest('hex');
-      const id = assetIdFromSha(sha);
-      if (!doc.assets[id] && !add.has(id)) {
-        const file = assetPath(name, info.ext, taken);
-        doc.assets[id] = { file, type: info.type, w: info.w, h: info.h, bytes: bytes.length, sha256: sha, name, source: s.source || null, added: now() };
-        add.set(file, { data: bytes, crc: crc32(bytes) });
-      }
-      out.push({ asset: id, w: doc.assets[id].w, h: doc.assets[id].h, name });
+  const sources = [];
+  for (const input of inputs) sources.push(...(typeof input === 'object' ? [input] : /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }))));
+  need(!rename || sources.length <= 1, `--name is for a single image (${sources.length} found)`);
+  for (const s of sources) {
+    const bytes = s.bytes || new Uint8Array(fs.readFileSync(s.file));
+    const name = rename ? String(rename) : s.name || path.basename(s.file);
+    const info = imageInfo(bytes);
+    if (!info) { process.stderr.write(`skipped (not a supported image): ${s.file || s.source}\n`); continue; }
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    const id = assetIdFromSha(sha);
+    if (!doc.assets[id] && !add.has(id)) {
+      const file = assetPath(name, info.ext, taken);
+      doc.assets[id] = { file, type: info.type, w: info.w, h: info.h, bytes: bytes.length, sha256: sha, name, source: s.source || null, added: now() };
+      add.set(file, { data: bytes, crc: crc32(bytes) });
     }
+    out.push({ asset: id, w: doc.assets[id].w, h: doc.assets[id].h, name });
   }
   return { list: out, add };
 }
@@ -290,7 +323,7 @@ function nodeAdder(doc, add) {
   return async (o) => {
     const inputs = [].concat(o.path || o.paths || o.url || o.urls || []);
     need(inputs.length, 'add needs "paths" or "urls"');
-    const g = await gatherImages(doc, inputs);
+    const g = await gatherImages(doc, inputs, { name: o.name });
     for (const [k, v] of g.add) add.set(k, v);
     need(g.list.length, 'no supported images found (jpg, png, webp, gif, bmp, avif)');
     return g.list;
@@ -325,8 +358,8 @@ async function main(argv) {
   const { pos, opt } = parseArgs(argv);
   const cmd = pos.shift();
   const by = opt.by === 'human' ? 'human' : 'agent';
-  if (opt.version || opt.v) { console.log(APP_VERSION); return 0; }
-  if (!cmd || opt.help || opt.h || cmd === 'help') { console.log(HELP); return cmd || opt.help || opt.h ? 0 : 2; }
+  if (opt.version) { console.log(APP_VERSION); return 0; }
+  if (!cmd || opt.help || cmd === 'help') { console.log(HELP); return cmd || opt.help ? 0 : 2; }
   const file = pos.shift();
   need(file, `${cmd}: missing file`);
   const out = (text, json) => console.log(opt.json && json !== undefined ? JSON.stringify(json, null, 2) : text);
@@ -404,14 +437,20 @@ async function main(argv) {
       case 'extract': {
         const dir = path.resolve(opt.out || path.basename(file, EXT));
         let ids = pos.length ? pos : null;
-        if (ids) { idsExist(doc, ids); ids = [...new Set(doc.items.filter((it) => ids.includes(it.id) || ids.includes(it.parent)).map((it) => it.asset).filter(Boolean))]; }
+        if (ids) {
+          idsExist(doc, ids);
+          const set = withChildren(doc, ids); // groups: what is inside them, nested groups too
+          ids = [...new Set(doc.items.filter((it) => set.has(it.id) && typeof it.asset === 'string').map((it) => it.asset))];
+        }
         const assets = ids || Object.keys(doc.assets);
         const written = [];
         for (const id of assets) {
           const a = doc.assets[id];
           const e = a && c.index.byName.get(a.file);
           if (!e) { process.stderr.write(`missing in file: ${a?.file || id}\n`); continue; }
-          const dest = path.join(dir, a.file.replace(/^images\//, ''));
+          const dest = path.resolve(dir, a.file.replace(/^images\//, ''));
+          const rel = path.relative(dir, dest);
+          if (!rel || rel.split(path.sep)[0] === '..' || path.isAbsolute(rel)) { process.stderr.write(`skipped (its name leads outside ${dir}): ${a.file}\n`); continue; }
           fs.mkdirSync(path.dirname(dest), { recursive: true });
           fs.writeFileSync(dest, await readEntry(c.reader, e));
           written.push(dest);
@@ -435,7 +474,7 @@ async function main(argv) {
           group = '$new';
         }
         const at = opt.at && !opt.new_group ? pair(opt.at, '--at') : null;
-        ops.push({ op: 'add', paths: pos, group, x: at?.[0], y: at?.[1], max: opt.max });
+        ops.push({ op: 'add', paths: pos, group, x: at?.[0], y: at?.[1], max: opt.max, name: opt.name });
         break;
       }
       case 'set': {
@@ -448,9 +487,9 @@ async function main(argv) {
       }
       case 'move': {
         need(pos.length, 'move: which ids?');
-        need(opt.by || opt.to, 'move: --by DX,DY or --to X,Y');
+        need(opt.offset || opt.to, 'move: --by DX,DY or --to X,Y');
         if (opt.to) { const [x, y] = pair(opt.to, '--to'); ops = [{ op: 'move', ids: pos, x, y }]; }
-        else { const [dx, dy] = pair(opt.by, '--by'); ops = [{ op: 'move', ids: pos, dx, dy }]; }
+        else { const [dx, dy] = pair(opt.offset, '--by'); ops = [{ op: 'move', ids: pos, dx, dy }]; }
         break;
       }
       case 'rm': need(pos.length, 'rm: which ids?'); ops = [{ op: 'rm', ids: pos, keepChildren: !!opt.keep_children }]; break;

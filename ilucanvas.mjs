@@ -258,11 +258,15 @@ function elbow(a, b, da, db, ba, bb) {
     [pa, { x: pa.x, y: my }, { x: pb.x, y: my }, pb],
     [pa, { x: mx, y: pa.y }, { x: mx, y: pb.y }, pb],
   );
+  // and past both boxes on every side: when they overlap on an axis the way round may be either
+  for (const y of [Math.min(boxA.y, boxB.y) - STUB, Math.max(boxA.y + boxA.h, boxB.y + boxB.h) + STUB]) cands.push([pa, { x: pa.x, y }, { x: pb.x, y }, pb]);
+  for (const x of [Math.min(boxA.x, boxB.x) - STUB, Math.max(boxA.x + boxA.w, boxB.x + boxB.w) + STUB]) cands.push([pa, { x, y: pa.y }, { x, y: pb.y }, pb]);
   let best = null;
   let bestCost = Infinity;
   for (const mid of cands) {
     const pts = tidy([a, ...mid, b]);
-    if (!orthogonal(pts)) continue;
+    // ends that meet (items edge to edge, a self-connector) can tidy down to one point
+    if (pts.length < 2 || !orthogonal(pts)) continue;
     let cost = 0;
     for (let i = 1; i < pts.length; i++) {
       cost += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
@@ -602,33 +606,48 @@ function parseTime(v) {
 
 /** 83.5 → "1:23", 3725 → "1:02:05" (with `digits` 1 or 2: "1:23.5", "1:23.50"). */
 function formatTime(t, { tenths = false, digits = tenths ? 1 : 0 } = {}) {
-  const v = Math.max(0, Number(t) || 0);
-  const h = Math.floor(v / 3600);
-  const m = Math.floor((v % 3600) / 60);
-  const s = v % 60;
-  const ss = digits ? s.toFixed(digits).padStart(3 + digits, '0') : String(Math.floor(s)).padStart(2, '0');
+  const v = Math.max(0, Number.isFinite(Number(t)) ? Number(t) : 0);
+  // whole steps first (1 s, or 1/10, 1/100), then split: 59.96 is 1:00.0, never 0:60.0
+  const k = 10 ** digits;
+  const n = digits ? Math.round(v * k) : Math.floor(v);
+  const h = Math.floor(n / (3600 * k));
+  const m = Math.floor(n / (60 * k)) % 60;
+  const s = (n % (60 * k)) / k;
+  const ss = digits ? s.toFixed(digits).padStart(3 + digits, '0') : String(s).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+/** The watch page of a video (from `start` seconds), or null when the id is not a YouTube id. */
+function watchUrl(videoId, start = 0) {
+  if (typeof videoId !== 'string' || !YT_ID.test(videoId)) return null;
+  const t = Math.floor(Number(start) || 0);
+  return `https://www.youtube.com/watch?v=${videoId}${t >= 1 ? `&t=${t}s` : ''}`;
 }
 
 /**
  * A YouTube link → { provider: 'youtube', videoId, url, start?, short? } or null.
- * watch?v=, youtu.be/, shorts/, embed/, live/, m. and music. hosts; t= / start= become start.
+ * watch?v=, youtu.be/, shorts/, embed/, live/, m. and music. hosts, with or without
+ * https://; t= / start= become start.
  */
 function parseVideoUrl(input) {
+  let s = String(input).trim();
+  if (!/^[a-z][\w+.-]*:\/\//i.test(s)) s = `https://${s}`; // "youtu.be/…", "www.youtube.com/watch?v=…"
   let u;
-  try { u = new URL(String(input).trim()); } catch { return null; }
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
   const host = u.hostname.replace(/^(www|m|music)\./, '');
   let id = null;
   if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
   else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
     if (u.pathname === '/watch') id = u.searchParams.get('v');
     else {
-      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([\w-]{11})/);
+      const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([\w-]{11})(?:\/|$)/);
       if (m) id = m[1];
     }
   }
-  if (!id || !YT_ID.test(id)) return null;
-  const out = { provider: 'youtube', videoId: id, url: `https://www.youtube.com/watch?v=${id}` };
+  // embed/videoseries?list=… is a playlist, though "videoseries" has the length of an id
+  if (!id || !YT_ID.test(id) || id === 'videoseries') return null;
+  const out = { provider: 'youtube', videoId: id, url: watchUrl(id) };
   if (u.pathname.startsWith('/shorts/')) out.short = true; // vertical
   const start = parseTime(u.searchParams.get('t') ?? u.searchParams.get('start') ?? (u.hash.match(/t=([^&]+)/)?.[1] || null));
   if (start) out.start = start;
@@ -661,6 +680,7 @@ return {
   RATE_MAX,
   parseTime,
   formatTime,
+  watchUrl,
   parseVideoUrl,
   posterUrls,
   oembedUrl,
@@ -721,7 +741,8 @@ function parseLine(line) {
   if (m) return { type: 'ul', level: indent(m[1]), spans: parseInline(m[2]) };
   m = line.match(/^( *)(\d{1,6})[.)] (.*)$/);
   if (m) return { type: 'ol', level: indent(m[1]), n: Number(m[2]), spans: parseInline(m[3]) };
-  return { type: 'p', level: 0, spans: parseInline(line.replace(/^\\(?=[#>\-*+]|\d+[.)] )/, '')) };
+  // a "\" that keeps a paragraph from being a block goes; "\*" not before a space escapes a literal star
+  return { type: 'p', level: 0, spans: parseInline(line.replace(/^\\(?=[#>\-+]|\* |\d+[.)] | +(?:[-*+] |\d+[.)] ))/, '')) };
 }
 
 const indent = (s) => Math.min(4, Math.floor(s.length / 2));
@@ -824,13 +845,17 @@ function merge(spans) {
 // ---- write ---------------------------------------------------------------------------------
 
 const escapeText = (t) => t.replace(/([\\*[\]~=<_])/g, (m, c, off, all) => {
-  if (c === '~' || c === '=') return all[off + 1] === c || all[off - 1] === c ? `\\${c}` : c;
+  // a ~ or = next to another, or at an edge (a ~~ / == of the neighbouring span may touch it)
+  if (c === '~' || c === '=') return all[off + 1] === c || all[off - 1] === c || off === 0 || off === all.length - 1 ? `\\${c}` : c;
   if (c === '<') return /^<\/?u>/.test(all.slice(off, off + 4)) ? `\\${c}` : c;
   if (c === '_') return /\w/.test(all[off - 1] || '') && /\w/.test(all[off + 1] || '') ? c : `\\${c}`;
   return `\\${c}`;
 });
 
-/** Spans → inline Markdown. Marks open and close around runs like a stack, so nesting stays valid. */
+/** A link's URL inside `(…)`: brackets and spaces percent-encoded (the same address; it would end the link otherwise). */
+const linkUrl = (url) => url.replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29')).replace(/\s/g, encodeURIComponent);
+
+/** Spans → inline Markdown. Marks open and close around runs like a stack, so nesting stays valid (runs that overlap: see marksToMarkdown). */
 function inlineToMarkdown(spans) {
   let out = '';
   // runs of spans that share link / colour / non-yellow highlight become one [..]{} or [..]() group
@@ -842,7 +867,7 @@ function inlineToMarkdown(spans) {
     const inner = marksToMarkdown(group);
     const g = group[0];
     const classes = [g.color ? `.${g.color}` : '', g.hl && g.hl !== 'yellow' ? `.hl-${g.hl}` : ''].filter(Boolean);
-    if (g.link) out += `[${classes.length ? `[${inner}]{${classes.join(' ')}}` : inner}](${g.link})`;
+    if (g.link) out += `[${classes.length ? `[${inner}]{${classes.join(' ')}}` : inner}](${linkUrl(g.link)})`;
     else if (classes.length) out += `[${inner}]{${classes.join(' ')}}`;
     else out += inner;
     i = j;
@@ -858,13 +883,13 @@ function marksToMarkdown(spans) {
   let out = '';
   const stack = [];
   const has = (s, k) => (k === 'hl' ? s.hl === 'yellow' : !!s[k]);
-  for (const s of spans) {
-    // close down to the first mark this span does not have
-    let keep = 0;
-    while (keep < stack.length && has(s, stack[keep])) keep++;
-    for (let k = stack.length - 1; k >= keep; k--) out += CLOSE[stack[k]];
-    stack.length = keep;
-    for (const k of ORDER) if (has(s, k) && !stack.includes(k)) { out += OPEN[k]; stack.push(k); }
+  for (const [i, s] of spans.entries()) {
+    // close the marks this span does not have (marks toggle: when runs overlap, **a*b**c*, one
+    // closes out of order rather than being closed and opened again — "****" would not read back)
+    for (let k = stack.length - 1; k >= 0; k--) if (!has(s, stack[k])) { out += CLOSE[stack[k]]; stack.splice(k, 1); }
+    // open the marks that run on longest first: they close last (***a** b* — not ***a**** b*)
+    const run = (k) => { let j = i; while (j < spans.length && has(spans[j], k)) j++; return j - i; };
+    for (const k of ORDER.filter((k) => has(s, k) && !stack.includes(k)).sort((a, b) => run(b) - run(a))) { out += OPEN[k]; stack.push(k); }
     out += escapeText(s.text);
   }
   for (let k = stack.length - 1; k >= 0; k--) out += CLOSE[stack[k]];
@@ -884,7 +909,7 @@ function toMarkdown(blocks) {
       case 'ul': return `${pad}- ${text}`;
       case 'ol': return `${pad}${b.n || 1}. ${text}`;
       case 'task': return `${pad}- [${b.checked ? 'x' : ' '}] ${text}`;
-      default: return /^([#>]|[-*+] |\d+[.)] )/.test(text) ? `\\${text}` : text;
+      default: return /^([#>]|[-*+] |\d+[.)] | +(?:[-*+] |\d+[.)] ))/.test(text) ? `\\${text}` : text;
     }
   }).join('\n');
 }
@@ -1312,7 +1337,7 @@ function normalize(raw) {
   for (const it of Array.isArray(src.items) ? src.items : []) {
     if (!it || typeof it !== 'object') continue;
     const n = { ...it };
-    if (typeof n.id !== 'string' || !n.id || seen.has(n.id)) n.id = newId(n.type || 'item');
+    if (typeof n.id !== 'string' || !n.id || seen.has(n.id)) n.id = newId(typeof n.type === 'string' && n.type ? n.type : 'item');
     seen.add(n.id);
     n.x = num(n.x);
     n.y = num(n.y);
@@ -1405,13 +1430,14 @@ function normalize(raw) {
     if (it.type !== 'connector') continue;
     for (const k of ['from', 'to']) if (it[k].id && !ids.has(it[k].id)) it[k] = k === 'from' ? { x: it.x, y: it.y } : { x: it.x + it.w, y: it.y + it.h };
   }
-  // a group inside itself (a cycle of parents) would never be drawn: break it
+  // a group inside itself (a cycle of parents) would never be drawn: break it (at a group of the circle,
+  // not at one merely inside it)
   const parentOf = new Map(items.map((i) => [i.id, i.parent]));
   for (const it of items) {
     if (it.type !== 'group' || !it.parent) continue;
-    const seen = new Set([it.id]);
-    for (let p = it.parent; p; p = parentOf.get(p)) {
-      if (seen.has(p)) { delete it.parent; parentOf.set(it.id, undefined); break; }
+    const seen = new Set();
+    for (let p = it.parent; p && !seen.has(p); p = parentOf.get(p)) {
+      if (p === it.id) { delete it.parent; parentOf.set(it.id, undefined); break; }
       seen.add(p);
     }
   }
@@ -1451,6 +1477,9 @@ function cleanTable(t) {
 
 // ---- validate --------------------------------------------------------------------------------------
 
+/** A file name inside the ZIP that stays inside a folder it is extracted to. */
+const safePath = (p) => typeof p === 'string' && !!p && !p.startsWith('/') && !p.includes('\\') && !p.split('/').includes('..');
+
 /** { ok, errors: [{ id?, path, msg }], warnings } — errors make the file unusable by other tools. */
 function validate(doc, { files = null } = {}) {
   const errors = [];
@@ -1462,9 +1491,11 @@ function validate(doc, { files = null } = {}) {
   for (const [id, a] of Object.entries(doc.assets || {})) {
     const p = `assets.${id}`;
     if (typeof a.file !== 'string' || !a.file) err(`${p}.file`, 'missing', id);
+    else if (!safePath(a.file)) err(`${p}.file`, `"${a.file}" must be a plain path inside the file (no "..", "\\" or leading "/")`, id);
     else if (files && !files.has(a.file)) err(`${p}.file`, `"${a.file}" is not in the file`, id);
     if (!(a.w > 0 && a.h > 0)) warn(`${p}.w`, 'size unknown', id);
-    if (a.thumb && files && !files.has(a.thumb)) warn(`${p}.thumb`, `"${a.thumb}" is missing (will be regenerated)`, id);
+    if (a.thumb && !safePath(a.thumb)) err(`${p}.thumb`, `"${a.thumb}" must be a plain path inside the file (no "..", "\\" or leading "/")`, id);
+    else if (a.thumb && files && !files.has(a.thumb)) warn(`${p}.thumb`, `"${a.thumb}" is missing (will be regenerated)`, id);
   }
   const ids = new Set();
   const groups = new Set();
@@ -1505,6 +1536,7 @@ function validate(doc, { files = null } = {}) {
       if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id);
       used.add(it.asset);
     }
+    if (typeof it.asset === 'string') used.add(it.asset); // item types from newer versions too
     if (it.parent !== undefined && !groups.has(it.parent)) err(`${p}.parent`, `unknown group "${it.parent}"`, it.id);
     if (it.type === 'group' && it.parent && depthOf(doc, it.id) < 0) err(`${p}.parent`, 'groups inside each other in a circle', it.id);
     for (const k of ['x', 'y', 'w', 'h']) if (typeof it[k] !== 'number' || !Number.isFinite(it[k])) err(`${p}.${k}`, 'must be a number', it.id);
@@ -1516,12 +1548,18 @@ function validate(doc, { files = null } = {}) {
 
 // ---- serialize ---------------------------------------------------------------------------------------
 
-function ordered(obj, keys) {
+/**
+ * `keys` in their order, then the other keys sorted. A null known field (of
+ * `known`) is left out; an unknown one (a newer version's) is kept as it is.
+ */
+function ordered(obj, keys, known = keys) {
   const out = {};
   for (const k of keys) if (obj[k] !== undefined && obj[k] !== null) out[k] = obj[k];
-  for (const k of Object.keys(obj).sort()) if (!(k in out) && obj[k] !== undefined && obj[k] !== null) out[k] = obj[k];
+  for (const k of Object.keys(obj).sort()) if (!(k in out) && obj[k] !== undefined && (obj[k] !== null || !known.includes(k))) out[k] = obj[k];
   return out;
 }
+/** Every field some item type knows (and `opacity`, which any item may have). */
+const ALL_ITEM_KEYS = [...new Set([...Object.values(ITEM_KEYS).flat(), 'opacity'])];
 
 const round = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
 function roundItem(it) {
@@ -1542,7 +1580,7 @@ function serialize(doc) {
   if (assets.length) lines.push('  },');
   const items = doc.items || [];
   lines.push(`  "items": [${items.length ? '' : ']'}`);
-  items.forEach((it, i) => lines.push(`    ${JSON.stringify(ordered(roundItem(it), ITEM_KEYS[it.type] || ['id', 'type']))}${i < items.length - 1 ? ',' : ''}`));
+  items.forEach((it, i) => lines.push(`    ${JSON.stringify(ordered(roundItem(it), ITEM_KEYS[it.type] || ['id', 'type'], ALL_ITEM_KEYS))}${i < items.length - 1 ? ',' : ''}`));
   if (items.length) lines.push('  ]');
   lines.push('}');
   return `${lines.join('\n')}\n`;
@@ -1648,9 +1686,10 @@ function isInside(doc, id, gid) {
 /** Items that show an image asset: pictures, and videos (their poster). */
 const hasAsset = (it) => (it.type === 'image' || it.type === 'video') && typeof it.asset === 'string' && !!it.asset;
 
+/** Asset ids in use: any item's `asset` counts (item types from newer versions too, so their files stay). */
 function usedAssets(doc) {
   const s = new Set();
-  for (const it of doc.items) if (hasAsset(it)) s.add(it.asset);
+  for (const it of doc.items) if (typeof it.asset === 'string' && it.asset) s.add(it.asset);
   return s;
 }
 
@@ -1803,8 +1842,8 @@ function restack(doc, ids, where = 'front', by = 'human') {
 /** Wrap items in a new group frame (padding around their bounds). Returns the group. */
 function groupItems(doc, ids, { name = 'Group', color, padding, by = 'human' } = {}) {
   const map = byId(doc);
-  // members must not contain each other: keep the outermost
-  const members = outermost(doc, ids).map((id) => map.get(id)).filter(Boolean);
+  // members must not contain each other: keep the outermost; connectors never join a group (they follow their ends)
+  const members = outermost(doc, ids).map((id) => map.get(id)).filter((it) => it && it.type !== 'connector');
   const b = unionBounds(members.map(itemBounds)) || { x: 0, y: 0, w: 400, h: 300 };
   const pad = padding ?? Math.max(16, Math.round(Math.max(b.w, b.h) * 0.04));
   const used = new Set(groupsOf(doc).map((g) => g.color));
@@ -1822,8 +1861,9 @@ function groupItems(doc, ids, { name = 'Group', color, padding, by = 'human' } =
   return g;
 }
 
-/** Remove a group frame, keeping its items (they move up to its parent). */
+/** Remove a group frame, keeping its items (they move up to its parent). Anything but a group is left alone. */
 function ungroup(doc, gid, by = 'human') {
+  if (byId(doc).get(gid)?.type !== 'group') return new Set();
   return removeItems(doc, [gid], { keepChildren: true, by });
 }
 
@@ -1901,8 +1941,10 @@ function fitGroup(doc, gid, { padding, by = 'human' } = {}) {
  * Justified rows (like a photo grid): every row has the same width, images
  * keep their aspect. `rects`: [{ id, w, h }] → Map id → { x, y, w, h } from (x0, y0).
  * `width` defaults to what makes the block roughly as wide as `aspect` × tall.
+ * `upscale: false`: no row is taller than `rowHeight` (new images: never past
+ * their own size — full rows are never taller anyway, a short last row could be).
  */
-function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, rowHeight } = {}) {
+function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, rowHeight, upscale = true } = {}) {
   const out = new Map();
   if (!rects.length) return out;
   const hs = rects.map((r) => r.h).sort((a, b) => a - b);
@@ -1918,7 +1960,7 @@ function arrangeRows(rects, { x0 = 0, y0 = 0, gap, width, aspect = 1.6, rowHeigh
     if (!row.length) return;
     const avail = W - g * (row.length - 1);
     let h = avail / rowAr;
-    if (last && h > rh * 1.15) h = rh; // a short last row keeps the usual height
+    if (last && h > rh * (upscale ? 1.15 : 1)) h = rh; // a short last row keeps the usual height
     let x = x0;
     for (const it of row) {
       const w = it.ar * h;
@@ -1954,7 +1996,7 @@ function arrangeItems(doc, ids, { by = 'human', ...opts } = {}) {
 /** Positions for `sizes` ([{ w, h }]) dropped at a point: one row or a grid, centred on (cx, cy). */
 function dropLayout(sizes, cx, cy, { gap = 24 } = {}) {
   const rects = sizes.map((s, i) => ({ id: i, w: s.w, h: s.h }));
-  const layout = arrangeRows(rects, { gap, rowHeight: Math.min(...sizes.map((s) => s.h)) });
+  const layout = arrangeRows(rects, { gap, rowHeight: Math.min(...sizes.map((s) => s.h)), upscale: false });
   const b = unionBounds([...layout.values()]);
   return sizes.map((_, i) => {
     const r = layout.get(i);
@@ -1974,7 +2016,9 @@ function fitSize(w, h, max = 1200) {
 /** A file name for images/ that is safe on every OS and unique among `taken`. */
 function assetPath(name, ext, taken) {
   let base = String(name || 'image').replace(/\.[^.]{1,5}$/, '');
-  base = base.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 80) || 'image';
+  // cut by code points, not UTF-16 units: half an emoji would not survive UTF-8 (the ZIP name would differ)
+  base = base.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '');
+  base = Array.from(base).slice(0, 80).join('') || 'image';
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) base = `_${base}`;
   let path = `images/${base}.${ext}`;
   for (let i = 2; taken.has(path.toLowerCase()); i++) path = `images/${base} (${i}).${ext}`;
@@ -1991,7 +2035,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /**
  * Three-way merge by item / asset id: changes from `theirs` (the file on disk)
  * and `ours` (the open canvas) since `base`. Where both changed the same item,
- * ours wins and the id is reported. Order follows theirs, with our new items on top.
+ * ours wins and the id is reported. Order follows theirs, with our new items on
+ * top — unless only we restacked: then the items both kept follow ours.
  */
 function merge3(base, ours, theirs) {
   const conflicts = [];
@@ -2015,6 +2060,15 @@ function merge3(base, ours, theirs) {
     if (placed.has(o.id)) continue;
     if (bMap.has(o.id) && !tMap.has(o.id)) { if (!same(o, bMap.get(o.id))) { conflicts.push(o.id); out.push(o); } continue; } // they deleted it
     if (!bMap.has(o.id)) out.push(o); // ours, new
+  }
+  // only we restacked the items both sides kept: they take our order (in the places they have in theirs)
+  const kept = new Set(ours.items.filter((o) => bMap.has(o.id) && tMap.has(o.id)).map((o) => o.id));
+  const order = (list) => list.filter((it) => kept.has(it.id)).map((it) => it.id);
+  const [bo, oo, to] = [order(base.items), order(ours.items), order(theirs.items)];
+  if (!same(oo, bo) && same(to, bo)) {
+    const byOut = new Map(out.map((it) => [it.id, it]));
+    let k = 0;
+    out.forEach((it, i) => { if (kept.has(it.id)) out[i] = byOut.get(oo[k++]); });
   }
   const assets = { ...theirs.assets };
   for (const [id, a] of Object.entries(ours.assets)) if (!assets[id]) assets[id] = a;
@@ -2095,8 +2149,8 @@ const __ilucanvas_src_core_ops = (() => {
 const { ROUTES, HEADS, SIDES } = __ilucanvas_src_core_connectors;
 const { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } = __ilucanvas_src_core_ink;
 const { parseVideoUrl, parseTime, cleanMarks, RATE_MIN, RATE_MAX } = __ilucanvas_src_core_video;
-const { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, estimateHeight, insertRow, insertCol, removeRows, removeCols, setCell, rowCount, colCount } = __ilucanvas_src_core_table;
-const { NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems, removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent, cleanTable } = __ilucanvas_src_core_model;
+const { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, estimateHeight, insertRow, insertCol, removeRows, removeCols, setCell, rowCount, colCount, cleanSizes } = __ilucanvas_src_core_table;
+const { NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems, removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent, cleanTable, isInside } = __ilucanvas_src_core_model;
 // Batch operations on a canvas — the one vocabulary agents use, both in the
 // CLI (`ilucanvas apply`) and in the open app (`window.ilucanvas.apply`).
 //
@@ -2117,6 +2171,16 @@ class OpError extends Error {}
 const idList = (ids) => (ids.length > 12 ? `${ids.slice(0, 10).join(' ')} … (+${ids.length - 10})` : ids.join(' '));
 
 const need = (cond, msg) => { if (!cond) throw new OpError(msg); };
+
+const isTrue = (v) => v === true || v === 'true' || v === 1 || v === '1';
+
+/** A number from loose input (strings from the command line); undefined / null: not given. */
+function numOf(v, name, { positive = false, min } = {}) {
+  if (v === undefined || v === null) return undefined;
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+  need(Number.isFinite(n) && (!positive || n > 0) && (min === undefined || n >= min), `${name} must be a ${positive ? 'positive ' : ''}number${min !== undefined ? ` (${min} or more)` : ''}`);
+  return n;
+}
 
 function idsExist(doc, ids) {
   const m = byId(doc);
@@ -2152,8 +2216,9 @@ function cleanPatch(doc, input, item = null) {
     if (t === 'num' || t === 'pos') {
       const n = Number(raw);
       need(Number.isFinite(n) && (t === 'num' || n > 0), `${k} must be a ${t === 'pos' ? 'positive ' : ''}number`);
-      patch[k] = n;
-    } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
+      need(k !== 'opacity' || (n >= 0 && n <= 1), 'opacity must be 0…1');
+      patch[k] = k === 'rot' ? ((n % 360) + 360) % 360 : n;
+    } else if (t === 'bool') patch[k] = isTrue(raw) ? true : undefined;
     else if (t === 'onoff') patch[k] = raw === false || raw === 'false' || raw === 0 || raw === '0' || raw === 'off' ? false : undefined; // on by default: only "off" is stored
     else if (t === 'cells') {
       const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -2184,11 +2249,14 @@ function cleanPatch(doc, input, item = null) {
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
+      need(k !== 'end' || item?.type !== 'stroke' || raw !== 'dot', 'a stroke\'s end is "arrow" or "none"');
       patch[k] = k === 'nib' && raw === 'round' ? undefined : raw;
     }
     else if (t === 'ref') {
+      need(item?.type !== 'connector', 'connectors have no parent (their ends follow the items)');
       const g = byId(doc).get(raw);
       need(g && g.type === 'group', `parent "${raw}" is not a group`);
+      need(!item?.id || (raw !== item.id && !isInside(doc, raw, item.id)), `parent "${raw}" is ${raw === item?.id ? 'the item itself' : `inside ${item?.id}`}: groups cannot be inside each other in a circle`);
       patch[k] = raw;
     } else if (t === 'time') {
       const v = parseTime(raw);
@@ -2213,9 +2281,27 @@ function cleanPatch(doc, input, item = null) {
       const c = typeof raw === 'string' ? JSON.parse(raw) : raw;
       need(c && c.w > 0 && c.h > 0, 'crop must be { x, y, w, h } in image pixels');
       patch[k] = { x: Number(c.x) || 0, y: Number(c.y) || 0, w: Number(c.w), h: Number(c.h) };
-    } else patch[k] = String(raw);
+    } else {
+      need(k !== 'name' || !item || item.type === 'group', `only groups have a name (${item?.type}s do not)`);
+      patch[k] = String(raw);
+    }
   }
   return patch;
+}
+
+/** Values an item has when the field is left out: `set` leaves them out too (as the format expects). */
+const DEFAULTS = {
+  note: { size: 'm', scale: 1, align: 'left', ratio: 'free' },
+  shape: { size: 'm', scale: 1, align: 'center' },
+  table: { size: 'm', scale: 1, align: 'left' },
+  connector: { route: 'straight', start: 'none', width: 2 },
+  stroke: { end: 'none' },
+};
+function withoutDefaults(item, patch) {
+  const d = DEFAULTS[item.type] || {};
+  const out = { ...patch };
+  for (const [k, v] of Object.entries(out)) if ((k in d && d[k] === v) || (k === 'opacity' && v >= 1) || (k === 'rot' && v === 0)) out[k] = undefined;
+  return out;
 }
 
 /**
@@ -2242,7 +2328,8 @@ function placeImages(doc, list, { group = null, at = null, max = 1200, by = 'hum
     x0 = b ? b.x + b.w + 120 : 0;
     y0 = b ? b.y : 0;
   }
-  const layout = arrangeRows(rects, { x0, y0, width, rowHeight: Math.min(...sizes.map((s) => s.h)) });
+  // never bigger than `max` or the picture itself
+  const layout = arrangeRows(rects, { x0, y0, width, rowHeight: Math.min(...sizes.map((s) => s.h)), upscale: false });
   const items = list.map((x, i) => {
     const r = layout.get(i);
     const it = { id: newId('image'), type: 'image', asset: x.asset, x: r.x, y: r.y, w: r.w, h: r.h };
@@ -2328,14 +2415,16 @@ function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke, stroke
  */
 function newTable(doc, { cells, rows, cols, width, height, fill = 'white', size, scale, align, clickCopy, x, y, group = null, by = 'human' } = {}) {
   const k = scale > 0 ? scale : 1;
-  const R = Array.isArray(rows) ? rows.length : Number(rows) > 0 ? Math.floor(rows) : Array.isArray(cells) && cells.length ? cells.length : 3;
-  const C = Array.isArray(cols) ? cols.length : Number(cols) > 0 ? Math.floor(cols) : Array.isArray(cells) && cells.length ? Math.max(...cells.map((r) => (Array.isArray(r) ? r.length : 1))) : 3;
+  const grid = Array.isArray(cells) ? cells : [];
+  // `cells` are never cut: `rows` / `cols` (counts or sizes) can only add empty ones
+  const R = Math.max(Array.isArray(rows) ? rows.length : Number(rows) > 0 ? Math.floor(rows) : 0, grid.length) || 3;
+  const C = Math.max(Array.isArray(cols) ? cols.length : Number(cols) > 0 ? Math.floor(cols) : 0, ...grid.map((r) => (Array.isArray(r) ? r.length : 1))) || 3;
   need(R * C <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
   const t = cleanTable({
     id: newId('table'), type: 'table', x: 0, y: 0, w: 1, h: 1, fill, size, scale, align, clickCopy,
-    cols: Array.isArray(cols) ? cols : Array(C).fill(Number(width) > 0 ? Number(width) : TABLE_COL * k),
-    rows: Array.isArray(rows) ? rows : Array(R).fill(Number(height) > 0 ? Number(height) : TABLE_ROW * k),
-    cells: cells || [],
+    cols: cleanSizes(Array.isArray(cols) ? cols : [], C, Number(width) > 0 ? Number(width) : TABLE_COL * k),
+    rows: cleanSizes(Array.isArray(rows) ? rows : [], R, Number(height) > 0 ? Number(height) : TABLE_ROW * k),
+    cells: grid,
   });
   t.h = estimateHeight(t);
   placeNew(doc, t, x, y, group);
@@ -2352,6 +2441,15 @@ function putTable(doc, t, by) {
   doc.updated_by = by;
   if (n.parent) growGroup(doc, n.parent, n, { by });
   return n;
+}
+
+/** After `set cells`: as many rows and columns as the new cells (new ones at the default size). */
+function regrid(t) {
+  const R = t.cells.length;
+  const C = Math.max(1, ...t.cells.map((r) => r.length));
+  need(R * C <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
+  const k = t.scale > 0 ? t.scale : 1;
+  return { ...t, rows: cleanSizes(t.rows, R, TABLE_ROW * k), cols: cleanSizes(t.cols, C, TABLE_COL * k) };
 }
 
 /** The table an op names, and a row / column index in it (0-based; negative counts from the end). */
@@ -2388,14 +2486,16 @@ function newConnector(doc, { from, to, route = 'dubins', start, end = 'arrow', c
  * its frame hugs the ink, the points are stored relative to it (ink.js).
  */
 /**
- * A new video card (16:9, 640 wide by default) for a YouTube link. `meta`
- * (optional): { asset, title, w, h } — the poster as an image asset, the title.
+ * A new video card (16:9, 640 wide by default; a short 9:16, 360 wide) for a
+ * YouTube link. `meta` (optional): { asset, title, w, h } — the poster as an
+ * image asset, the title.
  */
 function newVideo(doc, { url, title, start, rate, loop, marks, x, y, w, h, group = null, by = 'human', meta = null } = {}) {
   const v = parseVideoUrl(url);
   need(v, 'video needs a YouTube link (youtube.com/watch?v=…, youtu.be/…, shorts/…)');
-  const W = Number(w) || 640;
-  const it = { id: newId('video'), type: 'video', provider: v.provider, videoId: v.videoId, url: v.url, x: 0, y: 0, w: W, h: Number(h) || Math.round((W * 9) / 16) };
+  const k = v.short ? 16 / 9 : 9 / 16; // height / width
+  const W = Number(w) || (Number(h) ? Math.round(Number(h) / k) : v.short ? 360 : 640);
+  const it = { id: newId('video'), type: 'video', provider: v.provider, videoId: v.videoId, url: v.url, x: 0, y: 0, w: W, h: Number(h) || Math.round(W * k) };
   if (title || meta?.title) it.title = String(title || meta.title);
   if (meta?.asset) it.asset = meta.asset;
   const st = start !== undefined ? start : v.start;
@@ -2456,7 +2556,7 @@ function placeNew(doc, it, x, y, group) {
 
 /** A new empty group frame: at x/y, or right of everything. */
 function newGroup(doc, { name = 'Group', color, x, y, w = 1600, h = 1000, by = 'human' } = {}) {
-  const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: x ?? 0, y: y ?? 0, w: Number(w) || 1600, h: Number(h) || 1000 };
+  const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: Number(x) || 0, y: Number(y) || 0, w: Number(w) || 1600, h: Number(h) || 1000 };
   if (x === undefined) { const b = contentBounds(doc); if (b) { g.x = b.x + b.w + 160; g.y = b.y; } }
   doc.items = [g, ...doc.items];
   doc.updated_by = by;
@@ -2483,8 +2583,9 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           need(addImages, 'adding images is not available here');
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const [x, y, max] = [numOf(o.x, 'x'), numOf(o.y, 'y'), numOf(o.max, 'max', { positive: true })];
           const list = await addImages(o);
-          const items = placeImages(doc, list, { group, at: o.x !== undefined ? [Number(o.x), Number(o.y ?? 0)] : null, max: o.max, by });
+          const items = placeImages(doc, list, { group, at: x !== undefined ? [x, y ?? 0] : null, max, by });
           if (o.as) named.set(o.as, items[0]?.id);
           created.push(...items.map((it) => it.id));
           log.push(`added ${items.length} image(s): ${idList(items.map((it) => it.id))}`);
@@ -2493,8 +2594,9 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
         case 'note': {
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
-          const { op, as, group: _g, ...fields } = o;
-          const n = newNote(doc, { ...cleanPatch(doc, fields, { type: 'note' }), group, by });
+          const { op, as, group: _g, fit, ...fields } = o;
+          // fit: false is an answer here (a sticky that does not fit its text), not "left out"
+          const n = newNote(doc, { ...cleanPatch(doc, fields, { type: 'note' }), fit: fit === undefined || fit === null || fit === '' ? undefined : isTrue(fit), group, by });
           if (as) named.set(as, n.id);
           created.push(n.id);
           log.push(`note ${n.id}`);
@@ -2559,8 +2661,11 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
           const { op, as, group: _g, cells, rows, cols, width, height, x, y, ...fields } = o;
-          if (cells !== undefined) cleanPatch(doc, { cells });
-          const t = newTable(doc, { ...cleanPatch(doc, fields, { type: 'table' }), cells, rows, cols, width, height, x, y, group, by });
+          const grid = cells !== undefined ? cleanPatch(doc, { cells }).cells : undefined;
+          const t = newTable(doc, {
+            ...cleanPatch(doc, fields, { type: 'table' }), cells: grid, rows, cols, group, by,
+            width: numOf(width, 'width', { positive: true }), height: numOf(height, 'height', { positive: true }), x: numOf(x, 'x'), y: numOf(y, 'y'),
+          });
           if (as) named.set(as, t.id);
           created.push(t.id);
           log.push(`table ${t.id} ${rowCount(t)}×${colCount(t)}`);
@@ -2602,7 +2707,11 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           break;
         }
         case 'newgroup': {
-          const g = newGroup(doc, { ...o, by });
+          if (o.color) need(GROUP_COLORS.includes(o.color), `color must be one of ${GROUP_COLORS.join(', ')}`);
+          const g = newGroup(doc, {
+            name: o.name ?? 'Group', color: o.color, by,
+            x: numOf(o.x, 'x'), y: numOf(o.y, 'y'), w: numOf(o.w, 'w', { positive: true }), h: numOf(o.h, 'h', { positive: true }),
+          });
           if (o.as) named.set(o.as, g.id);
           created.push(g.id);
           log.push(`group ${g.id} "${g.name}"`);
@@ -2612,6 +2721,8 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           const ids = refs(o.ids);
           need(ids.length, 'group needs ids');
           idsExist(doc, ids);
+          const wires = ids.filter((id) => byId(doc).get(id).type === 'connector');
+          need(!wires.length, `${wires.join(', ')}: connectors are not grouped (their ends follow the items)`);
           if (o.color) need(GROUP_COLORS.includes(o.color), `color must be one of ${GROUP_COLORS.join(', ')}`);
           const g = groupItems(doc, ids, { name: o.name || 'Group', color: o.color, by });
           if (o.as) named.set(o.as, g.id);
@@ -2630,7 +2741,14 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           }
           idsExist(doc, [id]);
           const item = byId(doc).get(id);
-          const patch = cleanPatch(doc, fields, item);
+          // "$name" ids inside fields: parent, connector ends (an id or { id, side })
+          if (typeof fields.parent === 'string') fields.parent = ref(fields.parent);
+          for (const k of ['from', 'to']) {
+            const e = fields[k];
+            if (typeof e === 'string' && !e.startsWith('{')) fields[k] = ref(e);
+            else if (e && typeof e === 'object' && typeof e.id === 'string') fields[k] = { ...e, id: ref(e.id) };
+          }
+          const patch = withoutDefaults(item, cleanPatch(doc, fields, item));
           // a stroke's new width / tool: measure its frame again (width in board units)
           if (item.type === 'stroke' && (patch.width !== undefined || patch.tool !== undefined)) {
             const { width, tool, ...rest } = patch;
@@ -2638,7 +2756,7 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
             doc.items = doc.items.map((it) => (it.id === id ? n : it));
             patchItems(doc, { [id]: rest }, by);
             if (n.parent) growGroup(doc, n.parent, n, { by });
-          } else if (item.type === 'table') putTable(doc, { ...item, ...patch }, by);
+          } else if (item.type === 'table') putTable(doc, patch.cells ? regrid({ ...item, ...patch }) : { ...item, ...patch }, by);
           else patchItems(doc, { [id]: patch }, by);
           log.push(`set ${id}`);
           break;
@@ -2647,11 +2765,12 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           const ids = refs(o.ids ?? o.id);
           need(ids.length, 'move needs ids');
           idsExist(doc, ids);
-          if (o.dx !== undefined || o.dy !== undefined) moveItems(doc, ids, Number(o.dx) || 0, Number(o.dy) || 0, by);
+          const [dx, dy, x, y] = [numOf(o.dx, 'dx'), numOf(o.dy, 'dy'), numOf(o.x, 'x'), numOf(o.y, 'y')];
+          if (dx !== undefined || dy !== undefined) moveItems(doc, ids, dx ?? 0, dy ?? 0, by);
           else {
             const m = byId(doc);
             const b = unionBounds(ids.map((id) => itemBounds(m.get(id))));
-            moveItems(doc, ids, (o.x ?? b.x) - b.x, (o.y ?? b.y) - b.y, by);
+            moveItems(doc, ids, (x ?? b.x) - b.x, (y ?? b.y) - b.y, by);
           }
           if (o.reparent !== false) reparent(doc, ids, by);
           log.push(`moved ${idList(ids)}`);
@@ -2668,6 +2787,7 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
         case 'ungroup': {
           const id = ref(o.id);
           idsExist(doc, [id]);
+          need(byId(doc).get(id).type === 'group', `${id} is not a group (rm removes items)`);
           ungroup(doc, id, by);
           log.push(`ungrouped ${id}`);
           break;
@@ -2678,7 +2798,7 @@ async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
           idsExist(doc, ids);
           const gid = ids.length === 1 && byId(doc).get(ids[0]).type === 'group' ? ids[0] : null;
           if (gid) ids = childrenOf(doc, gid).map((it) => it.id);
-          arrangeItems(doc, ids, { by, width: o.width ? Number(o.width) : undefined, gap: o.gap !== undefined ? Number(o.gap) : undefined });
+          arrangeItems(doc, ids, { by, width: numOf(o.width, 'width', { positive: true }), gap: numOf(o.gap, 'gap', { min: 0 }) });
           if (gid) fitGroup(doc, gid, { by });
           log.push(`arranged ${ids.length} item(s)`);
           break;
@@ -2958,7 +3078,19 @@ async function scanLocalHeaders(reader) {
   while (pos + 30 <= reader.size) {
     const h = await reader.read(pos, 30);
     const hv = view(h);
-    if (hv.getUint32(0, true) !== SIG_LOCAL) break;
+    // append saves leave old directories between the records: step over them to the later saves
+    const sig = hv.getUint32(0, true);
+    if (sig === SIG_CENTRAL) {
+      const c = await reader.read(pos, 46);
+      if (c.length < 46) break;
+      const cv = view(c);
+      pos += 46 + cv.getUint16(28, true) + cv.getUint16(30, true) + cv.getUint16(32, true);
+      continue;
+    }
+    if (sig === SIG_EOCD) { pos += 22 + hv.getUint16(20, true); continue; }
+    if (sig === SIG_LOC64) { pos += 20; continue; }
+    if (sig === SIG_EOCD64) { pos += 12 + u64(hv, 4); continue; }
+    if (sig !== SIG_LOCAL) break;
     const flags = hv.getUint16(6, true);
     const nameLen = hv.getUint16(26, true);
     const extraLen = hv.getUint16(28, true);
@@ -3237,7 +3369,7 @@ const { normalize, serialize, FORMAT } = __ilucanvas_src_core_model;
 //                       (.jpg / .png where the browser cannot write WebP: Safari)
 //
 // Saving never rewrites what did not change. A save is a "plan": a file offset
-// and the chunks to write there (Uint8Array | Blob | { range: [offset, length] }
+// and the chunks to write there (Uint8Array | Blob | { range: [offset, length], size }
 // of the current file). Three modes:
 //   tail   — overwrite from where canvas.json / preview.webp start (they are
 //            always the last records). For writers that replace the file
@@ -3345,9 +3477,9 @@ async function planSave({ base = null, doc, add = new Map(), preview = null, mod
   return { at: out.start, chunks: out.chunks, size: out.size, index: out.index, mode };
 }
 
-/** A chunk that copies `length` bytes of the current file from `offset`. */
+/** A chunk that copies `length` bytes of the current file from `offset` (`size`: the writer counts it). */
 function rangeOf(reader, offset, length) {
-  return reader.blob ? reader.blob.slice(offset, offset + length) : { range: [offset, length] };
+  return reader.blob ? reader.blob.slice(offset, offset + length) : { range: [offset, length], size: length };
 }
 
 /** Choose a save mode: compaction when much of the file is dead space. */
@@ -3445,26 +3577,35 @@ function imageInfo(u) {
   let w = 0;
   let h = 0;
   let orientation = 1;
+  const n = u.length;
   try {
-    if (type === 'image/png') { w = be32(u, 16); h = be32(u, 20); }
+    if (type === 'image/png') { if (n >= 24) { w = be32(u, 16); h = be32(u, 20); } }
     else if (type === 'image/gif') { w = le16(u, 6); h = le16(u, 8); }
-    else if (type === 'image/bmp') { w = Math.abs(le32(u, 18) | 0); h = Math.abs(le32(u, 22) | 0); }
+    else if (type === 'image/bmp') ({ w, h } = bmpSize(u));
     else if (type === 'image/webp') ({ w, h } = webpSize(u));
     else if (type === 'image/jpeg') ({ w, h, orientation } = jpegSize(u));
     else if (type === 'image/avif') ({ w, h } = avifSize(u));
   } catch { /* truncated header: size unknown */ }
+  if (!(w > 0 && h > 0 && Number.isFinite(w) && Number.isFinite(h))) { w = 0; h = 0; } // never NaN or half a size
   if (orientation >= 5 && orientation <= 8) [w, h] = [h, w];
   return { type, ext: IMAGE_TYPES[type], w, h, orientation };
 }
 
+function bmpSize(u) {
+  if (u.length < 26) return { w: 0, h: 0 };
+  // OS/2 1.x core header (12 bytes): 16-bit sides; the later ones 32-bit (negative height: top-down)
+  if (le32(u, 14) === 12) return { w: le16(u, 18), h: le16(u, 20) };
+  return { w: Math.abs(le32(u, 18) | 0), h: Math.abs(le32(u, 22) | 0) };
+}
+
 function webpSize(u) {
   const chunk = ascii(u, 12, 4);
-  if (chunk === 'VP8 ') return { w: le16(u, 26) & 0x3fff, h: le16(u, 28) & 0x3fff };
-  if (chunk === 'VP8L') {
+  if (chunk === 'VP8 ' && u.length >= 30) return { w: le16(u, 26) & 0x3fff, h: le16(u, 28) & 0x3fff };
+  if (chunk === 'VP8L' && u.length >= 25) {
     const b = le32(u, 21);
     return { w: (b & 0x3fff) + 1, h: ((b >>> 14) & 0x3fff) + 1 };
   }
-  if (chunk === 'VP8X') return { w: 1 + (u[24] | (u[25] << 8) | (u[26] << 16)), h: 1 + (u[27] | (u[28] << 8) | (u[29] << 16)) };
+  if (chunk === 'VP8X' && u.length >= 30) return { w: 1 + (u[24] | (u[25] << 8) | (u[26] << 16)), h: 1 + (u[27] | (u[28] << 8) | (u[29] << 16)) };
   return { w: 0, h: 0 };
 }
 
@@ -3477,7 +3618,7 @@ function jpegSize(u) {
     if (m === 0xff) { o++; continue; }
     if (m === 0xd8 || (m >= 0xd0 && m <= 0xd7) || m === 0x01) { o += 2; continue; }
     const len = be16(u, o + 2);
-    if (m === 0xe1 && ascii(u, o + 4, 4) === 'Exif') orientation = exifOrientation(u, o + 10) || orientation;
+    if (m === 0xe1 && orientation === 1 && ascii(u, o + 4, 4) === 'Exif') orientation = exifOrientation(u, o + 10, Math.min(u.length, o + 2 + len)) || 1;
     if ((m >= 0xc0 && m <= 0xcf) && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
       return { h: be16(u, o + 5), w: be16(u, o + 7), orientation };
     }
@@ -3487,16 +3628,19 @@ function jpegSize(u) {
   return { w: 0, h: 0, orientation };
 }
 
-function exifOrientation(u, t) {
+/** The orientation tag of the TIFF block at t, read only inside its APP1 segment (end); 0 when absent or not 1–8. */
+function exifOrientation(u, t, end) {
+  if (t + 8 > end || u[t] !== u[t + 1] || (u[t] !== 0x49 && u[t] !== 0x4d)) return 0;
   const le = u[t] === 0x49;
   const r16 = (o) => (le ? le16(u, o) : be16(u, o));
   const r32 = (o) => (le ? le32(u, o) : be32(u, o));
   const ifd = t + r32(t + 4);
+  if (ifd + 2 > end) return 0;
   const n = r16(ifd);
   for (let i = 0; i < n; i++) {
     const e = ifd + 2 + i * 12;
-    if (e + 12 > u.length) break;
-    if (r16(e) === 0x0112) return r16(e + 8);
+    if (e + 12 > end) break;
+    if (r16(e) === 0x0112) { const v = r16(e + 8); return v >= 1 && v <= 8 ? v : 0; }
   }
   return 0;
 }
@@ -3977,17 +4121,21 @@ class SqliteReader {
   scanTable(root, fn, onError) {
     const stack = [[root, 0, 0]]; // [page, referring page, offset of the pointer in it]
     const seen = new Set();
+    // Overflow pages already read in this walk. Each belongs to one cell: cells (or cell
+    // pointers) sharing a chain would each copy the whole payload, so a small crafted
+    // file could ask for gigabytes.
+    const used = new Set();
     while (stack.length) {
       const [n, from, fromOff] = stack.pop();
       try {
-        this.scanPage(n, from, fromOff, seen, stack, fn, onError);
+        this.scanPage(n, from, fromOff, seen, used, stack, fn, onError);
       } catch (e) {
         if (!onError || n === root) throw e;
         onError(`B-tree page ${n} skipped: ${e.message}`);
       }
     }
   }
-  scanPage(n, from, fromOff, seen, stack, fn, onError) {
+  scanPage(n, from, fromOff, seen, used, stack, fn, onError) {
     if (!Number.isInteger(n) || n < 1 || n > this.pageCount) {
       if (from) this.pageErr(from, fromOff, `child page number ${n} out of range (1..${this.pageCount})`);
       fail(`SQLite page number ${n} out of range (1..${this.pageCount})`);
@@ -4020,7 +4168,7 @@ class SqliteReader {
           const [size, o1] = this.varint(pg, co, n);
           const [rid, o2] = this.varint(pg, o1, n);
           rowid = rid;
-          const payload = this.payload(pg, n, o2, size);
+          const payload = this.payload(pg, n, o2, size, used);
           fn(rowid, payload);
         } catch (e) {
           if (!onError) throw e;
@@ -4042,7 +4190,8 @@ class SqliteReader {
     }
     return [v, o + 9];
   }
-  payload(pg, n, o, size) {
+  // `used`: overflow pages taken by earlier cells of the same walk (see scanTable).
+  payload(pg, n, o, size, used = new Set()) {
     const U = this.usable;
     if (size > this.pageCount * U) this.pageErr(n, o, `payload size ${size} larger than the database`);
     let local = size;
@@ -4053,20 +4202,25 @@ class SqliteReader {
     if (o + local > U) this.pageErr(n, o, 'cell payload runs past the page');
     if (local === size) return pg.subarray(o, o + size);
     if (o + local + 4 > U) this.pageErr(n, o, 'overflow pointer runs past the page');
+    const be32 = (p, at) => ((p[at] << 24) >>> 0) + ((p[at + 1] << 16) | (p[at + 2] << 8) | p[at + 3]);
+    // Follow the chain first, so nothing is copied for one that is cut short, loops or is shared.
+    const chain = [];
+    let next = be32(pg, o + local);
+    for (let filled = local; filled < size; filled += U - 4) {
+      if (next === 0) this.pageErr(n, o, `overflow chain ends early (${filled}/${size} bytes)`);
+      if (next > this.pageCount) this.pageErr(n, o, `overflow page number ${next} out of range`);
+      if (used.has(next)) this.pageErr(n, o, `overflow page ${next} is used twice (the chain loops, or another cell shares it)`);
+      used.add(next);
+      chain.push(next);
+      next = be32(this.page(next), 0);
+    }
     const out = new Uint8Array(size);
     out.set(pg.subarray(o, o + local), 0);
     let filled = local;
-    let next = ((pg[o + local] << 24) >>> 0) + ((pg[o + local + 1] << 16) | (pg[o + local + 2] << 8) | pg[o + local + 3]);
-    let hops = 0;
-    while (filled < size) {
-      if (next === 0) this.pageErr(n, o, `overflow chain ends early (${filled}/${size} bytes)`);
-      if (next > this.pageCount) this.pageErr(n, o, `overflow page number ${next} out of range`);
-      if (++hops > this.pageCount) fail('SQLite overflow chain loops');
-      const op = this.page(next);
+    for (const p of chain) {
       const take = Math.min(U - 4, size - filled);
-      out.set(op.subarray(4, 4 + take), filled);
+      out.set(this.page(p).subarray(4, 4 + take), filled);
       filled += take;
-      next = ((op[0] << 24) >>> 0) + ((op[1] << 16) | (op[2] << 8) | op[3]);
     }
     return out;
   }
@@ -4498,8 +4652,9 @@ function parseV2(u8, r, version) {
         style: num(row.style),
       };
       if (size) {
+        // the transform scales the text with the box: `scale` as for auto-sized notes
         const pl = place(matrix, { x: 0, y: 0, w: size.w, h: size.h });
-        Object.assign(t, { x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: pl.rotation, flipX: pl.flipX, flipY: pl.flipY });
+        Object.assign(t, { x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: pl.rotation, scale: pl.w / size.w, flipX: pl.flipX, flipY: pl.flipY });
       } else {
         // Size unknown (auto-sized note): x, y is the note's local origin (its top-left
         // corner) in scene units; rotation/flip/scale apply about that point.
@@ -4581,11 +4736,11 @@ function readStrokes(rd) {
   const out = [];
   for (let i = 0; i < n; i++) {
     const head = rd.u8v();
+    // QColor: any spec (RGB, HSV, CMYK, HSL, extended RGB) → #rrggbb, the alpha apart
     const spec = rd.i8();
-    const a = rd.u16() >> 8, r = rd.u16() >> 8, g = rd.u16() >> 8, b = rd.u16() >> 8;
-    rd.u16(); // padding
-    const hex = (v) => v.toString(16).padStart(2, '0');
-    const color = spec === 1 ? `#${hex(r)}${hex(g)}${hex(b)}` : null; // RGB; other colour specs are rare in a pen
+    const css = qcolorToCss(spec, rd.u16(), rd.u16(), rd.u16(), rd.u16(), rd.u16()); // null: an invalid colour
+    const color = css && css.slice(0, 7);
+    const alpha = css && css.length > 7 ? parseInt(css.slice(7), 16) / 255 : 1;
     const width = rd.f64();
     const count = rd.i32();
     if (count < 0 || count > 1000000) rd.err(`a path of ${count} elements`);
@@ -4596,7 +4751,7 @@ function readStrokes(rd) {
     const start = [rd.f64(), rd.f64()];
     const style = rd.i32();
     if (!(width >= 0 && width < 1e6) || elements.some((e) => e.type < 0 || e.type > 3 || !Number.isFinite(e.x) || !Number.isFinite(e.y))) rd.err('stroke data does not look right');
-    out.push({ color, alpha: a / 255, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
+    out.push({ color, alpha, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
   }
   return out;
 }
@@ -4620,8 +4775,12 @@ function colorField(db, v) {
 
 function htmlToText(html) {
   let s = html.replace(/<head[\s\S]*?<\/head>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
+  // Qt starts every block on a new source line; text never holds a raw newline (a line
+  // break inside a paragraph is <br />), so source newlines are layout only. An empty
+  // paragraph is written <p ...><br /></p>: one line, not two.
+  s = s.replace(/\r?\n/g, '').replace(/<br\s*\/?>\s*(<\/(p|div|li|h[1-6])>)/gi, '$1');
   s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<[^>]+>/g, '');
-  s = s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d))).replace(/&amp;/g, '&');
+  s = s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d) <= 0x10ffff ? Number(d) : 0xfffd)).replace(/&amp;/g, '&');
   return s.replace(/\n+$/, '').replace(/^\n+/, '');
 }
 
@@ -4848,12 +5007,12 @@ function nearest(table, c, fallback) {
   return best;
 }
 
-/** Plain text as our Markdown: every character means itself. */
+/** Plain text as our Markdown: every character means itself (no code spans, so ` stays bare). */
 function escapeMarkdown(text) {
   return String(text).split('\n').map((line) => line
-    .replace(/[\\*_~=[\]<`]/g, (ch) => `\\${ch}`)
+    .replace(/[\\*_~=[\]<]/g, (ch) => `\\${ch}`)
     .replace(/^(\s*)([#>+-])/, '$1\\$2')
-    .replace(/^(\s*\d+)\./, '$1\\.')).join('\n');
+    .replace(/^(\s*\d+)([.)])/, '$1\\$2')).join('\n');
 }
 
 const FONT = 18; // our note text, size m
@@ -4893,18 +5052,22 @@ function pathRuns(els) {
 /** What a PureRef pen stroke is: a rectangle, an ellipse, a straight line or freehand. */
 function strokeKind(els) {
   const types = els.map((e) => e.type).join('');
-  if (types === '01111') {
-    const [a, , , , e] = els;
-    const axis = els.slice(1).every((p, i) => Math.abs(p.x - els[i].x) < 1e-6 || Math.abs(p.y - els[i].y) < 1e-6);
-    if (axis && Math.abs(a.x - e.x) < 1e-6 && Math.abs(a.y - e.y) < 1e-6) return 'rect';
-  }
-  if (types === '0233233233233') return 'ellipse';
+  const a = els[0];
+  const e = els[els.length - 1];
+  const closed = Math.abs(a.x - e.x) < 1e-6 && Math.abs(a.y - e.y) < 1e-6;
+  if (types === '01111' && closed && els.slice(1).every((p, i) => Math.abs(p.x - els[i].x) < 1e-6 || Math.abs(p.y - els[i].y) < 1e-6)) return 'rect';
+  // a move + 4 curves that ends where it began (a freehand line can be 4 curves too)
+  if (types === '0233233233233' && closed) return 'ellipse';
   if (types === '01') return 'line';
   return 'freehand';
 }
 
-/** Our items for one PureRef drawing (its strokes; its transform places them). */
-function drawingItems(dr) {
+/**
+ * Our items for one PureRef drawing (its strokes; its transform places them).
+ * In a group a straight line is a pen stroke: connectors have no parent, so it
+ * would stay behind when the group moves.
+ */
+function drawingItems(dr, inGroup) {
   const m = dr.matrix;
   const sx = Math.hypot(m[0], m[1]);
   const sy = Math.hypot(m[2], m[3]);
@@ -4929,7 +5092,7 @@ function drawingItems(dr) {
       out.push(shape);
       continue;
     }
-    if (kind === 'line') {
+    if (kind === 'line' && !inGroup) {
       const a = apply(m, st.elements[0].x, st.elements[0].y);
       const b = apply(m, st.elements[1].x, st.elements[1].y);
       out.push({ type: 'connector', from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y }, end: st.arrow ? 'arrow' : 'none', color, width: Math.round(width * 100) / 100, ...(st.dashed ? { dash: true } : {}), x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.max(1, Math.abs(b.x - a.x)), h: Math.max(1, Math.abs(b.y - a.y)) });
@@ -4984,8 +5147,16 @@ function purItems(pur, assetOf, id) {
     const pad = color === 'none' ? 4 : 16;
     const w = tx.w > 0 ? tx.w : Math.max(60, longest * FONT * 0.56 * scale + pad * 2);
     const h = tx.h > 0 ? tx.h : Math.max(30, lines.length * FONT * 1.45 * scale + pad * 2);
-    const note = { id: id('note', ++n), type: 'note', x: tx.x, y: tx.y, w, h, color, text: escapeMarkdown(text) };
-    if (!(tx.w > 0) && Math.abs(scale - 1) > 0.01) note.scale = Math.round(scale * 1000) / 1000;
+    let { x, y } = tx;
+    if (!(tx.w > 0) && tx.rotation) {
+      // PureRef turns an auto-sized note about its top-left corner (x, y), we turn about the
+      // centre: put the centre where PureRef's is
+      const a = (tx.rotation * Math.PI) / 180;
+      x = tx.x + (w / 2) * Math.cos(a) - (h / 2) * Math.sin(a) - w / 2;
+      y = tx.y + (w / 2) * Math.sin(a) + (h / 2) * Math.cos(a) - h / 2;
+    }
+    const note = { id: id('note', ++n), type: 'note', x, y, w, h, color, text: escapeMarkdown(text) };
+    if (Math.abs(scale - 1) > 0.01) note.scale = Math.round(scale * 1000) / 1000;
     if (tx.rotation) note.rot = tx.rotation;
     if (tx.group !== null && tx.group !== undefined && groupIds.has(tx.group)) note.parent = groupIds.get(tx.group);
     placed.push({ z: tx.z ?? 0, it: note });
@@ -4993,7 +5164,7 @@ function purItems(pur, assetOf, id) {
   n = 0;
   for (const dr of pur.drawings || []) {
     const parent = dr.group !== null && dr.group !== undefined && groupIds.has(dr.group) ? groupIds.get(dr.group) : null;
-    for (const it of drawingItems(dr)) {
+    for (const it of drawingItems(dr, !!parent)) {
       it.id = id(it.type, ++n);
       if (parent) it.parent = parent;
       placed.push({ z: dr.z ?? 0, it });
@@ -5095,7 +5266,10 @@ function itemLine(doc, it) {
 /** The whole board (or one group), groups first, children indented under their group. */
 function listText(doc, { group = null } = {}) {
   const lines = [headerLine(doc)];
+  const seen = new Set(); // groups inside each other in a circle (a hand-made file) are listed once
   const walk = (parent, ind) => {
+    if (seen.has(parent)) return;
+    seen.add(parent);
     for (const g of doc.items) if (g.type === 'group' && (g.parent || null) === parent) { lines.push(ind + itemLine(doc, g)); walk(g.id, `${ind}  `); }
     // a table's rows come on lines of their own, under it
     for (const it of doc.items) if (it.type !== 'group' && (it.parent || null) === parent) lines.push(...itemLine(doc, it).split('\n').map((l, i) => `${ind}${i ? '    ' : ''}${l}`));
@@ -5156,9 +5330,11 @@ Write (re-read → change → write; the open app picks the change up within sec
   new <file> [--title T]                create an empty canvas (refuses to overwrite)
   add <file> <image|folder|url>…        add images; folders are read recursively
         [--group ID | --new-group NAME] [--at X,Y] [--max 1200] [--name N]
-        default place: right of everything (or at the bottom of --group)
+        default place: right of everything (or at the bottom of --group);
+        --name: the file name for a single image (a URL's own name is often poor)
   set <file> <id|canvas> key=value…     ${EDITABLE_KEYS.join(' ')}; canvas: title
   move <file> <id>… (--by DX,DY | --to X,Y)
+                                        --by X,Y moves by an offset (--by agent|human may come too)
   shape <file> <kind> ["text"] [--fill C] [--stroke C] [--stroke-width W] [--dash]
         [--at X,Y] [--w W] [--h H] [--group ID]
                                         kinds: rect rounded ellipse diamond triangle parallelogram hexagon star
@@ -5191,13 +5367,19 @@ Write (re-read → change → write; the open app picks the change up within sec
 Options
   --by agent|human   recorded in updated_by (default agent)
   --json             machine-readable output (ls, info, add, apply)
-  --version, --help
+  --version (-v), --help (-h)
+Exit codes: 0 done; 1 an error (a bad file, the file changed meanwhile); 2 a bad command,
+  option, field or id — nothing was written
 Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 `;
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'no_copy', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'arrow', 'no_poster', 'no_copy']);
+/** -h and -v alone; --h / --w are sizes (shape --h 200). */
+const SHORT = { '-h': 'help', '-v': 'version' };
+
+const PAIR = /^\s*(-?[\d.]+)\s*[,;x ]\s*(-?[\d.]+)\s*$/;
 
 function parseArgs(argv) {
   const pos = [];
@@ -5205,7 +5387,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { pos.push(...argv.slice(i + 1)); break; }
-    if (a.startsWith('--') || /^-[a-z]$/.test(a)) {
+    if (SHORT[a]) opt[SHORT[a]] = true;
+    else if (a.startsWith('--') || /^-[a-z]$/.test(a)) {
       let key = a.replace(/^--?/, '');
       let val;
       const eq = key.indexOf('=');
@@ -5216,6 +5399,8 @@ function parseArgs(argv) {
         else if (i + 1 < argv.length) val = argv[++i];
         else throw new UsageError(`option --${key} needs a value`);
       }
+      // --by is the author (agent | human), and for move an offset X,Y: both can be given
+      if (key === 'by' && PAIR.test(String(val))) key = 'offset';
       opt[key] = val;
     } else pos.push(a);
   }
@@ -5223,7 +5408,7 @@ function parseArgs(argv) {
 }
 
 const pair = (s, what) => {
-  const m = String(s).match(/^\s*(-?[\d.]+)\s*[,;x ]\s*(-?[\d.]+)\s*$/);
+  const m = String(s).match(PAIR);
   if (!m) throw new UsageError(`${what} must be "X,Y"`);
   return [Number(m[1]), Number(m[2])];
 };
@@ -5232,9 +5417,10 @@ const pair = (s, what) => {
 
 function nodeReader(file) {
   const fd = fs.openSync(file, 'r');
-  const size = fs.fstatSync(fd).size;
+  const { size, mtimeMs } = fs.fstatSync(fd);
   return {
     size,
+    mtimeMs,
     fd,
     async read(offset, length) {
       const len = Math.max(0, Math.min(length, size - offset));
@@ -5278,10 +5464,21 @@ async function writeChunk(fd, chunk, pos, src) {
   return writeChunk(fd, new Uint8Array(await chunk.arrayBuffer()), pos, src); // Blob
 }
 
+/** Refuse to write over a file someone else (the app) saved since we read it: their change would be lost. */
+function checkUnchanged(c) {
+  if (!c.reader) return;
+  let st;
+  try { st = fs.statSync(c.file); } catch { st = null; }
+  if (!st || st.size !== c.reader.size || st.mtimeMs !== c.reader.mtimeMs) {
+    throw new Error(`${c.file} changed while this command ran (saved by the app?) — nothing was written; run it again`);
+  }
+}
+
 /**
  * Write `doc` (+ new files) back. Small files and compaction: a new file
  * renamed over the old one. Big files: appended in place (nothing existing is
- * overwritten, so a crash cannot damage what was there).
+ * overwritten, so a crash cannot damage what was there). Nothing is written
+ * when the file changed since it was read.
  */
 async function save(c, doc, { add = new Map(), mode } = {}) {
   const size = c.reader?.size ?? 0;
@@ -5290,15 +5487,22 @@ async function save(c, doc, { add = new Map(), mode } = {}) {
   const plan = await planSave({ base: c.index ? { index: c.index, reader: c.reader } : null, doc, add, mode });
   if (plan.mode === 'full') {
     const tmp = `${c.file}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmp, 'w');
     try {
-      let pos = 0;
-      for (const ch of plan.chunks) pos = await writeChunk(fd, ch, pos, c.reader);
-      fs.fsyncSync(fd);
-    } finally { fs.closeSync(fd); }
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        let pos = 0;
+        for (const ch of plan.chunks) pos = await writeChunk(fd, ch, pos, c.reader);
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+      checkUnchanged(c);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* not made */ }
+      throw e;
+    }
     c.reader?.close();
     renameRetry(tmp, c.file);
   } else {
+    checkUnchanged(c);
     c.reader.close();
     const fd = fs.openSync(c.file, 'r+');
     const src = nodeReader(c.file);
@@ -5352,27 +5556,30 @@ async function fetchImage(url) {
   return { bytes, name, source: url };
 }
 
-/** Turn files / urls (or fetched { bytes, name, source }) into asset records + bytes. Duplicates (same content) are reused. */
-async function gatherImages(doc, inputs) {
+/**
+ * Turn files / urls (or fetched { bytes, name, source }) into asset records + bytes. Duplicates (same content) are reused.
+ * `name`: the file name of a single image (`add --name`).
+ */
+async function gatherImages(doc, inputs, { name: rename = null } = {}) {
   const taken = takenPaths(doc);
   const out = [];
   const add = new Map();
-  for (const input of inputs) {
-    const sources = typeof input === 'object' ? [input] : /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }));
-    for (const s of sources) {
-      const bytes = s.bytes || new Uint8Array(fs.readFileSync(s.file));
-      const name = s.name || path.basename(s.file);
-      const info = imageInfo(bytes);
-      if (!info) { process.stderr.write(`skipped (not a supported image): ${s.file || s.source}\n`); continue; }
-      const sha = createHash('sha256').update(bytes).digest('hex');
-      const id = assetIdFromSha(sha);
-      if (!doc.assets[id] && !add.has(id)) {
-        const file = assetPath(name, info.ext, taken);
-        doc.assets[id] = { file, type: info.type, w: info.w, h: info.h, bytes: bytes.length, sha256: sha, name, source: s.source || null, added: now() };
-        add.set(file, { data: bytes, crc: crc32(bytes) });
-      }
-      out.push({ asset: id, w: doc.assets[id].w, h: doc.assets[id].h, name });
+  const sources = [];
+  for (const input of inputs) sources.push(...(typeof input === 'object' ? [input] : /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }))));
+  need(!rename || sources.length <= 1, `--name is for a single image (${sources.length} found)`);
+  for (const s of sources) {
+    const bytes = s.bytes || new Uint8Array(fs.readFileSync(s.file));
+    const name = rename ? String(rename) : s.name || path.basename(s.file);
+    const info = imageInfo(bytes);
+    if (!info) { process.stderr.write(`skipped (not a supported image): ${s.file || s.source}\n`); continue; }
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    const id = assetIdFromSha(sha);
+    if (!doc.assets[id] && !add.has(id)) {
+      const file = assetPath(name, info.ext, taken);
+      doc.assets[id] = { file, type: info.type, w: info.w, h: info.h, bytes: bytes.length, sha256: sha, name, source: s.source || null, added: now() };
+      add.set(file, { data: bytes, crc: crc32(bytes) });
     }
+    out.push({ asset: id, w: doc.assets[id].w, h: doc.assets[id].h, name });
   }
   return { list: out, add };
 }
@@ -5407,7 +5614,7 @@ function nodeAdder(doc, add) {
   return async (o) => {
     const inputs = [].concat(o.path || o.paths || o.url || o.urls || []);
     need(inputs.length, 'add needs "paths" or "urls"');
-    const g = await gatherImages(doc, inputs);
+    const g = await gatherImages(doc, inputs, { name: o.name });
     for (const [k, v] of g.add) add.set(k, v);
     need(g.list.length, 'no supported images found (jpg, png, webp, gif, bmp, avif)');
     return g.list;
@@ -5442,8 +5649,8 @@ async function main(argv) {
   const { pos, opt } = parseArgs(argv);
   const cmd = pos.shift();
   const by = opt.by === 'human' ? 'human' : 'agent';
-  if (opt.version || opt.v) { console.log(APP_VERSION); return 0; }
-  if (!cmd || opt.help || opt.h || cmd === 'help') { console.log(HELP); return cmd || opt.help || opt.h ? 0 : 2; }
+  if (opt.version) { console.log(APP_VERSION); return 0; }
+  if (!cmd || opt.help || cmd === 'help') { console.log(HELP); return cmd || opt.help ? 0 : 2; }
   const file = pos.shift();
   need(file, `${cmd}: missing file`);
   const out = (text, json) => console.log(opt.json && json !== undefined ? JSON.stringify(json, null, 2) : text);
@@ -5521,14 +5728,20 @@ async function main(argv) {
       case 'extract': {
         const dir = path.resolve(opt.out || path.basename(file, EXT));
         let ids = pos.length ? pos : null;
-        if (ids) { idsExist(doc, ids); ids = [...new Set(doc.items.filter((it) => ids.includes(it.id) || ids.includes(it.parent)).map((it) => it.asset).filter(Boolean))]; }
+        if (ids) {
+          idsExist(doc, ids);
+          const set = withChildren(doc, ids); // groups: what is inside them, nested groups too
+          ids = [...new Set(doc.items.filter((it) => set.has(it.id) && typeof it.asset === 'string').map((it) => it.asset))];
+        }
         const assets = ids || Object.keys(doc.assets);
         const written = [];
         for (const id of assets) {
           const a = doc.assets[id];
           const e = a && c.index.byName.get(a.file);
           if (!e) { process.stderr.write(`missing in file: ${a?.file || id}\n`); continue; }
-          const dest = path.join(dir, a.file.replace(/^images\//, ''));
+          const dest = path.resolve(dir, a.file.replace(/^images\//, ''));
+          const rel = path.relative(dir, dest);
+          if (!rel || rel.split(path.sep)[0] === '..' || path.isAbsolute(rel)) { process.stderr.write(`skipped (its name leads outside ${dir}): ${a.file}\n`); continue; }
           fs.mkdirSync(path.dirname(dest), { recursive: true });
           fs.writeFileSync(dest, await readEntry(c.reader, e));
           written.push(dest);
@@ -5552,7 +5765,7 @@ async function main(argv) {
           group = '$new';
         }
         const at = opt.at && !opt.new_group ? pair(opt.at, '--at') : null;
-        ops.push({ op: 'add', paths: pos, group, x: at?.[0], y: at?.[1], max: opt.max });
+        ops.push({ op: 'add', paths: pos, group, x: at?.[0], y: at?.[1], max: opt.max, name: opt.name });
         break;
       }
       case 'set': {
@@ -5565,9 +5778,9 @@ async function main(argv) {
       }
       case 'move': {
         need(pos.length, 'move: which ids?');
-        need(opt.by || opt.to, 'move: --by DX,DY or --to X,Y');
+        need(opt.offset || opt.to, 'move: --by DX,DY or --to X,Y');
         if (opt.to) { const [x, y] = pair(opt.to, '--to'); ops = [{ op: 'move', ids: pos, x, y }]; }
-        else { const [dx, dy] = pair(opt.by, '--by'); ops = [{ op: 'move', ids: pos, dx, dy }]; }
+        else { const [dx, dy] = pair(opt.offset, '--by'); ops = [{ op: 'move', ids: pos, dx, dy }]; }
         break;
       }
       case 'rm': need(pos.length, 'rm: which ids?'); ops = [{ op: 'rm', ids: pos, keepChildren: !!opt.keep_children }]; break;

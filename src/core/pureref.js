@@ -457,17 +457,21 @@ class SqliteReader {
   scanTable(root, fn, onError) {
     const stack = [[root, 0, 0]]; // [page, referring page, offset of the pointer in it]
     const seen = new Set();
+    // Overflow pages already read in this walk. Each belongs to one cell: cells (or cell
+    // pointers) sharing a chain would each copy the whole payload, so a small crafted
+    // file could ask for gigabytes.
+    const used = new Set();
     while (stack.length) {
       const [n, from, fromOff] = stack.pop();
       try {
-        this.scanPage(n, from, fromOff, seen, stack, fn, onError);
+        this.scanPage(n, from, fromOff, seen, used, stack, fn, onError);
       } catch (e) {
         if (!onError || n === root) throw e;
         onError(`B-tree page ${n} skipped: ${e.message}`);
       }
     }
   }
-  scanPage(n, from, fromOff, seen, stack, fn, onError) {
+  scanPage(n, from, fromOff, seen, used, stack, fn, onError) {
     if (!Number.isInteger(n) || n < 1 || n > this.pageCount) {
       if (from) this.pageErr(from, fromOff, `child page number ${n} out of range (1..${this.pageCount})`);
       fail(`SQLite page number ${n} out of range (1..${this.pageCount})`);
@@ -500,7 +504,7 @@ class SqliteReader {
           const [size, o1] = this.varint(pg, co, n);
           const [rid, o2] = this.varint(pg, o1, n);
           rowid = rid;
-          const payload = this.payload(pg, n, o2, size);
+          const payload = this.payload(pg, n, o2, size, used);
           fn(rowid, payload);
         } catch (e) {
           if (!onError) throw e;
@@ -522,7 +526,8 @@ class SqliteReader {
     }
     return [v, o + 9];
   }
-  payload(pg, n, o, size) {
+  // `used`: overflow pages taken by earlier cells of the same walk (see scanTable).
+  payload(pg, n, o, size, used = new Set()) {
     const U = this.usable;
     if (size > this.pageCount * U) this.pageErr(n, o, `payload size ${size} larger than the database`);
     let local = size;
@@ -533,20 +538,25 @@ class SqliteReader {
     if (o + local > U) this.pageErr(n, o, 'cell payload runs past the page');
     if (local === size) return pg.subarray(o, o + size);
     if (o + local + 4 > U) this.pageErr(n, o, 'overflow pointer runs past the page');
+    const be32 = (p, at) => ((p[at] << 24) >>> 0) + ((p[at + 1] << 16) | (p[at + 2] << 8) | p[at + 3]);
+    // Follow the chain first, so nothing is copied for one that is cut short, loops or is shared.
+    const chain = [];
+    let next = be32(pg, o + local);
+    for (let filled = local; filled < size; filled += U - 4) {
+      if (next === 0) this.pageErr(n, o, `overflow chain ends early (${filled}/${size} bytes)`);
+      if (next > this.pageCount) this.pageErr(n, o, `overflow page number ${next} out of range`);
+      if (used.has(next)) this.pageErr(n, o, `overflow page ${next} is used twice (the chain loops, or another cell shares it)`);
+      used.add(next);
+      chain.push(next);
+      next = be32(this.page(next), 0);
+    }
     const out = new Uint8Array(size);
     out.set(pg.subarray(o, o + local), 0);
     let filled = local;
-    let next = ((pg[o + local] << 24) >>> 0) + ((pg[o + local + 1] << 16) | (pg[o + local + 2] << 8) | pg[o + local + 3]);
-    let hops = 0;
-    while (filled < size) {
-      if (next === 0) this.pageErr(n, o, `overflow chain ends early (${filled}/${size} bytes)`);
-      if (next > this.pageCount) this.pageErr(n, o, `overflow page number ${next} out of range`);
-      if (++hops > this.pageCount) fail('SQLite overflow chain loops');
-      const op = this.page(next);
+    for (const p of chain) {
       const take = Math.min(U - 4, size - filled);
-      out.set(op.subarray(4, 4 + take), filled);
+      out.set(this.page(p).subarray(4, 4 + take), filled);
       filled += take;
-      next = ((op[0] << 24) >>> 0) + ((op[1] << 16) | (op[2] << 8) | op[3]);
     }
     return out;
   }
@@ -978,8 +988,9 @@ function parseV2(u8, r, version) {
         style: num(row.style),
       };
       if (size) {
+        // the transform scales the text with the box: `scale` as for auto-sized notes
         const pl = place(matrix, { x: 0, y: 0, w: size.w, h: size.h });
-        Object.assign(t, { x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: pl.rotation, flipX: pl.flipX, flipY: pl.flipY });
+        Object.assign(t, { x: pl.x, y: pl.y, w: pl.w, h: pl.h, rotation: pl.rotation, scale: pl.w / size.w, flipX: pl.flipX, flipY: pl.flipY });
       } else {
         // Size unknown (auto-sized note): x, y is the note's local origin (its top-left
         // corner) in scene units; rotation/flip/scale apply about that point.
@@ -1061,11 +1072,11 @@ function readStrokes(rd) {
   const out = [];
   for (let i = 0; i < n; i++) {
     const head = rd.u8v();
+    // QColor: any spec (RGB, HSV, CMYK, HSL, extended RGB) → #rrggbb, the alpha apart
     const spec = rd.i8();
-    const a = rd.u16() >> 8, r = rd.u16() >> 8, g = rd.u16() >> 8, b = rd.u16() >> 8;
-    rd.u16(); // padding
-    const hex = (v) => v.toString(16).padStart(2, '0');
-    const color = spec === 1 ? `#${hex(r)}${hex(g)}${hex(b)}` : null; // RGB; other colour specs are rare in a pen
+    const css = qcolorToCss(spec, rd.u16(), rd.u16(), rd.u16(), rd.u16(), rd.u16()); // null: an invalid colour
+    const color = css && css.slice(0, 7);
+    const alpha = css && css.length > 7 ? parseInt(css.slice(7), 16) / 255 : 1;
     const width = rd.f64();
     const count = rd.i32();
     if (count < 0 || count > 1000000) rd.err(`a path of ${count} elements`);
@@ -1076,7 +1087,7 @@ function readStrokes(rd) {
     const start = [rd.f64(), rd.f64()];
     const style = rd.i32();
     if (!(width >= 0 && width < 1e6) || elements.some((e) => e.type < 0 || e.type > 3 || !Number.isFinite(e.x) || !Number.isFinite(e.y))) rd.err('stroke data does not look right');
-    out.push({ color, alpha: a / 255, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
+    out.push({ color, alpha, width, elements, start, style, dashed: style === 1, arrow: style === 2, head });
   }
   return out;
 }
@@ -1100,8 +1111,12 @@ function colorField(db, v) {
 
 function htmlToText(html) {
   let s = html.replace(/<head[\s\S]*?<\/head>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
+  // Qt starts every block on a new source line; text never holds a raw newline (a line
+  // break inside a paragraph is <br />), so source newlines are layout only. An empty
+  // paragraph is written <p ...><br /></p>: one line, not two.
+  s = s.replace(/\r?\n/g, '').replace(/<br\s*\/?>\s*(<\/(p|div|li|h[1-6])>)/gi, '$1');
   s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<[^>]+>/g, '');
-  s = s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d))).replace(/&amp;/g, '&');
+  s = s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d) <= 0x10ffff ? Number(d) : 0xfffd)).replace(/&amp;/g, '&');
   return s.replace(/\n+$/, '').replace(/^\n+/, '');
 }
 

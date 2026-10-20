@@ -8,9 +8,9 @@ import { emptyCanvas } from '../src/core/model.js';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-async function concat(chunks, prefix = new Uint8Array(0)) {
+async function concat(chunks, prefix = new Uint8Array(0), src = null) {
   const parts = [prefix];
-  for (const c of chunks) parts.push(c instanceof Uint8Array ? c : new Uint8Array(await c.arrayBuffer()));
+  for (const c of chunks) parts.push(c instanceof Uint8Array ? c : c.range ? await src.read(...c.range) : new Uint8Array(await c.arrayBuffer()));
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let o = 0;
   for (const p of parts) { out.set(p, o); o += p.length; }
@@ -86,6 +86,25 @@ test('canvas saves: tail mode rewrites only the tail, append keeps everything', 
   assert.ok(!c.index.byName.has('images/a.png'));
   assert.ok(compact.length < 2000);
   assert.equal(c.index.entries[0].name, 'mimetype');
+});
+
+test('full save over a reader without blobs (the CLI): kept images copied as ranges, a valid directory', async () => {
+  const doc = emptyCanvas({ title: 'T' });
+  const img = new Uint8Array(20000).fill(9);
+  doc.assets.a = { file: 'images/a.png', type: 'image/png', w: 10, h: 10 };
+  doc.items.push({ id: 'i1', type: 'image', asset: 'a', x: 0, y: 0, w: 10, h: 10 });
+  const first = await concat((await planSave({ doc, add: new Map([['images/a.png', { data: img, crc: crc32(img) }]]) })).chunks);
+  const src = bytesReader(first);
+  const c = await openCanvas(src);
+  c.doc.title = 'T2';
+  const plan = await planSave({ base: { index: c.index, reader: src }, doc: c.doc, mode: 'full' });
+  assert.ok(plan.chunks.some((ch) => ch.range), 'the image is a range of the old file');
+  const file = await concat(plan.chunks, undefined, src);
+  assert.equal(plan.size, file.length);
+  const idx = await readZip(bytesReader(file), { recover: false });
+  assert.deepEqual(idx.warnings, []);
+  assert.deepEqual(await readEntry(bytesReader(file), idx.byName.get('images/a.png')), img);
+  assert.equal((await openCanvas(bytesReader(file))).doc.title, 'T2');
 });
 
 test('zip64 directory for many entries', async () => {

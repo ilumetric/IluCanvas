@@ -14,10 +14,10 @@
 import { ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } from './ink.js';
 import { parseVideoUrl, parseTime, cleanMarks, RATE_MIN, RATE_MAX } from './video.js';
-import { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, estimateHeight, insertRow, insertCol, removeRows, removeCols, setCell, rowCount, colCount } from './table.js';
+import { TABLE_COL, TABLE_ROW, TABLE_MAX_CELLS, estimateHeight, insertRow, insertCol, removeRows, removeCols, setCell, rowCount, colCount, cleanSizes } from './table.js';
 import {
   NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
-  removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent, cleanTable,
+  removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent, cleanTable, isInside,
 } from './model.js';
 
 export class OpError extends Error {}
@@ -26,6 +26,16 @@ export class OpError extends Error {}
 const idList = (ids) => (ids.length > 12 ? `${ids.slice(0, 10).join(' ')} … (+${ids.length - 10})` : ids.join(' '));
 
 const need = (cond, msg) => { if (!cond) throw new OpError(msg); };
+
+const isTrue = (v) => v === true || v === 'true' || v === 1 || v === '1';
+
+/** A number from loose input (strings from the command line); undefined / null: not given. */
+function numOf(v, name, { positive = false, min } = {}) {
+  if (v === undefined || v === null) return undefined;
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+  need(Number.isFinite(n) && (!positive || n > 0) && (min === undefined || n >= min), `${name} must be a ${positive ? 'positive ' : ''}number${min !== undefined ? ` (${min} or more)` : ''}`);
+  return n;
+}
 
 export function idsExist(doc, ids) {
   const m = byId(doc);
@@ -61,8 +71,9 @@ export function cleanPatch(doc, input, item = null) {
     if (t === 'num' || t === 'pos') {
       const n = Number(raw);
       need(Number.isFinite(n) && (t === 'num' || n > 0), `${k} must be a ${t === 'pos' ? 'positive ' : ''}number`);
-      patch[k] = n;
-    } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
+      need(k !== 'opacity' || (n >= 0 && n <= 1), 'opacity must be 0…1');
+      patch[k] = k === 'rot' ? ((n % 360) + 360) % 360 : n;
+    } else if (t === 'bool') patch[k] = isTrue(raw) ? true : undefined;
     else if (t === 'onoff') patch[k] = raw === false || raw === 'false' || raw === 0 || raw === '0' || raw === 'off' ? false : undefined; // on by default: only "off" is stored
     else if (t === 'cells') {
       const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -93,11 +104,14 @@ export function cleanPatch(doc, input, item = null) {
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
+      need(k !== 'end' || item?.type !== 'stroke' || raw !== 'dot', 'a stroke\'s end is "arrow" or "none"');
       patch[k] = k === 'nib' && raw === 'round' ? undefined : raw;
     }
     else if (t === 'ref') {
+      need(item?.type !== 'connector', 'connectors have no parent (their ends follow the items)');
       const g = byId(doc).get(raw);
       need(g && g.type === 'group', `parent "${raw}" is not a group`);
+      need(!item?.id || (raw !== item.id && !isInside(doc, raw, item.id)), `parent "${raw}" is ${raw === item?.id ? 'the item itself' : `inside ${item?.id}`}: groups cannot be inside each other in a circle`);
       patch[k] = raw;
     } else if (t === 'time') {
       const v = parseTime(raw);
@@ -122,9 +136,27 @@ export function cleanPatch(doc, input, item = null) {
       const c = typeof raw === 'string' ? JSON.parse(raw) : raw;
       need(c && c.w > 0 && c.h > 0, 'crop must be { x, y, w, h } in image pixels');
       patch[k] = { x: Number(c.x) || 0, y: Number(c.y) || 0, w: Number(c.w), h: Number(c.h) };
-    } else patch[k] = String(raw);
+    } else {
+      need(k !== 'name' || !item || item.type === 'group', `only groups have a name (${item?.type}s do not)`);
+      patch[k] = String(raw);
+    }
   }
   return patch;
+}
+
+/** Values an item has when the field is left out: `set` leaves them out too (as the format expects). */
+const DEFAULTS = {
+  note: { size: 'm', scale: 1, align: 'left', ratio: 'free' },
+  shape: { size: 'm', scale: 1, align: 'center' },
+  table: { size: 'm', scale: 1, align: 'left' },
+  connector: { route: 'straight', start: 'none', width: 2 },
+  stroke: { end: 'none' },
+};
+function withoutDefaults(item, patch) {
+  const d = DEFAULTS[item.type] || {};
+  const out = { ...patch };
+  for (const [k, v] of Object.entries(out)) if ((k in d && d[k] === v) || (k === 'opacity' && v >= 1) || (k === 'rot' && v === 0)) out[k] = undefined;
+  return out;
 }
 
 /**
@@ -151,7 +183,8 @@ export function placeImages(doc, list, { group = null, at = null, max = 1200, by
     x0 = b ? b.x + b.w + 120 : 0;
     y0 = b ? b.y : 0;
   }
-  const layout = arrangeRows(rects, { x0, y0, width, rowHeight: Math.min(...sizes.map((s) => s.h)) });
+  // never bigger than `max` or the picture itself
+  const layout = arrangeRows(rects, { x0, y0, width, rowHeight: Math.min(...sizes.map((s) => s.h)), upscale: false });
   const items = list.map((x, i) => {
     const r = layout.get(i);
     const it = { id: newId('image'), type: 'image', asset: x.asset, x: r.x, y: r.y, w: r.w, h: r.h };
@@ -237,14 +270,16 @@ export function newShape(doc, { kind = 'rect', text = '', fill = 'blue', stroke,
  */
 export function newTable(doc, { cells, rows, cols, width, height, fill = 'white', size, scale, align, clickCopy, x, y, group = null, by = 'human' } = {}) {
   const k = scale > 0 ? scale : 1;
-  const R = Array.isArray(rows) ? rows.length : Number(rows) > 0 ? Math.floor(rows) : Array.isArray(cells) && cells.length ? cells.length : 3;
-  const C = Array.isArray(cols) ? cols.length : Number(cols) > 0 ? Math.floor(cols) : Array.isArray(cells) && cells.length ? Math.max(...cells.map((r) => (Array.isArray(r) ? r.length : 1))) : 3;
+  const grid = Array.isArray(cells) ? cells : [];
+  // `cells` are never cut: `rows` / `cols` (counts or sizes) can only add empty ones
+  const R = Math.max(Array.isArray(rows) ? rows.length : Number(rows) > 0 ? Math.floor(rows) : 0, grid.length) || 3;
+  const C = Math.max(Array.isArray(cols) ? cols.length : Number(cols) > 0 ? Math.floor(cols) : 0, ...grid.map((r) => (Array.isArray(r) ? r.length : 1))) || 3;
   need(R * C <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
   const t = cleanTable({
     id: newId('table'), type: 'table', x: 0, y: 0, w: 1, h: 1, fill, size, scale, align, clickCopy,
-    cols: Array.isArray(cols) ? cols : Array(C).fill(Number(width) > 0 ? Number(width) : TABLE_COL * k),
-    rows: Array.isArray(rows) ? rows : Array(R).fill(Number(height) > 0 ? Number(height) : TABLE_ROW * k),
-    cells: cells || [],
+    cols: cleanSizes(Array.isArray(cols) ? cols : [], C, Number(width) > 0 ? Number(width) : TABLE_COL * k),
+    rows: cleanSizes(Array.isArray(rows) ? rows : [], R, Number(height) > 0 ? Number(height) : TABLE_ROW * k),
+    cells: grid,
   });
   t.h = estimateHeight(t);
   placeNew(doc, t, x, y, group);
@@ -261,6 +296,15 @@ function putTable(doc, t, by) {
   doc.updated_by = by;
   if (n.parent) growGroup(doc, n.parent, n, { by });
   return n;
+}
+
+/** After `set cells`: as many rows and columns as the new cells (new ones at the default size). */
+function regrid(t) {
+  const R = t.cells.length;
+  const C = Math.max(1, ...t.cells.map((r) => r.length));
+  need(R * C <= TABLE_MAX_CELLS, `a table takes at most ${TABLE_MAX_CELLS} cells`);
+  const k = t.scale > 0 ? t.scale : 1;
+  return { ...t, rows: cleanSizes(t.rows, R, TABLE_ROW * k), cols: cleanSizes(t.cols, C, TABLE_COL * k) };
 }
 
 /** The table an op names, and a row / column index in it (0-based; negative counts from the end). */
@@ -297,14 +341,16 @@ export function newConnector(doc, { from, to, route = 'dubins', start, end = 'ar
  * its frame hugs the ink, the points are stored relative to it (ink.js).
  */
 /**
- * A new video card (16:9, 640 wide by default) for a YouTube link. `meta`
- * (optional): { asset, title, w, h } — the poster as an image asset, the title.
+ * A new video card (16:9, 640 wide by default; a short 9:16, 360 wide) for a
+ * YouTube link. `meta` (optional): { asset, title, w, h } — the poster as an
+ * image asset, the title.
  */
 export function newVideo(doc, { url, title, start, rate, loop, marks, x, y, w, h, group = null, by = 'human', meta = null } = {}) {
   const v = parseVideoUrl(url);
   need(v, 'video needs a YouTube link (youtube.com/watch?v=…, youtu.be/…, shorts/…)');
-  const W = Number(w) || 640;
-  const it = { id: newId('video'), type: 'video', provider: v.provider, videoId: v.videoId, url: v.url, x: 0, y: 0, w: W, h: Number(h) || Math.round((W * 9) / 16) };
+  const k = v.short ? 16 / 9 : 9 / 16; // height / width
+  const W = Number(w) || (Number(h) ? Math.round(Number(h) / k) : v.short ? 360 : 640);
+  const it = { id: newId('video'), type: 'video', provider: v.provider, videoId: v.videoId, url: v.url, x: 0, y: 0, w: W, h: Number(h) || Math.round(W * k) };
   if (title || meta?.title) it.title = String(title || meta.title);
   if (meta?.asset) it.asset = meta.asset;
   const st = start !== undefined ? start : v.start;
@@ -365,7 +411,7 @@ function placeNew(doc, it, x, y, group) {
 
 /** A new empty group frame: at x/y, or right of everything. */
 export function newGroup(doc, { name = 'Group', color, x, y, w = 1600, h = 1000, by = 'human' } = {}) {
-  const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: x ?? 0, y: y ?? 0, w: Number(w) || 1600, h: Number(h) || 1000 };
+  const g = { id: newId('group'), type: 'group', name: String(name), color: GROUP_COLORS.includes(color) ? color : GROUP_COLORS[groupsOf(doc).length % GROUP_COLORS.length], x: Number(x) || 0, y: Number(y) || 0, w: Number(w) || 1600, h: Number(h) || 1000 };
   if (x === undefined) { const b = contentBounds(doc); if (b) { g.x = b.x + b.w + 160; g.y = b.y; } }
   doc.items = [g, ...doc.items];
   doc.updated_by = by;
@@ -392,8 +438,9 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           need(addImages, 'adding images is not available here');
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const [x, y, max] = [numOf(o.x, 'x'), numOf(o.y, 'y'), numOf(o.max, 'max', { positive: true })];
           const list = await addImages(o);
-          const items = placeImages(doc, list, { group, at: o.x !== undefined ? [Number(o.x), Number(o.y ?? 0)] : null, max: o.max, by });
+          const items = placeImages(doc, list, { group, at: x !== undefined ? [x, y ?? 0] : null, max, by });
           if (o.as) named.set(o.as, items[0]?.id);
           created.push(...items.map((it) => it.id));
           log.push(`added ${items.length} image(s): ${idList(items.map((it) => it.id))}`);
@@ -402,8 +449,9 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
         case 'note': {
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
-          const { op, as, group: _g, ...fields } = o;
-          const n = newNote(doc, { ...cleanPatch(doc, fields, { type: 'note' }), group, by });
+          const { op, as, group: _g, fit, ...fields } = o;
+          // fit: false is an answer here (a sticky that does not fit its text), not "left out"
+          const n = newNote(doc, { ...cleanPatch(doc, fields, { type: 'note' }), fit: fit === undefined || fit === null || fit === '' ? undefined : isTrue(fit), group, by });
           if (as) named.set(as, n.id);
           created.push(n.id);
           log.push(`note ${n.id}`);
@@ -468,8 +516,11 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           const group = o.group ? ref(o.group) : null;
           if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
           const { op, as, group: _g, cells, rows, cols, width, height, x, y, ...fields } = o;
-          if (cells !== undefined) cleanPatch(doc, { cells });
-          const t = newTable(doc, { ...cleanPatch(doc, fields, { type: 'table' }), cells, rows, cols, width, height, x, y, group, by });
+          const grid = cells !== undefined ? cleanPatch(doc, { cells }).cells : undefined;
+          const t = newTable(doc, {
+            ...cleanPatch(doc, fields, { type: 'table' }), cells: grid, rows, cols, group, by,
+            width: numOf(width, 'width', { positive: true }), height: numOf(height, 'height', { positive: true }), x: numOf(x, 'x'), y: numOf(y, 'y'),
+          });
           if (as) named.set(as, t.id);
           created.push(t.id);
           log.push(`table ${t.id} ${rowCount(t)}×${colCount(t)}`);
@@ -511,7 +562,11 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           break;
         }
         case 'newgroup': {
-          const g = newGroup(doc, { ...o, by });
+          if (o.color) need(GROUP_COLORS.includes(o.color), `color must be one of ${GROUP_COLORS.join(', ')}`);
+          const g = newGroup(doc, {
+            name: o.name ?? 'Group', color: o.color, by,
+            x: numOf(o.x, 'x'), y: numOf(o.y, 'y'), w: numOf(o.w, 'w', { positive: true }), h: numOf(o.h, 'h', { positive: true }),
+          });
           if (o.as) named.set(o.as, g.id);
           created.push(g.id);
           log.push(`group ${g.id} "${g.name}"`);
@@ -521,6 +576,8 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           const ids = refs(o.ids);
           need(ids.length, 'group needs ids');
           idsExist(doc, ids);
+          const wires = ids.filter((id) => byId(doc).get(id).type === 'connector');
+          need(!wires.length, `${wires.join(', ')}: connectors are not grouped (their ends follow the items)`);
           if (o.color) need(GROUP_COLORS.includes(o.color), `color must be one of ${GROUP_COLORS.join(', ')}`);
           const g = groupItems(doc, ids, { name: o.name || 'Group', color: o.color, by });
           if (o.as) named.set(o.as, g.id);
@@ -539,7 +596,14 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           }
           idsExist(doc, [id]);
           const item = byId(doc).get(id);
-          const patch = cleanPatch(doc, fields, item);
+          // "$name" ids inside fields: parent, connector ends (an id or { id, side })
+          if (typeof fields.parent === 'string') fields.parent = ref(fields.parent);
+          for (const k of ['from', 'to']) {
+            const e = fields[k];
+            if (typeof e === 'string' && !e.startsWith('{')) fields[k] = ref(e);
+            else if (e && typeof e === 'object' && typeof e.id === 'string') fields[k] = { ...e, id: ref(e.id) };
+          }
+          const patch = withoutDefaults(item, cleanPatch(doc, fields, item));
           // a stroke's new width / tool: measure its frame again (width in board units)
           if (item.type === 'stroke' && (patch.width !== undefined || patch.tool !== undefined)) {
             const { width, tool, ...rest } = patch;
@@ -547,7 +611,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
             doc.items = doc.items.map((it) => (it.id === id ? n : it));
             patchItems(doc, { [id]: rest }, by);
             if (n.parent) growGroup(doc, n.parent, n, { by });
-          } else if (item.type === 'table') putTable(doc, { ...item, ...patch }, by);
+          } else if (item.type === 'table') putTable(doc, patch.cells ? regrid({ ...item, ...patch }) : { ...item, ...patch }, by);
           else patchItems(doc, { [id]: patch }, by);
           log.push(`set ${id}`);
           break;
@@ -556,11 +620,12 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           const ids = refs(o.ids ?? o.id);
           need(ids.length, 'move needs ids');
           idsExist(doc, ids);
-          if (o.dx !== undefined || o.dy !== undefined) moveItems(doc, ids, Number(o.dx) || 0, Number(o.dy) || 0, by);
+          const [dx, dy, x, y] = [numOf(o.dx, 'dx'), numOf(o.dy, 'dy'), numOf(o.x, 'x'), numOf(o.y, 'y')];
+          if (dx !== undefined || dy !== undefined) moveItems(doc, ids, dx ?? 0, dy ?? 0, by);
           else {
             const m = byId(doc);
             const b = unionBounds(ids.map((id) => itemBounds(m.get(id))));
-            moveItems(doc, ids, (o.x ?? b.x) - b.x, (o.y ?? b.y) - b.y, by);
+            moveItems(doc, ids, (x ?? b.x) - b.x, (y ?? b.y) - b.y, by);
           }
           if (o.reparent !== false) reparent(doc, ids, by);
           log.push(`moved ${idList(ids)}`);
@@ -577,6 +642,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
         case 'ungroup': {
           const id = ref(o.id);
           idsExist(doc, [id]);
+          need(byId(doc).get(id).type === 'group', `${id} is not a group (rm removes items)`);
           ungroup(doc, id, by);
           log.push(`ungrouped ${id}`);
           break;
@@ -587,7 +653,7 @@ export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } 
           idsExist(doc, ids);
           const gid = ids.length === 1 && byId(doc).get(ids[0]).type === 'group' ? ids[0] : null;
           if (gid) ids = childrenOf(doc, gid).map((it) => it.id);
-          arrangeItems(doc, ids, { by, width: o.width ? Number(o.width) : undefined, gap: o.gap !== undefined ? Number(o.gap) : undefined });
+          arrangeItems(doc, ids, { by, width: numOf(o.width, 'width', { positive: true }), gap: numOf(o.gap, 'gap', { min: 0 }) });
           if (gid) fitGroup(doc, gid, { by });
           log.push(`arranged ${ids.length} item(s)`);
           break;

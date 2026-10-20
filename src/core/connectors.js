@@ -238,11 +238,15 @@ function elbow(a, b, da, db, ba, bb) {
     [pa, { x: pa.x, y: my }, { x: pb.x, y: my }, pb],
     [pa, { x: mx, y: pa.y }, { x: mx, y: pb.y }, pb],
   );
+  // and past both boxes on every side: when they overlap on an axis the way round may be either
+  for (const y of [Math.min(boxA.y, boxB.y) - STUB, Math.max(boxA.y + boxA.h, boxB.y + boxB.h) + STUB]) cands.push([pa, { x: pa.x, y }, { x: pb.x, y }, pb]);
+  for (const x of [Math.min(boxA.x, boxB.x) - STUB, Math.max(boxA.x + boxA.w, boxB.x + boxB.w) + STUB]) cands.push([pa, { x, y: pa.y }, { x, y: pb.y }, pb]);
   let best = null;
   let bestCost = Infinity;
   for (const mid of cands) {
     const pts = tidy([a, ...mid, b]);
-    if (!orthogonal(pts)) continue;
+    // ends that meet (items edge to edge, a self-connector) can tidy down to one point
+    if (pts.length < 2 || !orthogonal(pts)) continue;
     let cost = 0;
     for (let i = 1; i < pts.length; i++) {
       cost += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);

@@ -32,12 +32,12 @@ function nearest(table, c, fallback) {
   return best;
 }
 
-/** Plain text as our Markdown: every character means itself. */
+/** Plain text as our Markdown: every character means itself (no code spans, so ` stays bare). */
 export function escapeMarkdown(text) {
   return String(text).split('\n').map((line) => line
-    .replace(/[\\*_~=[\]<`]/g, (ch) => `\\${ch}`)
+    .replace(/[\\*_~=[\]<]/g, (ch) => `\\${ch}`)
     .replace(/^(\s*)([#>+-])/, '$1\\$2')
-    .replace(/^(\s*\d+)\./, '$1\\.')).join('\n');
+    .replace(/^(\s*\d+)([.)])/, '$1\\$2')).join('\n');
 }
 
 const FONT = 18; // our note text, size m
@@ -77,18 +77,22 @@ function pathRuns(els) {
 /** What a PureRef pen stroke is: a rectangle, an ellipse, a straight line or freehand. */
 function strokeKind(els) {
   const types = els.map((e) => e.type).join('');
-  if (types === '01111') {
-    const [a, , , , e] = els;
-    const axis = els.slice(1).every((p, i) => Math.abs(p.x - els[i].x) < 1e-6 || Math.abs(p.y - els[i].y) < 1e-6);
-    if (axis && Math.abs(a.x - e.x) < 1e-6 && Math.abs(a.y - e.y) < 1e-6) return 'rect';
-  }
-  if (types === '0233233233233') return 'ellipse';
+  const a = els[0];
+  const e = els[els.length - 1];
+  const closed = Math.abs(a.x - e.x) < 1e-6 && Math.abs(a.y - e.y) < 1e-6;
+  if (types === '01111' && closed && els.slice(1).every((p, i) => Math.abs(p.x - els[i].x) < 1e-6 || Math.abs(p.y - els[i].y) < 1e-6)) return 'rect';
+  // a move + 4 curves that ends where it began (a freehand line can be 4 curves too)
+  if (types === '0233233233233' && closed) return 'ellipse';
   if (types === '01') return 'line';
   return 'freehand';
 }
 
-/** Our items for one PureRef drawing (its strokes; its transform places them). */
-function drawingItems(dr) {
+/**
+ * Our items for one PureRef drawing (its strokes; its transform places them).
+ * In a group a straight line is a pen stroke: connectors have no parent, so it
+ * would stay behind when the group moves.
+ */
+function drawingItems(dr, inGroup) {
   const m = dr.matrix;
   const sx = Math.hypot(m[0], m[1]);
   const sy = Math.hypot(m[2], m[3]);
@@ -113,7 +117,7 @@ function drawingItems(dr) {
       out.push(shape);
       continue;
     }
-    if (kind === 'line') {
+    if (kind === 'line' && !inGroup) {
       const a = apply(m, st.elements[0].x, st.elements[0].y);
       const b = apply(m, st.elements[1].x, st.elements[1].y);
       out.push({ type: 'connector', from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y }, end: st.arrow ? 'arrow' : 'none', color, width: Math.round(width * 100) / 100, ...(st.dashed ? { dash: true } : {}), x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.max(1, Math.abs(b.x - a.x)), h: Math.max(1, Math.abs(b.y - a.y)) });
@@ -168,8 +172,16 @@ export function purItems(pur, assetOf, id) {
     const pad = color === 'none' ? 4 : 16;
     const w = tx.w > 0 ? tx.w : Math.max(60, longest * FONT * 0.56 * scale + pad * 2);
     const h = tx.h > 0 ? tx.h : Math.max(30, lines.length * FONT * 1.45 * scale + pad * 2);
-    const note = { id: id('note', ++n), type: 'note', x: tx.x, y: tx.y, w, h, color, text: escapeMarkdown(text) };
-    if (!(tx.w > 0) && Math.abs(scale - 1) > 0.01) note.scale = Math.round(scale * 1000) / 1000;
+    let { x, y } = tx;
+    if (!(tx.w > 0) && tx.rotation) {
+      // PureRef turns an auto-sized note about its top-left corner (x, y), we turn about the
+      // centre: put the centre where PureRef's is
+      const a = (tx.rotation * Math.PI) / 180;
+      x = tx.x + (w / 2) * Math.cos(a) - (h / 2) * Math.sin(a) - w / 2;
+      y = tx.y + (w / 2) * Math.sin(a) + (h / 2) * Math.cos(a) - h / 2;
+    }
+    const note = { id: id('note', ++n), type: 'note', x, y, w, h, color, text: escapeMarkdown(text) };
+    if (Math.abs(scale - 1) > 0.01) note.scale = Math.round(scale * 1000) / 1000;
     if (tx.rotation) note.rot = tx.rotation;
     if (tx.group !== null && tx.group !== undefined && groupIds.has(tx.group)) note.parent = groupIds.get(tx.group);
     placed.push({ z: tx.z ?? 0, it: note });
@@ -177,7 +189,7 @@ export function purItems(pur, assetOf, id) {
   n = 0;
   for (const dr of pur.drawings || []) {
     const parent = dr.group !== null && dr.group !== undefined && groupIds.has(dr.group) ? groupIds.get(dr.group) : null;
-    for (const it of drawingItems(dr)) {
+    for (const it of drawingItems(dr, !!parent)) {
       it.id = id(it.type, ++n);
       if (parent) it.parent = parent;
       placed.push({ z: dr.z ?? 0, it });

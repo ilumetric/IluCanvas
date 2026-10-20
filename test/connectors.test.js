@@ -71,6 +71,37 @@ test('elbow routes are orthogonal and go around the boxes when they turn back', 
   assert.ok(orthogonal(free.pts));
 });
 
+test('elbow routes go round the low side too when the boxes overlap on an axis', () => {
+  // up out of a, into the left side of a box up and to the left that shares a's top band
+  const side = { id: 'side', x: -400, y: -100, w: 100, h: 100 };
+  const look = (id) => (id === 'side' ? side : boxes[id]);
+  const p = connectorPath({ from: { id: 'a', side: 'top' }, to: { id: 'side', side: 'left' }, route: 'elbow' }, look);
+  assert.ok(orthogonal(p.pts));
+  assert.ok(!crosses(p.pts, side), JSON.stringify(p.pts));
+  assert.ok(!crosses(p.pts, boxes.a), JSON.stringify(p.pts));
+  assert.ok(Math.min(...p.pts.map((q) => q.y)) < side.y, 'passes above both');
+  // and the route does not change from one call to the next
+  assert.deepEqual(connectorPath({ from: { id: 'a', side: 'top' }, to: { id: 'side', side: 'left' }, route: 'elbow' }, look).pts, p.pts);
+});
+
+test('elbow routes whose ends meet do not break', () => {
+  const cases = [
+    ['side by side, edge to edge', { A: { id: 'A', x: 0, y: 0, w: 100, h: 100 }, B: { id: 'B', x: 100, y: 0, w: 100, h: 100 } }, { from: { id: 'A' }, to: { id: 'B' } }],
+    ['stacked, edge to edge', { A: { id: 'A', x: 0, y: 0, w: 100, h: 100 }, B: { id: 'B', x: 0, y: 100, w: 100, h: 100 } }, { from: { id: 'A' }, to: { id: 'B' } }],
+    ['right side to left side, touching', { A: { id: 'A', x: 0, y: 0, w: 100, h: 60 }, B: { id: 'B', x: 100, y: 0, w: 50, h: 60 } }, { from: { id: 'A', side: 'right' }, to: { id: 'B', side: 'left' } }],
+    ['a self-connector on an item turned 90°', { R: { id: 'R', x: 0, y: 0, w: 100, h: 50, rot: 90 } }, { from: { id: 'R' }, to: { id: 'R' } }],
+    ['two free ends at one point', {}, { from: { x: 5, y: 5 }, to: { x: 5, y: 5 } }],
+  ];
+  for (const [label, items, c] of cases) {
+    const p = connectorPath({ ...c, route: 'elbow' }, (id) => items[id]);
+    assert.ok(p.pts.length >= 2, label);
+    assert.ok(p.pts.every((q) => Number.isFinite(q.x) && Number.isFinite(q.y)), label);
+    assert.ok(orthogonal(p.pts), label);
+    assert.deepEqual(p.pts[0], p.a, label);
+    assert.deepEqual(p.pts[p.pts.length - 1], p.b, label);
+  }
+});
+
 test('geometry helpers', () => {
   const pts = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }];
   assert.equal(distToPolyline({ x: 50, y: 10 }, pts), 10);

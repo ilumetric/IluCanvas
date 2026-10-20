@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVideoUrl, parseTime, formatTime, cleanMarks } from '../src/core/video.js';
+import { parseVideoUrl, parseTime, formatTime, cleanMarks, watchUrl } from '../src/core/video.js';
 import { emptyCanvas, normalize, serialize, validate, usedAssets, pruneAssets } from '../src/core/model.js';
 import { applyOps } from '../src/core/ops.js';
 import { listText } from '../src/core/describe.js';
@@ -16,6 +16,23 @@ test('YouTube links: every form, start times, shorts', () => {
   assert.equal(parseVideoUrl('https://vimeo.com/123'), null);
   assert.equal(parseVideoUrl('https://www.youtube.com/watch?v=short'), null);
   assert.equal(parseVideoUrl('not a link'), null);
+  // without https://
+  assert.equal(parseVideoUrl(`www.youtube.com/watch?v=${id}`)?.videoId, id);
+  assert.equal(parseVideoUrl(`youtu.be/${id}`)?.videoId, id);
+  assert.equal(parseVideoUrl('vimeo.com/123'), null);
+  assert.equal(parseVideoUrl('youtube.com.evil.com/watch?v=dQw4w9WgXcQ'), null);
+  assert.equal(parseVideoUrl(`javascript://youtube.com/watch?v=${id}`), null, 'web links only');
+  // a playlist, an id with more after it
+  assert.equal(parseVideoUrl('https://www.youtube.com/embed/videoseries?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'), null);
+  assert.equal(parseVideoUrl(`https://www.youtube.com/shorts/${id}123`), null);
+  assert.equal(parseVideoUrl(`https://www.youtube.com/embed/${id}/`)?.videoId, id);
+});
+
+test('watchUrl: a safe watch link, or null', () => {
+  assert.equal(watchUrl('dQw4w9WgXcQ'), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.equal(watchUrl('dQw4w9WgXcQ', 90.7), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90s');
+  assert.equal(watchUrl('dQw4w9WgXcQ', 0.5), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  for (const bad of ['nope', 'dQw4w9WgXc&', '"><script>', null, undefined, 42]) assert.equal(watchUrl(bad), null, String(bad));
 });
 
 test('times: parse and format', () => {
@@ -27,6 +44,10 @@ test('times: parse and format', () => {
   assert.equal(parseTime('soon'), null);
   assert.equal(formatTime(3725), '1:02:05');
   assert.equal(formatTime(83.456, { digits: 2 }), '1:23.46');
+  assert.equal(formatTime(59.96, { tenths: true }), '1:00.0', 'rounded before it is split: never 0:60.0');
+  assert.equal(formatTime(3599.96, { tenths: true }), '1:00:00.0');
+  assert.equal(formatTime(59.999, { digits: 2 }), '1:00.00');
+  assert.equal(formatTime(59.6), '0:59', 'whole seconds count down, as a clock');
   assert.deepEqual(cleanMarks([{ t: '1:00', label: 'b' }, { t: 5, end: 3, label: 'a' }, { t: 'x' }]), [{ t: 5, label: 'a' }, { t: 60, label: 'b' }]);
 });
 

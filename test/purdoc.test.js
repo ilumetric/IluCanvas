@@ -58,9 +58,55 @@ test('PureRef on our widgets: groups (nested), notes, stacking', () => {
 });
 
 test('escapeMarkdown keeps every character literal', () => {
-  const s = '- list?\n> quote\n1. one\n**bold** _it_ ==hl== [a](b) <u>x</u> ~~s~~ \ back';
+  const s = '- list?\n> quote\n1. one\n2) two\n  3) three\n**bold** _it_ ==hl== [a](b) <u>x</u> ~~s~~ \\ back\nrun `ls` now';
   assert.equal(plainText(escapeMarkdown(s)), s);
   assert.ok(parseMarkdown(escapeMarkdown(s)).every((b) => b.type === 'p'));
+  assert.ok(!escapeMarkdown('`ls`').includes('\\'), 'no code spans, so a backtick needs no backslash');
+});
+
+test('PureRef notes: a turned auto-sized note keeps its place, a fixed-size one its text scale', () => {
+  const tx = { text: 'hello world', html: null, x: 0, y: 0, w: null, h: null, rotation: 90, scale: 1, z: 1, group: null };
+  const [n] = purItems({ images: [], items: [], texts: [tx], groups: [] }, () => null, (k, i) => `${k}${i}`).items;
+  // PureRef turns the note about its top-left (0, 0); ours turns about the centre, so the
+  // top-left of our turned box must land on (0, 0) and the centre where PureRef's is
+  const a = (n.rot * Math.PI) / 180;
+  const cx = n.x + n.w / 2;
+  const cy = n.y + n.h / 2;
+  const corner = { x: cx - (n.w / 2) * Math.cos(a) + (n.h / 2) * Math.sin(a), y: cy - (n.w / 2) * Math.sin(a) - (n.h / 2) * Math.cos(a) };
+  assert.ok(Math.abs(corner.x) < 1e-9 && Math.abs(corner.y) < 1e-9, JSON.stringify(corner));
+  assert.ok(Math.abs(cx + n.h / 2) < 1e-9 && Math.abs(cy - n.w / 2) < 1e-9, 'centre at PureRef’s: x = −h/2, y = w/2');
+  // unturned: x, y as given
+  const [m] = purItems({ images: [], items: [], texts: [{ ...tx, rotation: 0, x: 7, y: 9 }], groups: [] }, () => null, (k, i) => `${k}${i}`).items;
+  assert.deepEqual([m.x, m.y], [7, 9]);
+  // a fixed-size note drawn 4× (its transform) with 27 px text: our text 4 × 27 / 18
+  const fixed = { text: 'big', html: '<body style=" font-size:27px;"><p>big</p></body>', x: 0, y: 0, w: 800, h: 160, scale: 4, rotation: 0, z: 1 };
+  const [f] = purItems({ images: [], items: [], texts: [fixed], groups: [] }, () => null, (k, i) => `${k}${i}`).items;
+  assert.deepEqual([f.w, f.h, f.scale], [800, 160, 6]);
+});
+
+test('PureRef drawings: an open stroke of four curves is not an ellipse; a line in a group goes with the group', () => {
+  const el = (list) => list.map(([type, x, y]) => ({ type, x, y }));
+  const open = el([[0, 0, 0], [2, 5, 0], [3, 10, 5], [3, 10, 10], [2, 10, 15], [3, 15, 20], [3, 20, 20], [2, 25, 20], [3, 30, 25], [3, 30, 30], [2, 30, 35], [3, 35, 40], [3, 40, 40]]);
+  const line = el([[0, 0, 0], [1, 100, 50]]);
+  const pur = {
+    images: [], items: [], texts: [],
+    groups: [{ id: 10, name: 'G', group: null, background: null }],
+    drawings: [
+      { id: 6, z: 1, group: null, matrix: [1, 0, 0, 1, 0, 0], strokes: [{ color: '#ff0000', width: 3, elements: open }, { color: '#ff0000', width: 3, elements: line }] },
+      { id: 7, z: 2, group: 10, matrix: [1, 0, 0, 1, 0, 0], strokes: [{ color: '#00ff00', width: 3, arrow: true, elements: line }] },
+    ],
+  };
+  const { items } = purItems(pur, () => null, (kind, n) => `${kind}${n}`);
+  const group = items.find((it) => it.type === 'group');
+  const [ink, conn, grouped] = items.filter((it) => it.type !== 'group');
+  assert.equal(ink.type, 'stroke', 'freehand, not an ellipse');
+  assert.equal(conn.type, 'connector', 'a line outside a group stays a connector');
+  assert.equal(grouped.type, 'stroke', 'in a group: a pen stroke');
+  assert.equal(grouped.parent, group.id);
+  assert.equal(grouped.end, 'arrow');
+  const d = normalize({ ...emptyCanvas(), items });
+  assert.ok(validate(d).ok, JSON.stringify(validate(d).errors));
+  assert.equal(d.items.find((it) => it.id === grouped.id).parent, group.id, 'the parent survives normalize');
 });
 
 test('PureRef drawings: rectangles and ellipses → shapes, a line → a connector, the rest → ink', () => {

@@ -4,8 +4,8 @@
 
 * images → image items (crop, rotation, flips, opacity, lock; the PureRef name goes to `note`);
 * groups → group frames around what is in them, nested as in PureRef; the background colour picks the nearest group colour; empty groups are dropped;
-* text notes → notes: text straight on the board (`color: none`) or, with a background, the nearest sticky colour; the text is kept literally (Markdown characters escaped); size from the note's fixed size or estimated from its text and scale;
-* drawings → rectangles and ellipses become shapes without a fill (PureRef's colour as `stroke`, its pen width as `strokeWidth`), a two-point line a free connector, freehand and polylines pen strokes (curves sampled). Dashed lines stay dashed (`dash` on shapes, connectors and strokes); arrows become a connector's `end: "arrow"` (a straight line) or a stroke's `end: "arrow"` (polylines, freehand).
+* text notes → notes: text straight on the board (`color: none`) or, with a background, the nearest sticky colour; the text is kept literally (Markdown characters escaped); size from the note's fixed size or estimated from its text and scale; the text scale is the transform's scale times the HTML font size over ours (fixed-size notes too); an auto-sized note turned in PureRef (about its top-left corner) is placed so that its centre is where PureRef's is, since ours turn about the centre;
+* drawings → rectangles and ellipses become shapes without a fill (PureRef's colour as `stroke`, its pen width as `strokeWidth`), a two-point line a free connector (inside a group a pen stroke instead, so it moves with the group: connectors have no parent), freehand and polylines pen strokes (curves sampled). Dashed lines stay dashed (`dash` on shapes, connectors and strokes); arrows become a connector's `end: "arrow"` (a straight line) or a stroke's `end: "arrow"` (polylines, freehand).
 
 ### Drawings (PureRef 2.x, verified on a 2.1.3 sample)
 
@@ -16,14 +16,15 @@
 | type | meaning |
 |---|---|
 | u8 | 100 in every stroke of the sample (unknown) |
-| QColor | `i8` spec (1 = RGB), then `u16` alpha, red, green, blue, padding |
+| QColor | `i8` spec, `u16` alpha, 4 × `u16` (spec 1 RGB + padding in the sample; 2 HSV, 3 CMYK, 4 HSL and 5 extended RGB are converted too) |
 | f64 | pen width, in the item's units |
 | QPainterPath | `i32` n, n × (`i32` type, `f64` x, `f64` y), `i32` start, `i32` fill rule; types 0 move, 1 line, 2 curve (control 1), 3 curve data (control 2, end) |
 | QPointF | where the drag started |
 | i32 | line style: 0 solid, 1 dashed, 2 an arrow at the end (open lines only; rectangles and ellipses draw solid) — read from the samples' thumbnails |
 
 The tool is not stored; the path says it: a closed 5-point axis-aligned polyline
-is a rectangle, a move + 4 cubic curves an ellipse, freehand strokes are curves.
+is a rectangle, a move + 4 cubic curves that ends where it began an ellipse
+(an open freehand line can be 4 curves too), freehand strokes are curves.
 The item's `transform` places the drawing (the sample's: a uniform scale of 16.39).
 
 This document covers:
@@ -243,7 +244,7 @@ It uses only `Uint8Array`, `DataView` and `TextDecoder`, so it runs in browsers 
              id, parent, opacity, locked, order,       // extras
              imageMatrix, pixelMatrix, cropPolygon, flags }],
   texts:  [{ text, html, x, y, w, h, matrix, color, background, z, rotation, flipX, flipY,
-             scale /* auto-sized notes only */, id, name, parent, group, opacity, style }],
+             scale /* the transform's x scale */, id, name, parent, group, opacity, style }],
   warnings: [string],
   groups: [{ id, name, parent, group, matrix, z, background, lockMode }],   // extra
   view:   { sceneRect, transform, scrollX, scrollY },                         // extra
@@ -258,13 +259,14 @@ It uses only `Uint8Array`, `DataView` and `TextDecoder`, so it runs in browsers 
 * **Placement**: `x, y, w, h, rotation, flipX, flipY` describe this transform: `translate(x + w/2, y + h/2) · rotate(rotation°, clockwise, y down) · scale(flipX ? -1 : 1, flipY ? -1 : 1)`, applied to the cropped image drawn as a `w × h` box centred on the origin. In CSS that is `left:x; top:y; width:w; height:h; transform: rotate(rotation deg) scale(±1, ±1)` with a centred origin. A negative determinant is reported as exactly one flip. The parser picks `flipX` or `flipY`, whichever needs the smaller rotation. A vertical flip with no rotation therefore comes out as `flipY`, not as `flipX` plus 180°. Non-uniform scale is kept in `w`/`h`. Skew cannot be represented and adds a warning.
 * **`z`** is `items.z`. `items` and `texts` are sorted bottom to top by z, then id. `order` is the decoded `sort_order` (sibling order), or null.
 * **`group`** is the id of the nearest ancestor that is a group (2.x), otherwise null. `parent` is the direct parent id.
-* **`texts`**: if a note has a fixed size, x/y/w/h/rotation work as for images. Otherwise `x, y` is the note's top-left origin in scene coordinates, `w`/`h` are null, and `rotation`/`scale`/flips apply about that origin. If the text looks like Qt rich text, `html` holds the original and `text` is a plain-text conversion.
+* **`texts`**: if a note has a fixed size, x/y/w/h/rotation work as for images, and `scale` (the text's) is the transform's scale, as for auto-sized notes. Otherwise `x, y` is the note's top-left origin in scene coordinates, `w`/`h` are null, and `rotation`/`scale`/flips apply about that origin. If the text looks like Qt rich text, `html` holds the original and `text` is a plain-text conversion: one line per paragraph and per `<br />` (an empty paragraph, `<p><br /></p>`, is one empty line); the newlines Qt puts between blocks in the source are not text.
 
 ### 4.2 Error policy
 
 * Every structural read is bounds-checked. Corrupt input throws `Error('PureRef: … (at byte N)')`, where N is the absolute file offset. Database offsets are mapped back through the relocation. Values assembled from overflow pages report `in <table.column> (item id) at +offset`.
 * These problems are reported in `warnings` and skipped, without failing the file:
   * one bad row or cell, or a bad non-root B-tree page
+  * a cell whose overflow chain uses a page already used in the same table (a loop, or cells sharing one chain: each would copy the whole payload, so a small crafted file could ask for gigabytes)
   * an undecodable `QVariant`
   * a missing image or parent
   * an unknown item type
@@ -276,7 +278,7 @@ It uses only `Uint8Array`, `DataView` and `TextDecoder`, so it runs in browsers 
 
 ### 4.3 Not supported, or only partly
 
-* **Drawings** (`items_drawings.strokes`, `QList<GraphicsDrawItem::Stroke>`): skipped with a warning.
+* **Drawings** (`items_drawings.strokes`, `QList<GraphicsDrawItem::Stroke>`): read (see the top of this document); the tool is not stored, so rectangles, ellipses and lines are told apart by the shape of the path.
 * **Notes in 2.x**: the columns are known, but no sample contained a note, so the value formats are guessed. The parser accepts a `QVariant<QColor>` or `#AARRGGBB` / `#RRGGBB` for colours and a `QVariant<QSizeF>` for `fixed_size`. It detects HTML text and ignores `style`. Treat note output as best-effort.
 * **Groups**: the hierarchy and transform composition follow Qt parent/child rules (child transform relative to parent). No sample had a group, so this is unverified. Group background and lock mode are passed through. Group bounds are not computed.
 * **Linked (non-embedded) images**: `data` is empty and `mime` is `application/octet-stream`. A warning is added and `path` is kept.

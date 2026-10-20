@@ -64,9 +64,10 @@ export function closeColorPicker() {
  * Open the picker beside `anchor` at `color` (#rrggbb). `onChange(hex, done)`:
  * done = false while dragging, true once a colour is chosen (release, Enter,
  * eyedropper, a recent colour). Opening it again with the same `key` closes it.
- * `beside`: the element to stand next to (default: the anchor); `place`: side | below.
+ * `beside`: the element to stand next to (default: the anchor); `place`: side | below;
+ * `onClose()`: it closed, however (a drag cut short leaves no colour chosen).
  */
-export function openColorPicker(anchor, color, onChange, { key = '', beside = anchor, place = 'side' } = {}) {
+export function openColorPicker(anchor, color, onChange, { key = '', beside = anchor, place = 'side', onClose = null } = {}) {
   if (current) {
     const same = current.key === key;
     current.close();
@@ -242,11 +243,15 @@ export function openColorPicker(anchor, color, onChange, { key = '', beside = an
   };
   const esc = (e) => { if (e.key === 'Escape') close(); };
   setTimeout(() => { addEventListener('pointerdown', outside, true); addEventListener('keydown', esc); });
+  let closed = false;
   function close() {
+    if (closed) return;
+    closed = true;
     removeEventListener('pointerdown', outside, true);
     removeEventListener('keydown', esc);
     el.remove();
     if (current?.el === el) current = null;
+    onClose?.();
   }
   current = { el, key, close };
   return current;

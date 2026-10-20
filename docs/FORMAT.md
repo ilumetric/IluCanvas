@@ -78,11 +78,11 @@ other ids; anything unique is fine.)
 
 | field | |
 |---|---|
-| `file` | path inside the ZIP, `images/…` |
+| `file` | path inside the ZIP, `images/…` (no `..` part, no `\`, no leading `/`: it must stay inside a folder it is extracted to) |
 | `type` | `image/jpeg`, `image/png`, `image/webp`, `image/gif`, `image/bmp`, `image/avif` |
 | `w`, `h` | pixel size as displayed (EXIF rotation applied) |
 | `bytes`, `sha256` | size and hash of the file |
-| `thumb` | path of the preview, `thumbs/<id>.webp` (`.jpg` / `.png` from Safari) (optional) |
+| `thumb` | path of the preview, `thumbs/<id>.webp` (`.jpg` / `.png` from Safari) (optional; same rules as `file`) |
 | `color` | average colour `#rrggbb` (optional) — shown while loading and when tiny |
 | `name` | the original file name |
 | `source` | where it came from (URL), optional |
@@ -94,7 +94,9 @@ All items: `id`, `type`, `x`, `y`, `w`, `h` (the box in board units, y down,
 before rotation), optional `rot` (degrees clockwise, around the box centre;
 images, notes, shapes and strokes turn — connectors follow the turned sides),
 `parent` (a group id), `locked` (`true`: not moved by the mouse), `note`
-(free text). Unknown types are kept and drawn as a dashed box.
+(free text). Unknown types are kept and drawn as a dashed box; unknown fields
+are kept as they are (`null` too), and the asset an item of an unknown type
+names in `asset` stays in the file.
 
 **image** — `asset`, optional `flipX` / `flipY` (`true`), `crop` (`{x, y, w, h}`
 in the image's own pixels: the visible part), `opacity` (0…1).
@@ -135,7 +137,7 @@ Every line is one paragraph (an empty line is an empty paragraph).
 | `**bold**` `*italic*` `_italic_` `~~strike~~` `<u>underline</u>` | marks |
 | `==text==` | yellow highlight |
 | `[text]{.red}` · `[text]{.hl-green}` · `[text]{.blue .hl-yellow}` | text colour / highlight colour: `red orange yellow green blue violet pink grey` |
-| `[text](https://…)` | link (Ctrl+click opens it) |
+| `[text](https://…)` | link (Ctrl+click opens it); `(`, `)` and spaces in the address are written `%28 %29 %20` |
 | `\*` | a literal character |
 
 **shape** — a figure with text, for diagrams and flowcharts.
@@ -246,6 +248,7 @@ tools without fonts estimate it, the app corrects it). Tables do not turn.
 
 Errors: wrong `format`; an item whose `asset` is not in `assets`; a `parent`
 that is not a group; groups inside each other in a circle; duplicate ids;
+an asset `file` / `thumb` with a `..` part, a `\` or a leading `/`;
 a connector end that is neither `{id}` nor `{x, y}`, or names an unknown item or the connector itself;
 a table whose `cells` are not `rows` × `cols`;
 `x y w h` that are not numbers, `w`/`h` ≤ 0; an asset `file` missing from the ZIP.

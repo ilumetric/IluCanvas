@@ -5,7 +5,7 @@
 // the item (undoable edits); the duration is noted silently once known.
 
 import { byId } from '../core/model.js';
-import { formatTime, cleanMarks, RATE_MIN, RATE_MAX } from '../core/video.js';
+import { formatTime, cleanMarks, watchUrl, RATE_MIN, RATE_MAX } from '../core/video.js';
 import { h, icon, promptDialog } from './ui.js';
 import { t } from './i18n.js';
 
@@ -47,6 +47,8 @@ export class VideoPlayer {
     this.close();
     const it = byId(this.app.doc()).get(id);
     if (!it || it.type !== 'video') return;
+    // the id comes from a file (maybe someone else's): only a real YouTube id reaches the player
+    if (!watchUrl(it.videoId)) { this.app.toast(t('video.badLink'), { kind: 'warn' }); return; }
     this.id = id;
     this.app.board.activeVideo = id;
     this.app.board.invalidate();
@@ -232,7 +234,8 @@ export class VideoPlayer {
       btn(null, t('video.loopB'), () => this.#setLoop('b'), !!(loop || pend?.b !== undefined), loop ? `B ${formatTime(loop.b)}` : pend?.b !== undefined ? `B ${formatTime(pend.b)}` : 'B'),
       loop || pend ? btn('x', t('video.loopClear'), () => { this.pendingLoop = null; if (loop) this.#set('loop', { loop: undefined }); else this.#render(); }) : null,
       h('span.sb-sep'),
-      btn('external', t('video.openYoutube'), () => window.open(`${it.url}&t=${Math.floor(this.#now())}s`, '_blank', 'noopener')),
+      // from the id, not the item's `url` (which may hold anything)
+      btn('external', t('video.openYoutube'), () => window.open(watchUrl(it.videoId, this.#now()), '_blank', 'noopener')),
       btn('x', `${t('video.close')} (Esc)`, () => this.close()));
     const marks = h('div.vmarks', {},
       ...(it.marks || []).map((m) => h('span.vmark', {},
