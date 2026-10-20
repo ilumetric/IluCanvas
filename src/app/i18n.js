@@ -105,6 +105,11 @@ const RU = {
 
   'tool.shape': 'Фигура', 'tool.connector': 'Связь', 'tool.pen': 'Ручка', 'tool.highlighter': 'Маркер', 'tool.tape': 'Лента', 'tool.eraser': 'Ластик',
   'ink.round': 'Круглое перо', 'ink.italic': 'Каллиграфическое перо — поворот стилуса поворачивает перо', 'ink.width': 'Толщина', 'ink.color': 'Цвет', 'ink.tool': 'Инструмент',
+  'zoom.snap': 'Привязка к краям и центрам (Ctrl при перетаскивании — без неё)', 'zoom.snapGrid': 'Привязка к сетке фона (Ctrl при перетаскивании — без неё)', 'sideGroup.new': 'Новая группа', 'sideGroup.name': 'Название группы', 'sideGroup.default': 'Группа', 'sideGroup.menu': 'Группа', 'sideGroup.rename': 'Переименовать группу', 'sideGroup.delete': 'Удалить группу (доски останутся)', 'sideGroup.empty': 'Перетащите сюда доски', 'sideGroup.boardMenu': 'В группу…', 'sideGroup.moveTo': 'В группу', 'sideGroup.newWith': 'Новая группа…', 'sideGroup.remove': 'Убрать из группы', 'sideGroup.missing': 'сейчас недоступна', 'sideGroup.missingText': 'Эта доска сейчас недоступна: откройте её папку или ссылку снова', 'tool.image': 'Картинки', 'tool.video': 'Видео по ссылке',
+  'video.add': 'Добавить видео', 'video.link': 'Ссылка на YouTube', 'video.badLink': 'Это не ссылка на видео YouTube', 'video.loading': 'Загружаю обложку и название…', 'video.noPoster': 'Обложку скачать не удалось — видео добавлено без неё',
+  'video.offline': 'YouTube недоступен — плеер не открыть', 'video.play': 'Смотреть', 'video.pause': 'Пауза', 'video.frameBack': 'Кадр назад', 'video.frameFwd': 'Кадр вперёд', 'video.speed': 'Скорость',
+  'video.loopA': 'Начало петли A — сейчас', 'video.loopB': 'Конец петли B — сейчас', 'video.loopClear': 'Убрать петлю', 'video.openYoutube': 'Открыть на YouTube', 'video.close': 'Закрыть плеер',
+  'video.mark': 'Метка', 'video.markAdd': 'Метка на {time}', 'video.markLabel': 'Что здесь (можно пусто)', 'video.markGo': 'Перейти', 'video.markRemove': 'Удалить метку',
   'color.custom': 'Свой цвет…', 'color.wheel': 'Тон и насыщенность', 'color.brightness': 'Яркость', 'color.h': 'Тон (H)', 'color.s': 'Насыщенность (S)', 'color.l': 'Светлота (L)', 'color.eyedropper': 'Пипетка — цвет с экрана',
   'shape.kind': 'Фигура', 'shape.fill': 'Заливка', 'shape.stroke': 'Обводка',
   'shape.rect': 'Прямоугольник', 'shape.rounded': 'Скруглённый', 'shape.ellipse': 'Эллипс', 'shape.diamond': 'Ромб',
@@ -235,6 +240,11 @@ const EN = {
 
   'tool.shape': 'Shape', 'tool.connector': 'Connector', 'tool.pen': 'Pen', 'tool.highlighter': 'Highlighter', 'tool.tape': 'Tape', 'tool.eraser': 'Eraser',
   'ink.round': 'Round nib', 'ink.italic': 'Italic nib — turning the stylus turns it', 'ink.width': 'Width', 'ink.color': 'Colour', 'ink.tool': 'Tool',
+  'zoom.snap': 'Snap to edges and centres (hold Ctrl while dragging to skip)', 'zoom.snapGrid': 'Snap to the background grid (hold Ctrl while dragging to skip)', 'sideGroup.new': 'New group', 'sideGroup.name': 'Group name', 'sideGroup.default': 'Group', 'sideGroup.menu': 'Group', 'sideGroup.rename': 'Rename the group', 'sideGroup.delete': 'Delete the group (the boards stay)', 'sideGroup.empty': 'Drag boards here', 'sideGroup.boardMenu': 'Into a group…', 'sideGroup.moveTo': 'Into the group', 'sideGroup.newWith': 'New group…', 'sideGroup.remove': 'Take out of the group', 'sideGroup.missing': 'not available now', 'sideGroup.missingText': 'This board is not available now: open its folder or link again', 'tool.image': 'Pictures', 'tool.video': 'Video by link',
+  'video.add': 'Add a video', 'video.link': 'YouTube link', 'video.badLink': 'This is not a YouTube video link', 'video.loading': 'Fetching the poster and title…', 'video.noPoster': 'Could not download the poster — the video is added without it',
+  'video.offline': 'YouTube is not reachable — the player cannot open', 'video.play': 'Play', 'video.pause': 'Pause', 'video.frameBack': 'Previous frame', 'video.frameFwd': 'Next frame', 'video.speed': 'Speed',
+  'video.loopA': 'Loop start A — now', 'video.loopB': 'Loop end B — now', 'video.loopClear': 'Clear the loop', 'video.openYoutube': 'Open on YouTube', 'video.close': 'Close the player',
+  'video.mark': 'Mark', 'video.markAdd': 'Mark at {time}', 'video.markLabel': 'What happens here (may be empty)', 'video.markGo': 'Go there', 'video.markRemove': 'Remove the mark',
   'color.custom': 'Custom colour…', 'color.wheel': 'Hue and saturation', 'color.brightness': 'Brightness', 'color.h': 'Hue (H)', 'color.s': 'Saturation (S)', 'color.l': 'Lightness (L)', 'color.eyedropper': 'Eyedropper — pick a colour on screen',
   'shape.kind': 'Shape', 'shape.fill': 'Fill', 'shape.stroke': 'Outline',
   'shape.rect': 'Rectangle', 'shape.rounded': 'Rounded', 'shape.ellipse': 'Ellipse', 'shape.diamond': 'Diamond',

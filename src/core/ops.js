@@ -13,6 +13,7 @@
 
 import { ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, NIBS, INK_DEFAULTS, strokeFrame, reframe } from './ink.js';
+import { parseVideoUrl, parseTime, cleanMarks, RATE_MIN, RATE_MAX } from './video.js';
 import {
   NOTE_COLORS, NOTE_SIZES, NOTE_ALIGNS, NOTE_RATIOS, RATIO_K, GROUP_COLORS, SHAPE_KINDS, PAINT, isHexColor, cleanEnd, refreshConnectors, byId, itemBounds, unionBounds, contentBounds, childrenOf, groupsOf, moveItems, patchItems,
   removeItems, groupItems, ungroup, fitGroup, growGroup, arrangeItems, arrangeRows, addItems, newId, fitSize, restack, reparent,
@@ -38,7 +39,10 @@ const EDITABLE = {
   kind: 'enum', fill: 'paint', stroke: 'paint',
   from: 'end', to: 'end', route: 'enum', start: 'enum', end: 'enum', width: 'pos', dash: 'bool', label: 'str',
   tool: 'enum', nib: 'enum',
+  title: 'str', rate: 'rate', loop: 'loop', marks: 'marks',
 };
+/** Fields that mean something else on a video (start: a time, not a connector head). */
+const VIDEO_FIELDS = { start: 'time' };
 const ENUMS = { size: NOTE_SIZES, align: NOTE_ALIGNS, ratio: NOTE_RATIOS, kind: SHAPE_KINDS, route: ROUTES, start: HEADS, end: HEADS, tool: INK_TOOLS, nib: NIBS };
 export const EDITABLE_KEYS = Object.keys(EDITABLE);
 
@@ -47,7 +51,7 @@ export function cleanPatch(doc, input, item = null) {
   const patch = {};
   for (const [k, raw] of Object.entries(input)) {
     if (raw === undefined) continue;
-    const t = EDITABLE[k];
+    const t = (item?.type === 'video' && VIDEO_FIELDS[k]) || EDITABLE[k];
     need(t, `unknown field "${k}" (editable: ${EDITABLE_KEYS.join(', ')})`);
     if (t === 'text') { patch[k] = String(raw ?? '').replace(/\r\n?/g, '\n'); continue; }
     need(t !== 'end' || (raw !== null && raw !== ''), `${k} cannot be removed: give an id or { x, y }`);
@@ -58,8 +62,8 @@ export function cleanPatch(doc, input, item = null) {
       patch[k] = n;
     } else if (t === 'bool') patch[k] = raw === true || raw === 'true' || raw === 1 || raw === '1' ? true : undefined;
     else if (t === 'paint') {
-      need(raw === 'none' || PAINT.includes(raw), `${k} must be one of ${PAINT.join(', ')}, none`);
-      patch[k] = raw === 'none' && k === 'stroke' ? undefined : raw;
+      need(raw === 'none' || PAINT.includes(raw) || isHexColor(raw), `${k} must be one of ${PAINT.join(', ')}, none, or #rrggbb`);
+      patch[k] = raw === 'none' && k === 'stroke' ? undefined : isHexColor(raw) ? raw.toLowerCase() : raw;
     } else if (t === 'end') {
       const e = typeof raw === 'string' && raw.startsWith('{') ? JSON.parse(raw) : raw;
       const end = cleanEnd(e);
@@ -71,9 +75,9 @@ export function cleanPatch(doc, input, item = null) {
       patch[k] = end;
     } else if (t === 'color') {
       need(item?.type !== 'shape', 'shapes have fill and stroke, not color');
-      if (item?.type === 'stroke' && isHexColor(raw)) { patch[k] = raw.toLowerCase(); continue; }
+      if ((item?.type === 'stroke' || item?.type === 'connector') && isHexColor(raw)) { patch[k] = raw.toLowerCase(); continue; }
       const list = item?.type === 'note' ? NOTE_COLORS : item?.type === 'connector' || item?.type === 'stroke' ? PAINT : GROUP_COLORS;
-      need(list.includes(raw), `color must be one of ${list.join(', ')}${item?.type === 'stroke' ? ', or #rrggbb' : ''}`);
+      need(list.includes(raw), `color must be one of ${list.join(', ')}${item?.type === 'stroke' || item?.type === 'connector' ? ', or #rrggbb' : ''}`);
       patch[k] = raw;
     } else if (t === 'enum') {
       need(ENUMS[k].includes(raw), `${k} must be one of ${ENUMS[k].join(', ')}`);
@@ -83,6 +87,25 @@ export function cleanPatch(doc, input, item = null) {
       const g = byId(doc).get(raw);
       need(g && g.type === 'group', `parent "${raw}" is not a group`);
       patch[k] = raw;
+    } else if (t === 'time') {
+      const v = parseTime(raw);
+      need(v !== null, `${k} must be a time: seconds, 1:23 or 1m23s`);
+      patch[k] = v || undefined;
+    } else if (t === 'rate') {
+      const v = Number(raw);
+      need(v >= RATE_MIN && v <= RATE_MAX, `rate must be ${RATE_MIN}…${RATE_MAX}`);
+      patch[k] = v === 1 ? undefined : v;
+    } else if (t === 'loop') {
+      const l = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const a = parseTime(l?.a);
+      const b = parseTime(l?.b);
+      need(a !== null && b !== null && b > a, 'loop must be { a, b } with b after a (seconds or 1:23)');
+      patch[k] = { a, b };
+    } else if (t === 'marks') {
+      const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      need(Array.isArray(list), 'marks must be a list of { t, label, end? }');
+      const m = cleanMarks(list);
+      patch[k] = m.length ? m : undefined;
     } else if (t === 'crop') {
       const c = typeof raw === 'string' ? JSON.parse(raw) : raw;
       need(c && c.w > 0 && c.h > 0, 'crop must be { x, y, w, h } in image pixels');
@@ -210,6 +233,28 @@ export function newConnector(doc, { from, to, route = 'dubins', start, end = 'ar
  * A new ink stroke through `samples` ([{ x, y, p? , t? }] in board units):
  * its frame hugs the ink, the points are stored relative to it (ink.js).
  */
+/**
+ * A new video card (16:9, 640 wide by default) for a YouTube link. `meta`
+ * (optional): { asset, title, w, h } — the poster as an image asset, the title.
+ */
+export function newVideo(doc, { url, title, start, rate, loop, marks, x, y, w, h, group = null, by = 'human', meta = null } = {}) {
+  const v = parseVideoUrl(url);
+  need(v, 'video needs a YouTube link (youtube.com/watch?v=…, youtu.be/…, shorts/…)');
+  const W = Number(w) || 640;
+  const it = { id: newId('video'), type: 'video', provider: v.provider, videoId: v.videoId, url: v.url, x: 0, y: 0, w: W, h: Number(h) || Math.round((W * 9) / 16) };
+  if (title || meta?.title) it.title = String(title || meta.title);
+  if (meta?.asset) it.asset = meta.asset;
+  const st = start !== undefined ? start : v.start;
+  if (st) it.start = st;
+  if (rate && rate !== 1) it.rate = rate;
+  if (loop) it.loop = loop;
+  if (marks?.length) it.marks = marks;
+  placeNew(doc, it, x, y, group);
+  addItems(doc, [it], by);
+  if (it.parent) growGroup(doc, it.parent, it, { by });
+  return it;
+}
+
 export function newStroke(doc, { tool = 'pen', nib, color, width, samples, group = null, by = 'human' } = {}) {
   const def = INK_DEFAULTS[tool] || INK_DEFAULTS.pen;
   const w = Number(width) || def.width;
@@ -265,7 +310,7 @@ export function newGroup(doc, { name = 'Group', color, x, y, w = 1600, h = 1000,
  * Throws OpError (with the op number) on the first bad op; the caller decides
  * whether to keep the partial result (the CLI writes nothing then).
  */
-export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
+export async function applyOps(doc, ops, { by = 'agent', addImages, videoMeta } = {}) {
   need(Array.isArray(ops), 'ops must be an array');
   const created = [];
   const log = [];
@@ -325,6 +370,21 @@ export async function applyOps(doc, ops, { by = 'agent', addImages } = {}) {
           if (as) named.set(as, c.id);
           created.push(c.id);
           log.push(`connector ${c.id}`);
+          break;
+        }
+        case 'video': {
+          const group = o.group ? ref(o.group) : null;
+          if (group) { idsExist(doc, [group]); need(byId(doc).get(group).type === 'group', `${group} is not a group`); }
+          const { op, as, group: _g, url, ...fields } = o;
+          const parsed = parseVideoUrl(url);
+          need(parsed, 'video needs a YouTube link (youtube.com/watch?v=…, youtu.be/…, shorts/…)');
+          // the poster and the title come from the environment (the browser or the CLI fetch them)
+          let meta = null;
+          if (videoMeta) { try { meta = await videoMeta(parsed); } catch { meta = null; } }
+          const v = newVideo(doc, { ...cleanPatch(doc, fields, { type: 'video' }), url, group, by, meta });
+          if (as) named.set(as, v.id);
+          created.push(v.id);
+          log.push(`video ${v.id} ${v.videoId}${v.asset ? '' : ' (no poster)'}`);
           break;
         }
         case 'stroke': {

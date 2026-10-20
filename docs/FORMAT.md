@@ -91,7 +91,8 @@ other ids; anything unique is fine.)
 ### Items
 
 All items: `id`, `type`, `x`, `y`, `w`, `h` (the box in board units, y down,
-before rotation), optional `rot` (degrees clockwise, around the box centre),
+before rotation), optional `rot` (degrees clockwise, around the box centre;
+images, notes, shapes and strokes turn — connectors follow the turned sides),
 `parent` (a group id), `locked` (`true`: not moved by the mouse), `note`
 (free text). Unknown types are kept and drawn as a dashed box.
 
@@ -142,8 +143,8 @@ Every line is one paragraph (an empty line is an empty paragraph).
 | field | |
 |---|---|
 | `kind` | `rect rounded ellipse diamond triangle parallelogram hexagon star` |
-| `fill` | `white grey black red orange yellow green blue violet pink`, or `none` (only the outline) |
-| `stroke` | outline colour from the same list; none when left out (`grey` when `fill` is `none`) |
+| `fill` | `white grey black red orange yellow green blue violet pink`, a custom `#rrggbb`, or `none` (only the outline); text is light on dark fills |
+| `stroke` | outline colour from the same list or `#rrggbb`; none when left out (`grey` when `fill` is `none`) |
 | `text` | Markdown like a note's, centred inside the figure; the shape grows downwards to show all of it |
 | `size`, `scale` | text size, as for notes |
 | `align` | `left center right`; default `center` |
@@ -163,7 +164,7 @@ become free points where they were.
 | `from`, `to` | the ends |
 | `route` | `straight` (when left out), `elbow` (right angles, around the end items), `curve`, `dubins` (arcs and straight lines with a minimum turning radius — a Dubins path; what the tools make by default) |
 | `start`, `end` | heads `none arrow dot`; default no start head, `arrow` at the end |
-| `color` | `white grey black red orange yellow green blue violet pink` |
+| `color` | `white grey black red orange yellow green blue violet pink`, or a custom `#rrggbb` |
 | `width` | line width in board units; default 2 |
 | `dash` | `true`: dashed |
 | `label` | text in the middle of the line |
@@ -196,7 +197,26 @@ tools measures the stroke again (`vw = w` afterwards, `width` in board units).
 {"id":"k9f2m1qa","type":"stroke","tool":"pen","color":"red","width":4,"x":96,"y":46,"w":108,"h":38,"vw":108,"vh":38,"pts":[4.2,4.2,0.3,54.2,30.1,0.8,104.2,8.6,0.5]}
 ```
 
-Planned item type (not in this version yet): `video` — see [ROADMAP.md](ROADMAP.md).
+**video** — a YouTube video by link: a card with its poster; it plays in the
+app (the player loads from YouTube). For studying a reference: speed, an A–B
+loop, labelled timecodes.
+
+| field | |
+|---|---|
+| `provider` | `youtube` |
+| `videoId` | the 11-character YouTube id |
+| `url` | `https://www.youtube.com/watch?v=<id>` |
+| `title` | optional, from the video page |
+| `asset` | optional: the poster, an ordinary image asset (`images/youtube-<id>.jpg`), so the board shows it offline |
+| `start` | seconds to start from (a link's `t=`) |
+| `rate` | playback speed 0.25…2; 1 when left out |
+| `loop` | `{ "a": seconds, "b": seconds }`, the A–B loop |
+| `marks` | timecodes: `[{ "t": seconds, "label": "…", "end"?: seconds }]`, sorted by `t` |
+| `duration` | seconds, noted by the app once the player knows it (draws the timecodes on the card) |
+
+```json
+{"id":"v8k2m1qa","type":"video","provider":"youtube","videoId":"dQw4w9WgXcQ","url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","title":"…","asset":"263dedc00c8521ab","x":0,"y":0,"w":640,"h":360,"start":43,"rate":0.5,"loop":{"a":60,"b":65},"marks":[{"t":43,"label":"chorus"}]}
+```
 
 ## Checks (`ilucanvas validate`)
 

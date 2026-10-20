@@ -18,7 +18,9 @@ import { readEntry } from '../src/core/zip.js';
 import { crc32 } from '../src/core/crc32.js';
 import { imageInfo, isImageName } from '../src/core/imageinfo.js';
 import { parsePureRef } from '../src/core/pureref.js';
+import { purItems } from '../src/core/purdoc.js';
 import { listText } from '../src/core/describe.js';
+import { posterUrls, oembedUrl } from '../src/core/video.js';
 
 const HELP = `IluCanvas ${APP_VERSION} — infinite reference board in one .ilucanvas file (format v${FORMAT_VERSION})
 A .ilucanvas file is a ZIP: canvas.json (the scene) + images/ (originals) + thumbs/.
@@ -45,6 +47,8 @@ Write (re-read → change → write; the open app picks the change up within sec
                                         from / to: an item id or X,Y;  [--color C] [--dash] [--width W]
   stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W] [--nib italic] [--group ID]
                                         freehand ink through the points (X,Y,PRESSURE also works)
+  video <file> <youtube-url> [--title T] [--at X,Y] [--w W] [--start T] [--group ID] [--no-poster]
+                                        a YouTube video card; its poster is stored in the file
   note <file> "text" [--color C] [--at X,Y] [--group ID] [--w W] [--size s|m|l|xl]
                                         a note; Markdown text ("\\n" = new line); colours: yellow orange
                                         pink green blue violet grey (stickies), paper (document), none (text)
@@ -55,7 +59,7 @@ Write (re-read → change → write; the open app picks the change up within sec
   front <file> <id>… | back <file> <id>…
   apply <file> <ops.json | ->           many changes in one write (see docs/AGENT.md)
   compact <file>                        rewrite the file without dead space
-  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file (images and their layout)
+  from-pur <in.pur> [out.ilucanvas]     convert a PureRef file: images, groups, text notes
 
 Options
   --by agent|human   recorded in updated_by (default agent)
@@ -66,7 +70,7 @@ Docs: https://ilumetric.github.io/IluCanvas/docs/AGENT.md
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'h', 'v']);
+const BOOL = new Set(['json', 'help', 'version', 'keep_children', 'force', 'dash', 'no_poster', 'h', 'v']);
 
 function parseArgs(argv) {
   const pos = [];
@@ -221,13 +225,13 @@ async function fetchImage(url) {
   return { bytes, name, source: url };
 }
 
-/** Turn files / urls into asset records + bytes. Duplicates (same content) are reused. */
+/** Turn files / urls (or fetched { bytes, name, source }) into asset records + bytes. Duplicates (same content) are reused. */
 async function gatherImages(doc, inputs) {
   const taken = takenPaths(doc);
   const out = [];
   const add = new Map();
   for (const input of inputs) {
-    const sources = /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }));
+    const sources = typeof input === 'object' ? [input] : /^https?:\/\//i.test(input) ? [await fetchImage(input)] : listImages(path.resolve(input)).map((f) => ({ file: f }));
     for (const s of sources) {
       const bytes = s.bytes || new Uint8Array(fs.readFileSync(s.file));
       const name = s.name || path.basename(s.file);
@@ -283,6 +287,28 @@ function nodeAdder(doc, add) {
   };
 }
 
+/** videoMeta for core/ops.js: the title (oEmbed) and the poster, stored as an image asset. */
+function nodeVideoMeta(doc, add) {
+  return async (v) => {
+    const meta = {};
+    try {
+      const r = await fetch(oembedUrl(v.url));
+      if (r.ok) meta.title = (await r.json()).title;
+    } catch { /* offline: no title */ }
+    for (const u of posterUrls(v.videoId)) {
+      try {
+        const src = await fetchImage(u);
+        const g = await gatherImages(doc, [{ ...src, name: `youtube-${v.videoId}.jpg` }]);
+        if (!g.list.length) continue;
+        for (const [k, x] of g.add) add.set(k, x);
+        meta.asset = g.list[0].asset;
+        break;
+      } catch { /* the next size */ }
+    }
+    return meta;
+  };
+}
+
 // ---- commands ------------------------------------------------------------------------------------
 
 async function main(argv) {
@@ -324,18 +350,12 @@ async function main(argv) {
       }
       assetOf.push(id);
     }
-    const items = [...pur.items].sort((a, b) => (a.z ?? 0) - (b.z ?? 0)).map((p) => {
-      const it = { id: newId('image'), type: 'image', asset: assetOf[p.image], x: p.x, y: p.y, w: p.w, h: p.h };
-      if (p.rotation) it.rot = p.rotation;
-      if (p.flipX) it.flipX = true;
-      if (p.flipY) it.flipY = true;
-      if (p.crop) it.crop = p.crop;
-      if (p.name) it.note = p.name;
-      return it;
-    });
+    // on our own widgets: images, group frames, notes
+    const { items } = purItems(pur, (i) => assetOf[i], (kind) => newId(kind));
     addItems(doc, items, by);
     await save({ file: target, index: null, reader: null }, doc, { add });
-    out(`converted ${file} → ${target}: ${items.length} images${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
+    const count = (type) => items.filter((it) => it.type === type).length;
+    out(`converted ${file} → ${target}: ${count('image')} images, ${count('group')} groups, ${count('note')} notes${pur.warnings?.length ? `\nwarnings:\n  ${pur.warnings.join('\n  ')}` : ''}`, { file: target, items: items.length, warnings: pur.warnings });
     return 0;
   }
 
@@ -440,6 +460,12 @@ async function main(argv) {
         ops = [{ op: 'connect', from: end(pos[0]), to: end(pos[1]), label: opt.label, route: opt.route, start: opt.start, end: opt.end, color: opt.color, dash: opt.dash ? true : undefined, width: opt.width ? Number(opt.width) : undefined }];
         break;
       }
+      case 'video': {
+        need(pos.length === 1, 'video: usage: video <file> <youtube-url> [--title T] [--at X,Y] [--w W] [--start T] [--group ID] [--no-poster]');
+        const at = opt.at ? pair(opt.at, '--at') : null;
+        ops = [{ op: 'video', url: pos[0], title: opt.title, start: opt.start, x: at?.[0], y: at?.[1], w: opt.w ? Number(opt.w) : undefined, group: opt.group }];
+        break;
+      }
       case 'stroke': {
         need(pos.length >= 1, 'stroke: usage: stroke <file> "X,Y X,Y …" [--tool pen|highlighter|tape] [--color C] [--width W]');
         const points = pos.join(' ').trim().split(/\s+/).map((s) => {
@@ -477,7 +503,7 @@ async function main(argv) {
       default: throw new UsageError(`unknown command "${cmd}" (see --help)`);
     }
     let r;
-    try { r = await applyOps(doc, ops, { by, addImages: nodeAdder(doc, add) }); } catch (e) {
+    try { r = await applyOps(doc, ops, { by, addImages: nodeAdder(doc, add), videoMeta: opt.no_poster ? null : nodeVideoMeta(doc, add) }); } catch (e) {
       throw e instanceof OpError ? new UsageError(`${e.message} — nothing was written`) : e;
     }
     const result = { text: r.log.join('\n') || 'nothing to do', json: { created: r.created, log: r.log } };

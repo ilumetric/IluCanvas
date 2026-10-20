@@ -3,6 +3,7 @@
 
 import { childrenOf, groupsOf, contentBounds } from './model.js';
 import { plainText } from './markdown.js';
+import { formatTime } from './video.js';
 
 const r0 = (v) => Math.round(v);
 const box = (it) => `x=${r0(it.x)} y=${r0(it.y)} w=${r0(it.w)} h=${r0(it.h)}`;
@@ -15,7 +16,7 @@ export function headerLine(doc) {
     const n = doc.items.filter((i) => i.type === type).length;
     return n ? ` · ${n} ${word}` : '';
   };
-  return `canvas "${doc.title}" ${doc.id} · ${doc.items.filter((i) => i.type === 'image').length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')}${count('stroke', 'strokes')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`;
+  return `canvas "${doc.title}" ${doc.id} · ${doc.items.filter((i) => i.type === 'image').length} images · ${groupsOf(doc).length} groups${count('note', 'notes')}${count('shape', 'shapes')}${count('connector', 'connectors')}${count('stroke', 'strokes')}${count('video', 'videos')} · updated ${doc.updated || '?'} by ${doc.updated_by || '?'}`;
 }
 
 export function itemLine(doc, it) {
@@ -37,6 +38,10 @@ export function itemLine(doc, it) {
       return `${it.id}  connector  ${end(it.from)} → ${end(it.to)}${it.label ? `  "${it.label}"` : ''}  ${it.route || 'straight'}${it.start ? ` start=${it.start}` : ''} end=${it.end}  ${it.color}`;
     case 'stroke':
       return `${it.id}  stroke  ${it.tool}${it.nib ? ` ${it.nib}` : ''}  ${it.color}  width=${Math.round(it.width * 10) / 10}  ${(it.pts?.length || 0) / 3} points  ${box(it)}`;
+    case 'video': {
+      const extra = [it.start ? `start=${formatTime(it.start)}` : '', it.rate ? `rate=${it.rate}` : '', it.loop ? `loop=${formatTime(it.loop.a)}-${formatTime(it.loop.b)}` : '', it.marks?.length ? `${it.marks.length} marks` : '', it.asset ? '' : 'no poster'].filter(Boolean).join(' ');
+      return `${it.id}  video  ${it.provider} ${it.videoId}  "${(it.title || '').slice(0, 60)}"${extra ? `  ${extra}` : ''}  ${box(it)}`;
+    }
     default:
       return `${it.id}  ${it.type}  ${box(it)}`;
   }

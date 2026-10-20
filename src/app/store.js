@@ -9,6 +9,7 @@ import { openCanvas, planSave, chooseMode, deadBytes, referencedFiles, MIMETYPE 
 import { emptyCanvas, normalize, serialize, merge3, assetPath, takenPaths, now } from '../core/model.js';
 import { imageInfo, IMAGE_TYPES } from '../core/imageinfo.js';
 import { parsePureRef } from '../core/pureref.js';
+import { purItems } from '../core/purdoc.js';
 import { work } from './images.js';
 
 /** Previews are WebP; where the browser cannot write WebP (Safari) JPEG or PNG — named by what they are. */
@@ -85,15 +86,8 @@ export class Store {
       const blob = im.data.buffer === u8.buffer ? file.slice(im.data.byteOffset, im.data.byteOffset + im.data.length, doc.assets[id].type) : new Blob([im.data], { type: doc.assets[id].type });
       this.purBlobs.set(id, blob);
     });
-    const items = [...pur.items].sort((a, b) => (a.z ?? 0) - (b.z ?? 0));
-    for (const p of items) {
-      const it = { id: `pi${doc.items.length + 1}`, type: 'image', asset: `p${p.image + 1}`, x: p.x, y: p.y, w: p.w, h: p.h };
-      if (p.rotation) it.rot = p.rotation;
-      if (p.flipX) it.flipX = true;
-      if (p.flipY) it.flipY = true;
-      if (p.crop) it.crop = p.crop;
-      doc.items.push(it);
-    }
+    // on our own widgets: images, group frames, notes (stable ids: the file is read again on every open)
+    doc.items = purItems(pur, (i) => `p${i + 1}`, (kind, n) => `p${kind[0]}${n}`).items;
     this.kind = 'pur';
     this.readOnly = true;
     this.file = file;

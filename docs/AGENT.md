@@ -56,6 +56,7 @@ node ilucanvas.mjs connect refs.ilucanvas s1a2b3c s7f2k1q --label yes --route el
 node ilucanvas.mjs connect refs.ilucanvas s7f2k1q 900,300 --end dot --dash             # to a free point
 node ilucanvas.mjs stroke refs.ilucanvas "0,0 60,40,0.9 120,10" --color red --width 6   # ink through points (X,Y or X,Y,PRESSURE)
 node ilucanvas.mjs stroke refs.ilucanvas "0,300 400,300" --tool highlighter --color yellow
+node ilucanvas.mjs video refs.ilucanvas "https://youtu.be/dQw4w9WgXcQ?t=43" --at 0,2400   # a video card; poster + title fetched
 node ilucanvas.mjs rm refs.ilucanvas i8k2m1q [--keep-children]
 node ilucanvas.mjs front|back refs.ilucanvas i8k2m1q
 node ilucanvas.mjs apply refs.ilucanvas ops.json                      # many changes, one write (below)
@@ -121,9 +122,10 @@ One JSON array; `"as"` names an id made in the batch, later ops refer to it as
 | `shape` | `kind` (`rect rounded ellipse diamond triangle parallelogram hexagon star`), `text` (Markdown), `fill`, `stroke`, `x`, `y`, `w`, `h` (default 200×120, 200×200 for round kinds), `size`, `scale`, `align`, `group`, `as` |
 | `connect` | `from`, `to` — an id, `"$name"` or `{ "x", "y" }`; `fromSide` / `toSide` (`top right bottom left`, pins the end to that side), `route` (`dubins` by default, `curve straight elbow`), `start` / `end` heads (`none arrow dot`, default end `arrow`), `color`, `width`, `dash`, `label`, `as` |
 | `stroke` | `points` — `[[x, y], [x, y, pressure], …]` in board units; `tool` (`pen highlighter tape`), `color`, `width` (default 3.5 / 18 / 30), `nib` (`italic`, pen only), `group`, `as` |
+| `video` | `url` (YouTube: watch, youtu.be, shorts, embed, live), `title`, `start` (seconds or `1:23`), `rate` (0.25…2), `loop` (`{ a, b }`), `marks` (`[{ t, label, end? }]`), `x`, `y`, `w`, `h` (default 640×360; shorts 360×640), `group`, `as` — the poster is stored in the file |
 | `newgroup` | `name`, `color`, `x`, `y`, `w`, `h` (default: right of everything, 1600×1000), `as` |
 | `group` | `ids`, `name`, `color`, `as` — a frame around them; made inside a group, it nests there |
-| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label`, strokes `tool nib color width` (`null` removes a field) |
+| `set` | `id` (or `"canvas"` with `title`) and fields: `x y w h rot name color note flipX flipY locked parent opacity crop`, for notes also `text fit size scale align ratio`, shapes `kind text fill stroke size scale align`, connectors `from to route start end color width dash label`, strokes `tool nib color width`, videos `title start rate loop marks`; `rot` turns images, notes, shapes and strokes (`null` removes a field) |
 | `move` | `ids` and `dx`/`dy`, or `x`/`y` for the top-left of their bounds; items dropped inside a group join it |
 | `arrange` | `id` of a group (its images) or `ids`; `width`, `gap` |
 | `fit` | `id` of a group: the frame hugs its items |
@@ -136,7 +138,7 @@ Group colours: `violet blue orange green pink yellow red amber grey`. Note colou
 headings, lists, `- [ ]` checklists, quotes, bold / italic / strike / `<u>`,
 `==highlight==`, `[text]{.red}` colours, links ([FORMAT.md](FORMAT.md#note-text-markdown-subset)).
 Shape fills, outlines, connector and ink colours: `white grey black red orange yellow green blue violet pink`
-(shape `fill` also `none`; ink also any `#rrggbb`).
+(shape `fill` also `none`; ink, shapes and connectors also any `#rrggbb`).
 Coordinates are board units (1 unit = 1 CSS pixel at 100% zoom), y down.
 Moving a group moves everything inside it (nested groups too).
 Connectors follow the items at their ends; deleting an item turns the ends on it

@@ -79,8 +79,20 @@ function toLocal(it, p) {
   return { x: ((p.x - it.x) * (it.vw || it.w)) / it.w, y: ((p.y - it.y) * (it.vh || it.h)) / it.h };
 }
 
+/** A board point in a turned item's own frame (about its centre). */
+function unturn(it, p) {
+  if (!it.rot) return p;
+  const cx = it.x + it.w / 2;
+  const cy = it.y + it.h / 2;
+  const a = (-it.rot * Math.PI) / 180;
+  const dx = p.x - cx;
+  const dy = p.y - cy;
+  return { x: cx + dx * Math.cos(a) - dy * Math.sin(a), y: cy + dx * Math.sin(a) + dy * Math.cos(a) };
+}
+
 /** Does a circle at board point `p` (radius `r`, board units) touch the ink of stroke `it`? */
 export function strokeHits(it, p, r) {
+  p = unturn(it, p);
   if (p.x < it.x - r || p.y < it.y - r || p.x > it.x + it.w + r || p.y > it.y + it.h + r) return false;
   const k = (it.vw || it.w) / it.w;
   const q = toLocal(it, p);
@@ -100,6 +112,7 @@ export function strokeHits(it, p, r) {
 
 /** Does a board rectangle touch the ink of stroke `it` (marquee selection)? */
 export function strokeInRect(it, rect) {
+  if (it.rot) return turnedInRect(it, rect);
   if (rect.x > it.x + it.w || rect.y > it.y + it.h || rect.x + rect.w < it.x || rect.y + rect.h < it.y) return false;
   const a = toLocal(it, rect);
   const b = toLocal(it, { x: rect.x + rect.w, y: rect.y + rect.h });
@@ -108,6 +121,32 @@ export function strokeInRect(it, rect) {
   const pts = it.pts || [];
   if (pts.length >= 2 && pts.length < 6) return pts[0] >= x0 && pts[0] <= x1 && pts[1] >= y0 && pts[1] <= y1;
   for (let i = 3; i + 2 < pts.length; i += 3) if (segmentInBox(pts[i - 3], pts[i - 2], pts[i], pts[i + 1], x0, y0, x1, y1)) return true;
+  return false;
+}
+
+/** strokeInRect for a turned stroke: its samples taken to the board, then the same test. */
+function turnedInRect(it, rect) {
+  const sx = it.w / (it.vw || it.w);
+  const sy = it.h / (it.vh || it.h);
+  const cx = it.x + it.w / 2;
+  const cy = it.y + it.h / 2;
+  const a = (it.rot * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const reach = inkReach(it) * 0.85 * Math.sqrt(sx * sy);
+  const [x0, y0, x1, y1] = [rect.x - reach, rect.y - reach, rect.x + rect.w + reach, rect.y + rect.h + reach];
+  const pts = it.pts || [];
+  const at = (i) => {
+    const dx = it.x + pts[i] * sx - cx;
+    const dy = it.y + pts[i + 1] * sy - cy;
+    return [cx + dx * c - dy * s, cy + dx * s + dy * c];
+  };
+  if (pts.length >= 2 && pts.length < 6) { const [px, py] = at(0); return px >= x0 && px <= x1 && py >= y0 && py <= y1; }
+  for (let i = 3; i + 2 < pts.length; i += 3) {
+    const [ax, ay] = at(i - 3);
+    const [bx, by] = at(i);
+    if (segmentInBox(ax, ay, bx, by, x0, y0, x1, y1)) return true;
+  }
   return false;
 }
 

@@ -124,3 +124,19 @@ test('CLI: from-pur converts the sample PureRef file (when present)', (t) => {
     assert.equal(ls.items.length, 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const [label, cli] of CLIS) {
+  test(`CLI (${label}): video (no network: --no-poster)`, (t) => {
+    if (!existsSync(cli)) { t.skip(`${cli} not built`); return; }
+    const dir = mkdtempSync(join(tmpdir(), 'ilucanvas-cli-'));
+    const run = (...args) => execFileSync(process.execPath, [cli, ...args], { encoding: 'utf8', cwd: dir });
+    try {
+      const f = join(dir, 'v.ilucanvas');
+      run('new', f);
+      run('video', f, 'https://youtu.be/dQw4w9WgXcQ?t=43', '--title', 'Rick', '--no-poster', '--at', '0,0');
+      assert.match(run('ls', f), /video {2}youtube dQw4w9WgXcQ {2}"Rick" {2}start=0:43 no poster/);
+      assert.equal(spawnSync(process.execPath, [cli, 'video', f, 'https://example.com', '--no-poster']).status, 2);
+      assert.match(run('validate', f), /ok/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}

@@ -1,13 +1,9 @@
 // The minimap: the whole board in a small panel, the visible part as a frame.
-// Click or drag to move there. Items are drawn as their average colour, or as
-// their preview when it is already decoded (nothing is decoded for the map).
+// Click or drag to move there. The board is drawn as silhouettes into a cache,
+// again only when it changes (or the map's scale does); panning only copies it.
 
 import { itemBounds, unionBounds, byId } from '../core/model.js';
 import { connectorPath } from '../core/connectors.js';
-import { INK_ALPHA, strokeScale } from '../core/ink.js';
-import { inkColor } from './ink.js';
-import { NOTE_BG } from './text.js';
-import { FILL } from './shapes.js';
 
 /** A stroke's samples in board units, thinned out (the map is small). */
 function strokeLine(it) {
@@ -42,7 +38,7 @@ export class Minimap {
   }
 
   /** The board's content changed: rebuild the picture. */
-  contentChanged() { this.contentDirty = true; this.invalidate(); }
+  contentChanged() { this.contentDirty = true; this.bounds = undefined; this.invalidate(); }
 
   invalidate() {
     if (this.raf || this.canvas.offsetParent === null) return;
@@ -51,7 +47,9 @@ export class Minimap {
 
   #layout() {
     const doc = this.board.doc;
-    const content = doc ? unionBounds(doc.items.map(itemBounds)) : null;
+    // the content's bounds are kept until it changes (10 000 items: no union per frame)
+    if (doc && this.bounds === undefined) this.bounds = unionBounds(doc.items.map(itemBounds));
+    const content = doc ? this.bounds : null;
     const vis = this.board.visibleWorld();
     const b = content ? unionBounds([content, vis]) : vis;
     const W = this.canvas.clientWidth;
@@ -62,67 +60,37 @@ export class Minimap {
   }
 
   draw() {
+    const t0 = performance.now();
+    this.#draw();
+    this.stats = { ms: Math.round((performance.now() - t0) * 100) / 100, cached: !this.redrew };
+  }
+
+  #draw() {
     const c = this.canvas;
     const dpr = devicePixelRatio || 1;
     const W = c.clientWidth;
     const H = c.clientHeight;
+    this.redrew = false;
     if (!W || !H) return;
-    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); this.contentDirty = true; }
+    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
     const ctx = this.ctx;
     const L = this.frozen || this.#layout();
     this.L = L;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    const doc = this.board.doc;
-    if (!doc) return;
-    const th = this.board.theme;
-    ctx.save();
-    ctx.translate(L.ox, L.oy);
-    ctx.scale(L.k, L.k);
-    for (const it of doc.items) {
-      if (it.type !== 'group') continue;
-      ctx.fillStyle = th.colors[it.color] || th.colors.grey;
-      ctx.globalAlpha = 0.18;
-      ctx.fillRect(it.x, it.y, it.w, it.h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (!this.board.doc) return;
+    // the content: silhouettes, drawn again only when the board or the map's scale changes
+    const key = `${L.k}|${L.ox}|${L.oy}|${c.width}|${c.height}`;
+    if (this.contentDirty || key !== this.cacheKey || !this.cache) {
+      this.#paint(L, c.width, c.height, dpr);
+      this.cacheKey = key;
+      this.contentDirty = false;
+      this.redrew = true;
     }
-    ctx.globalAlpha = 1;
-    const few = doc.items.length < 600;
-    const m = byId(doc);
-    const minW = 1.5 / L.k;
-    for (const it of doc.items) {
-      if (it.type === 'group') continue;
-      if (it.type === 'stroke' || it.type === 'connector') {
-        // lines: a stroke's centre line in its ink, a connector's path
-        const pts = it.type === 'connector' ? connectorPath(it, (id) => m.get(id)).pts : strokeLine(it);
-        if (pts.length < 2) continue;
-        ctx.beginPath();
-        pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-        ctx.strokeStyle = it.type === 'stroke' ? inkColor(it.color) : th.faint;
-        ctx.globalAlpha = it.type === 'stroke' ? INK_ALPHA[it.tool] ?? 1 : 0.8;
-        ctx.lineWidth = Math.max(minW, it.type === 'stroke' ? it.width * strokeScale(it) : 0);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-        continue;
-      }
-      if (it.type === 'note' || it.type === 'shape') {
-        const c = it.type === 'note' ? NOTE_BG[it.color] : FILL[it.fill];
-        if (!c) continue;
-        ctx.fillStyle = c;
-        ctx.fillRect(it.x, it.y, Math.max(it.w, minW), Math.max(it.h, minW));
-        continue;
-      }
-      const b = itemBounds(it);
-      const bmp = few && it.type === 'image' ? this.board.images.get(it.asset, 0) : null;
-      if (bmp && b.w * L.k > 4) ctx.drawImage(bmp, b.x, b.y, b.w, b.h);
-      else {
-        ctx.fillStyle = doc.assets[it.asset]?.color || th.faint;
-        ctx.fillRect(b.x, b.y, Math.max(b.w, 1.5 / L.k), Math.max(b.h, 1.5 / L.k));
-      }
-    }
-    ctx.restore();
+    ctx.drawImage(this.cache, 0, 0);
     // the visible part
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const th = this.board.theme;
     const v = this.board.visibleWorld();
     const x = L.ox + v.x * L.k;
     const y = L.oy + v.y * L.k;
@@ -134,7 +102,50 @@ export class Minimap {
     ctx.strokeStyle = th.select;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(x, y, v.w * L.k, v.h * L.k);
-    this.contentDirty = false;
+  }
+
+  /** Silhouettes of the board into the cache: group frames tinted, everything else one tone, lines as lines. */
+  #paint(L, cw, ch, dpr) {
+    if (!this.cache || this.cache.width !== cw || this.cache.height !== ch) {
+      this.cache = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(cw, ch) : Object.assign(document.createElement('canvas'), { width: cw, height: ch });
+    }
+    const ctx = this.cache.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    const doc = this.board.doc;
+    const th = this.board.theme;
+    ctx.setTransform(dpr * L.k, 0, 0, dpr * L.k, dpr * L.ox, dpr * L.oy);
+    for (const it of doc.items) {
+      if (it.type !== 'group') continue;
+      ctx.fillStyle = th.colors[it.color] || th.colors.grey;
+      ctx.globalAlpha = 0.2;
+      ctx.fillRect(it.x, it.y, it.w, it.h);
+    }
+    const min = 1.5 / L.k;
+    const m = byId(doc);
+    const boxes = new Path2D();
+    const lines = new Path2D();
+    for (const it of doc.items) {
+      if (it.type === 'group') continue;
+      if (it.type === 'stroke' || it.type === 'connector') {
+        const pts = it.type === 'connector' ? connectorPath(it, (id) => m.get(id)).pts : strokeLine(it);
+        pts.forEach((q, i) => (i ? lines.lineTo(q.x, q.y) : lines.moveTo(q.x, q.y)));
+        continue;
+      }
+      if (it.type === 'note' && it.color === 'none') continue; // text on the board: nothing to see this small
+      const b = it.rot ? itemBounds(it) : it;
+      boxes.rect(b.x, b.y, Math.max(b.w, min), Math.max(b.h, min));
+    }
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = th.muted;
+    ctx.fill(boxes);
+    ctx.globalAlpha = 0.45;
+    ctx.strokeStyle = th.muted;
+    ctx.lineWidth = min;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke(lines);
+    ctx.globalAlpha = 1;
   }
 
   #go(e) {

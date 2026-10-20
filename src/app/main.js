@@ -11,9 +11,10 @@ import { APP_VERSION } from '../core/version.js';
 import {
   GROUP_COLORS, serialize, byId, itemBounds, unionBounds, withChildren, removeItems, groupItems, ungroup, fitGroup,
   arrangeItems, restack, patchItems, addItems, newId, dropLayout, fitSize, reparent, childrenOf, groupsOf, validate, contentBounds,
-  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, isHexColor, groupAround,
+  pruneAssets, refreshConnectors, copyItems, SHAPE_KINDS, PAINT, isHexColor, groupAround, hasAsset,
 } from '../core/model.js';
-import { applyOps, newStroke } from '../core/ops.js';
+import { applyOps, newStroke, newVideo } from '../core/ops.js';
+import { parseVideoUrl, posterUrls, oembedUrl } from '../core/video.js';
 import { INK_WIDTHS, INK_DEFAULTS, inkScale } from '../core/ink.js';
 import { listText } from '../core/describe.js';
 import { ROUTES } from '../core/connectors.js';
@@ -34,6 +35,7 @@ import { openColorPicker, closeColorPicker } from './colorpicker.js';
 import * as disk from './disk.js';
 import * as remote from './remote.js';
 import { opfsSupported } from './opfs.js';
+import { VideoPlayer } from './videoplayer.js';
 import { IOS } from './images.js';
 
 const $ = (id) => document.getElementById(id);
@@ -67,6 +69,7 @@ const S = {
   saveError: null,
   active: null, // { kind: 'file' | 'link' | 'new' | 'server' | 'local', key, path }
   local: [], // boards kept in this browser: { key, gen, name, handle, title, mtime, size, path }
+  sideGroups: pref.get('sideGroups', []), // the user's groups in the boards bar: { id, name, open, items: [{ key, title, sub }] }
   link: null, // the link record of the open canvas
   folders: [], // { key, handle, name, granted, files: [{ path, name, handle }] }
   recent: [],
@@ -96,6 +99,7 @@ function applyStyle() {
   const cs = getComputedStyle(document.documentElement);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', cs.getPropertyValue('--canvas').trim());
   S.bg?.set(currentBg(), cs.getPropertyValue('--pattern-ink').trim());
+  if (S.board) S.board.gridDense = currentBg() === 'grid' ? 16 : 13; // snap to the lines the background draws
   resetTextCache();
   S.board?.setTheme();
   drawBackground();
@@ -140,6 +144,14 @@ function edit(label, fn) {
   return r;
 }
 
+/** Change the document without an undo step (what the app learns by itself: a video's duration). */
+function silent(fn) {
+  const d = doc();
+  if (!d || readOnly()) return;
+  fn(d);
+  changed();
+}
+
 function changed({ save = true } = {}) {
   S.rev++;
   if (doc()) refreshConnectors(doc());
@@ -148,6 +160,7 @@ function changed({ save = true } = {}) {
   S.notes?.render();
   S.board.invalidate();
   S.minimap.contentChanged();
+  if (S.video?.open) S.video.place();
   renderTopbar();
   updateDocTitle();
   if (save) scheduleSave();
@@ -180,12 +193,12 @@ function redo() {
  */
 function historyFiles() {
   const d = doc();
-  const used = new Set(d.items.filter((it) => it.type === 'image').map((it) => it.asset));
+  const used = new Set(d.items.filter(hasAsset).map((it) => it.asset));
   pruneAssets(d, used);
   const keep = new Set();
   for (const s of [...S.undo, ...S.redo]) {
     for (const it of s.items) {
-      const a = it.type === 'image' && !used.has(it.asset) && s.assets[it.asset];
+      const a = hasAsset(it) && !used.has(it.asset) && s.assets[it.asset];
       if (!a) continue;
       if (a.file) keep.add(a.file);
       if (a.thumb) keep.add(a.thumb);
@@ -223,15 +236,117 @@ function coverNode(entry) {
   return h('span.cover.letter', { style: { '--h': hue(name) }, 'aria-hidden': 'true' }, String(name).trim().charAt(0).toUpperCase() || '#');
 }
 
-function boardRow({ title, sub, active, onOpen, onRemove, removeTitle, update, entry }) {
-  const row = h(`div.board-row${active ? '.active' : ''}`, { role: 'button', tabindex: 0, title: sub || title },
+function boardRow({ key, title, sub, active, onOpen, onRemove, removeTitle, update, entry, missing = false }) {
+  const menu = key ? iconBtn('more', t('sideGroup.boardMenu'), (e) => { e.stopPropagation(); openMenu(e.currentTarget, boardGroupMenu(key, { title, sub })); }, 'tiny.row-more') : null;
+  const row = h(`div.board-row${active ? '.active' : ''}${missing ? '.missing' : ''}`, { role: 'button', tabindex: 0, title: sub || title, draggable: key ? 'true' : undefined },
     coverNode(entry),
     h('span.grow', {}, h('span.board-name.ellipsis', {}, title), sub ? h('span.board-path', {}, sub) : null),
     update ? h('span.badge-dot', { title: t('link.updateAvailable') }) : null,
+    menu,
     onRemove ? iconBtn('x', removeTitle || t('side.forget'), (e) => { e.stopPropagation(); onRemove(); }, 'tiny') : null);
   row.addEventListener('click', () => { if (!active) onOpen(); });
   row.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !active) onOpen(); });
+  if (key) {
+    row.dataset.key = key;
+    row.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData(BOARD_DND, JSON.stringify({ key, title, sub }));
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY }, boardGroupMenu(key, { title, sub })); });
+  }
   return row;
+}
+
+// ---- groups in the boards bar (this browser) ------------------------------------------------------------
+// Boards from anywhere (folders, links, recent files, this browser) can be put
+// into the user's own groups. Only the bar changes: the files stay where they are.
+
+const BOARD_DND = 'application/x-ilucanvas-board';
+const saveSideGroups = () => pref.set('sideGroups', S.sideGroups);
+const groupOfBoard = (key) => S.sideGroups.find((g) => g.items.some((x) => x.key === key)) || null;
+
+async function newSideGroup() {
+  const name = await promptDialog({ title: t('sideGroup.new'), label: t('sideGroup.name'), value: t('sideGroup.default') });
+  if (!name || !name.trim()) return null;
+  const g = { id: `sg${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: name.trim(), open: true, items: [] };
+  S.sideGroups = [...S.sideGroups, g];
+  saveSideGroups();
+  renderSidebar();
+  return g;
+}
+
+/** Put a board into a group (out of any other one), before `before` (a key) or at the end. */
+function moveToSideGroup(board, gid, before = null) {
+  const items = S.sideGroups.flatMap((g) => g.items);
+  const snap = { ...(items.find((x) => x.key === board.key) || {}), ...board };
+  S.sideGroups = S.sideGroups.map((g) => {
+    const rest = g.items.filter((x) => x.key !== board.key);
+    if (g.id !== gid) return rest.length === g.items.length ? g : { ...g, items: rest };
+    const at = before ? rest.findIndex((x) => x.key === before) : -1;
+    const list = [...rest];
+    list.splice(at < 0 ? list.length : at, 0, { key: snap.key, title: snap.title, sub: snap.sub || null });
+    return { ...g, items: list, open: true };
+  });
+  saveSideGroups();
+  renderSidebar();
+}
+
+function removeFromSideGroup(key) {
+  S.sideGroups = S.sideGroups.map((g) => (g.items.some((x) => x.key === key) ? { ...g, items: g.items.filter((x) => x.key !== key) } : g));
+  saveSideGroups();
+  renderSidebar();
+}
+
+function boardGroupMenu(key, board) {
+  const cur = groupOfBoard(key);
+  return [
+    { title: t('sideGroup.moveTo') },
+    ...S.sideGroups.map((g) => ({ label: g.name, icon: 'folder', checked: cur?.id === g.id, onClick: () => moveToSideGroup({ key, ...board }, g.id) })),
+    { label: t('sideGroup.newWith'), icon: 'folderPlus', onClick: async () => { const g = await newSideGroup(); if (g) moveToSideGroup({ key, ...board }, g.id); } },
+    cur ? { sep: true } : null,
+    cur ? { label: t('sideGroup.remove'), icon: 'x', onClick: () => removeFromSideGroup(key) } : null,
+  ].filter(Boolean);
+}
+
+/** A section for one of the user's groups: its boards (from wherever they are now), drop target. */
+function sideGroupSection(g, known, activeKey) {
+  const open = g.open !== false;
+  const toggle = () => { S.sideGroups = S.sideGroups.map((x) => (x.id === g.id ? { ...x, open: !open } : x)); saveSideGroups(); renderSidebar(); };
+  const more = iconBtn('more', t('sideGroup.menu'), (e) => openMenu(e.currentTarget, [
+    { label: t('sideGroup.rename'), icon: 'pencil', onClick: async () => {
+      const v = await promptDialog({ title: t('sideGroup.rename'), value: g.name });
+      if (v && v.trim()) { S.sideGroups = S.sideGroups.map((x) => (x.id === g.id ? { ...x, name: v.trim() } : x)); saveSideGroups(); renderSidebar(); }
+    } },
+    { label: t('sideGroup.delete'), icon: 'trash', danger: true, onClick: () => { S.sideGroups = S.sideGroups.filter((x) => x.id !== g.id); saveSideGroups(); renderSidebar(); } },
+  ]), 'tiny');
+  const sec = h('div.side-section.side-group', { dataset: { group: g.id } },
+    h('div.side-label', {},
+      h('button.side-group-head', { type: 'button', onclick: toggle, 'aria-expanded': String(open) }, icon(open ? 'chevronDown' : 'chevronRight', 15), h('span.ellipsis', {}, g.name), h('span.side-count', {}, String(g.items.length))),
+      more));
+  if (open) {
+    if (!g.items.length) sec.append(h('div.side-hint', {}, t('sideGroup.empty')));
+    for (const x of g.items) {
+      const p = known.get(x.key);
+      if (p) sec.append(boardRow({ ...p, key: x.key }));
+      else sec.append(boardRow({ key: x.key, title: x.title || x.key, sub: t('sideGroup.missing'), entry: { name: x.title || '?' }, missing: true, onOpen: () => toast(t('sideGroup.missingText'), { kind: 'warn' }), onRemove: () => removeFromSideGroup(x.key), removeTitle: t('sideGroup.remove') }));
+    }
+  }
+  // drop a board here (before the row it is dropped on)
+  sec.addEventListener('dragover', (e) => { if (!e.dataTransfer.types.includes(BOARD_DND)) return; e.preventDefault(); e.stopPropagation(); sec.classList.add('drop'); });
+  sec.addEventListener('dragleave', (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove('drop'); });
+  sec.addEventListener('drop', (e) => {
+    const raw = e.dataTransfer.getData(BOARD_DND);
+    if (!raw) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sec.classList.remove('drop');
+    const before = e.target.closest?.('.board-row')?.dataset.key || null;
+    const board = JSON.parse(raw);
+    if (before !== board.key) moveToSideGroup(board, g.id, before);
+  });
+  return sec;
 }
 
 function renderSidebar() {
@@ -243,10 +358,15 @@ function renderSidebar() {
     item('filePlus', t('side.new'), newCanvas),
     S.server || inBrowser() ? null : item('folder', t('side.openFolder'), openFolder, { disabled: !disk.fsaSupported() }),
     item('file', t('side.openFile'), openFile, { kbd: 'Ctrl O' }),
-    item('link', t('side.openLink'), openLinkDialog));
+    item('link', t('side.openLink'), openLinkDialog),
+    item('folderPlus', t('sideGroup.new'), newSideGroup));
 
   const scroll = h('div.side-scroll');
   const activeKey = S.active?.key;
+  // every board shown in the bar, by key; the ones in a group show there instead
+  const grouped = new Set(S.sideGroups.flatMap((g) => g.items.map((x) => x.key)));
+  const known = new Map();
+  const place = (sec, key, props) => { known.set(key, props); if (!grouped.has(key)) sec.append(boardRow({ ...props, key })); };
 
   // library folders
   for (const f of S.folders) {
@@ -261,7 +381,7 @@ function renderSidebar() {
       const key = `${f.key}:${file.path}`;
       const title = file.name.replace(/\.(ilucanvas|pur)$/i, '');
       const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
-      sec.append(boardRow({ title, sub: dir || (/\.pur$/i.test(file.name) ? 'PureRef' : null), active: key === activeKey, entry: { ...file, coverKey: file.coverKey }, onOpen: () => openHandle(file.handle, { key, path: `${f.name}/${file.path}` }) }));
+      place(sec, key, { title, sub: dir || (/\.pur$/i.test(file.name) ? 'PureRef' : f.name), active: key === activeKey, entry: { ...file, coverKey: file.coverKey }, onOpen: () => openHandle(file.handle, { key, path: `${f.name}/${file.path}` }) });
     }
     scroll.append(sec);
   }
@@ -270,7 +390,7 @@ function renderSidebar() {
   if (S.server && S.serverFiles?.length) {
     const sec = h('div.side-section', {}, h('div.side-label', {}, icon('terminal', 15), h('span', {}, S.server.folder)));
     for (const p of S.serverFiles) {
-      sec.append(boardRow({ title: p.split('/').pop().replace(/\.(ilucanvas|pur)$/i, ''), sub: p, active: activeKey === `server:${p}`, entry: { name: p }, onOpen: () => openSource(disk.serverSource(p), { active: { kind: 'server', key: `server:${p}`, path: p } }) }));
+      place(sec, `server:${p}`, { title: p.split('/').pop().replace(/\.(ilucanvas|pur)$/i, ''), sub: p, active: activeKey === `server:${p}`, entry: { name: p }, onOpen: () => openSource(disk.serverSource(p), { active: { kind: 'server', key: `server:${p}`, path: p } }) });
     }
     scroll.append(sec);
   }
@@ -279,10 +399,10 @@ function renderSidebar() {
   if (S.links.length) {
     const sec = h('div.side-section', {}, h('div.side-label', {}, icon('cloud', 15), h('span', {}, t('side.links'))));
     for (const l of S.links) {
-      sec.append(boardRow({
+      place(sec, l.key, {
         title: l.title || l.name, sub: l.kind === 'gdrive' ? 'Google Drive' : new URL(l.url).hostname, active: activeKey === l.key, update: l.update, entry: { name: l.name, title: l.title, coverKey: l.coverKey },
         onOpen: () => openLink(l), onRemove: () => forgetLink(l), removeTitle: t('link.forget'),
-      }));
+      });
     }
     scroll.append(sec);
   }
@@ -292,10 +412,10 @@ function renderSidebar() {
     const sec = h('div.side-section', {}, h('div.side-label', {}, icon('save', 15), h('span', {}, t('side.local'))));
     if (!S.local.length) sec.append(h('div.side-hint', {}, t('side.localEmpty')));
     for (const e of S.local) {
-      sec.append(boardRow({
+      place(sec, e.path, {
         title: e.title, sub: `${(e.size / 1048576).toFixed(1)} MB · ${new Date(e.mtime).toLocaleDateString()}`, active: activeKey === e.path, entry: e,
         onOpen: () => openLocal(e), onRemove: () => deleteLocal(e), removeTitle: t('local.delete'),
-      }));
+      });
     }
     scroll.append(sec);
   }
@@ -306,12 +426,23 @@ function renderSidebar() {
   const rec = h('div.side-section', {}, h('div.side-label', {}, h('span', {}, t('side.recent'))));
   if (!recent.length && !S.folders.length && !S.links.length) rec.append(h('div.side-hint', {}, t('side.recentEmpty')));
   for (const r of recent) {
-    rec.append(boardRow({
+    place(rec, r.key, {
       title: r.title || r.path, sub: r.path, active: activeKey === r.key, entry: { name: r.path, title: r.title, coverKey: r.coverKey },
       onOpen: () => openHandle(r.handle, { key: r.key, path: r.path }), onRemove: async () => { await disk.idbDel('recent', r.key); await refreshRecent(); },
-    }));
+    });
   }
   if (recent.length || (!S.folders.length && !S.links.length && !inBrowser())) scroll.append(rec);
+
+  // the user's groups on top; a board dropped outside them leaves its group
+  scroll.prepend(...S.sideGroups.map((g) => sideGroupSection(g, known, activeKey)));
+  scroll.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes(BOARD_DND)) e.preventDefault(); });
+  scroll.addEventListener('drop', (e) => {
+    const raw = e.dataTransfer.getData(BOARD_DND);
+    if (!raw) return;
+    e.preventDefault();
+    const { key } = JSON.parse(raw);
+    if (groupOfBoard(key)) removeFromSideGroup(key);
+  });
 
   const foot = h('div.side-foot', {},
     item('settings', t('side.settings'), openSettings),
@@ -376,6 +507,7 @@ function renderToolbar() {
   const tb = $('toolbar');
   tb.hidden = !doc();
   const tool = (id, ic, label, key) => h(`button.tool${S.board.tool === id ? '.on' : ''}`, { type: 'button', title: `${label} (${key})`, 'aria-label': label, 'aria-pressed': String(S.board.tool === id), onclick: () => setTool(id) }, icon(ic, 20));
+  const action = (ic, label, key, onclick) => h('button.tool', { type: 'button', title: `${label} (${key})`, 'aria-label': label, onclick }, icon(ic, 20));
   const shapeIcon = KIND_ICON[pref.get('shapeKind', 'rect')] || 'shRect';
   tb.replaceChildren(
     tool('select', 'pointer', t('tool.select'), 'V'), tool('hand', 'hand', t('tool.hand'), 'H'),
@@ -388,6 +520,9 @@ function renderToolbar() {
     readOnly() ? null : tool('highlighter', 'highlighter', t('tool.highlighter'), 'Shift+P'),
     readOnly() ? null : tool('tape', 'tape', t('tool.tape'), 'T'),
     readOnly() ? null : tool('eraser', 'eraser', t('tool.eraser'), 'E'),
+    readOnly() ? null : h('span.tool-sep'),
+    readOnly() ? null : action('image', t('tool.image'), 'I', pickAndAdd),
+    readOnly() ? null : action('video', t('tool.video'), 'Y', askVideo),
   );
   renderToolOptions();
   function noteTool() {
@@ -505,10 +640,12 @@ function renderMapBar() {
   zoom.addEventListener('click', () => openMenu(zoom, zoomMenu(), { up: true, align: 'right' }));
   S.zoomLabel = zoom;
   bar.replaceChildren(
-    iconBtn('minus', `${t('zoom.out')} (−)`, () => S.board.zoomCenter(1 / 1.5)),
+    iconBtn('minus', `${t('zoom.out')} (−)`, () => S.board.zoomCenter(1 / 1.5), 'mm-zoom'),
     zoom,
-    iconBtn('plus', `${t('zoom.in')} (+)`, () => S.board.zoomCenter(1.5)),
+    iconBtn('plus', `${t('zoom.in')} (+)`, () => S.board.zoomCenter(1.5), 'mm-zoom'),
     iconBtn('fit', `${t('zoom.fit')} (Shift+1)`, () => S.board.fitAll()),
+    iconBtn('magnet', t('zoom.snap'), () => { S.board.snap = !S.board.snap; pref.set('snap', S.board.snap); renderMapBar(); }, S.board.snap ? 'on' : ''),
+    iconBtn('gridSnap', t('zoom.snapGrid'), () => { S.board.snapGrid = !S.board.snapGrid; pref.set('snapGrid', S.board.snapGrid); renderMapBar(); }, S.board.snapGrid ? 'on' : ''),
     iconBtn('map', `${t('zoom.map')} (M)`, () => toggleMap(), S.showMap ? 'on' : ''));
   if (S.showMap) S.minimap.contentChanged();
 }
@@ -596,6 +733,7 @@ async function openSource(source, { active = null, link = null, readOnly: ro = f
 
 async function setStore(store, { active = null, link = null, view = null } = {}) {
   clearTimeout(S.saveTimer);
+  S.video?.close();
   S.store = store;
   S.undo = [];
   S.redo = [];
@@ -699,6 +837,7 @@ async function refreshRecent() {
 
 async function closeCanvas() {
   if (!(await leaveCurrent())) return;
+  S.video?.close();
   S.store = null;
   S.active = null;
   S.link = null;
@@ -1060,6 +1199,61 @@ async function fetchImage(url) {
   return f;
 }
 
+/** A YouTube link being dropped or pasted, if that is what it is. */
+function videoLinkFrom(dt) {
+  const lines = [...(dt.getData?.('text/uri-list') || '').split('\n'), dt.getData?.('text/plain') || ''].map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => parseVideoUrl(l)) || null;
+}
+
+// ---- video ------------------------------------------------------------------------------------------------
+
+/** The title (oEmbed) and the poster of a video, imported as an image asset: { title, asset, assets }. */
+async function fetchVideoMeta(v) {
+  const meta = {};
+  try {
+    const r = await fetch(oembedUrl(v.url));
+    if (r.ok) meta.title = (await r.json()).title;
+  } catch { /* offline: no title */ }
+  for (const u of posterUrls(v.videoId)) {
+    try {
+      const blob = await fetchImage(u);
+      const res = await S.store.importImages([new File([blob], `youtube-${v.videoId}.jpg`, { type: blob.type || 'image/jpeg' })]);
+      const x = res.list[0];
+      if (!x || x.error) continue;
+      meta.asset = x.id;
+      meta.assets = res.assets;
+      break;
+    } catch { /* the next size */ }
+  }
+  return meta;
+}
+
+/** A video card for a YouTube link, centred on board point `at`. */
+async function addVideo(url, at = null) {
+  if (!doc() || readOnly()) return null;
+  const v = parseVideoUrl(url);
+  if (!v) { toast(t('video.badLink'), { kind: 'warn' }); return null; }
+  const busy = toast(t('video.loading'), { timeout: 0 });
+  let meta = {};
+  try { meta = await fetchVideoMeta(v); } finally { busy.close(); }
+  const p = at || S.board.toWorld(S.board.size.w / 2, S.board.size.h / 2);
+  const w = (v.short ? 360 : 640) * inkScale(S.board.view.z);
+  const hh = v.short ? w * (16 / 9) : (w * 9) / 16;
+  const it = edit('video', (d) => {
+    if (meta.assets) d.assets = { ...d.assets, ...meta.assets };
+    return newVideo(d, { url, meta, x: p.x - w / 2, y: p.y - hh / 2, w, h: hh });
+  });
+  if (it) S.board.select([it.id]);
+  if (!meta.asset) toast(t('video.noPoster'), { kind: 'warn', timeout: 6000 });
+  return it;
+}
+
+async function askVideo() {
+  if (!doc() || readOnly()) return;
+  const url = await promptDialog({ title: t('video.add'), label: t('video.link'), placeholder: 'https://youtu.be/…' });
+  if (url && url.trim()) await addVideo(url.trim());
+}
+
 function imageUrlFrom(dt) {
   const html = dt.getData?.('text/html');
   const m = html && html.match(/<img[^>]+src=["']([^"']+)["']/i);
@@ -1076,13 +1270,18 @@ function dropData(dt, world) {
   const items = [...(dt.items || [])].filter((i) => i.kind === 'file');
   const handles = items.map((i) => (i.getAsFileSystemHandle ? i.getAsFileSystemHandle().catch(() => null) : Promise.resolve(null)));
   const files = [...(dt.files || [])];
-  const url = files.length ? null : imageUrlFrom(dt);
+  const video = files.length ? null : videoLinkFrom(dt);
+  const url = files.length || video ? null : imageUrlFrom(dt);
   (async () => {
+    if (video) return addVideo(video, world);
     const hs = (await Promise.all(handles)).filter(Boolean);
     const board = hs.find((x) => x.kind === 'file' && disk.isBoardFile(x.name));
     if (board) return openHandle(board);
     const boardFile = files.find((f) => disk.isBoardFile(f.name));
-    if (boardFile && !hs.length) return openSource(disk.memorySource(boardFile.name, boardFile), { active: { kind: 'file', key: `mem:${boardFile.name}` }, readOnly: true });
+    if (boardFile && !hs.length) {
+      if (inBrowser() && !/\.pur$/i.test(boardFile.name)) return importToBrowser(boardFile);
+      return openSource(disk.memorySource(boardFile.name, boardFile), { active: { kind: 'file', key: `mem:${boardFile.name}` }, readOnly: true });
+    }
     const blobs = [];
     for (const x of hs) if (x.kind === 'directory') blobs.push(...(await disk.imagesInFolder(x, isImageName)));
     const dirNames = new Set(hs.filter((x) => x.kind === 'directory').map((x) => x.name));
@@ -1152,14 +1351,17 @@ function arrangeSelection() {
   }
 }
 
-function patchSelection(label, fn) {
-  const its = selImages();
+/** Items that turn: pictures, notes, shapes, ink (video players and frames do not). */
+const TURNS = new Set(['image', 'note', 'shape', 'stroke']);
+const selTurnable = () => sel().filter((it) => TURNS.has(it.type));
+
+function patchSelection(label, fn, its = selImages()) {
   if (!its.length) return;
   edit(label, (d) => patchItems(d, Object.fromEntries(its.map((it) => [it.id, fn(it)]))));
 }
 
 const flip = (axis) => patchSelection('flip', (it) => ({ [axis]: !it[axis] }));
-const rotate = (deg) => patchSelection('rotate', (it) => ({ rot: ((((it.rot || 0) + deg) % 360) + 360) % 360 || undefined }));
+const rotate = (deg) => patchSelection('rotate', (it) => ({ rot: ((((it.rot || 0) + deg) % 360) + 360) % 360 || undefined }), selTurnable());
 
 function naturalSize() {
   patchSelection('size', (it) => {
@@ -1178,7 +1380,7 @@ function sameHeight() {
   patchSelection('size', (it) => ({ w: (it.w * target) / it.h, h: target }));
 }
 
-function resetTransform() { patchSelection('reset', () => ({ rot: undefined, flipX: undefined, flipY: undefined, opacity: undefined })); }
+function resetTransform() { patchSelection('reset', (it) => (it.type === 'image' ? { rot: undefined, flipX: undefined, flipY: undefined, opacity: undefined } : { rot: undefined }), selTurnable()); }
 
 function toggleLock() {
   const its = sel();
@@ -1283,7 +1485,7 @@ async function copySelection({ cut = false } = {}) {
   const assets = {};
   const blobs = new Map();
   for (const it of items) {
-    if (it.type !== 'image' || assets[it.asset]) continue;
+    if (!hasAsset(it) || assets[it.asset]) continue;
     assets[it.asset] = d.assets[it.asset];
     blobs.set(it.asset, await S.store.blob(it.asset, 'original'));
   }
@@ -1333,7 +1535,8 @@ async function pasteClip(at) {
   const map = new Map(c.items.map((it) => [it.id, newId(it.type)]));
   const here = c.from === d.id ? byId(d) : null;
   const copies = copyItems(c.items.filter((it) => it.type !== 'image' || d.assets[it.asset] || extraAssets[it.asset]), map, dx, dy, { lookup: here ? (id) => here.get(id) : null })
-    .map((n) => (n.parent && !here ? (({ parent, ...rest }) => rest)(n) : n));
+    .map((n) => (n.parent && !here ? (({ parent, ...rest }) => rest)(n) : n))
+    .map((n) => (n.type === 'video' && n.asset && !d.assets[n.asset] && !extraAssets[n.asset] ? (({ asset, ...rest }) => rest)(n) : n)); // a poster that did not come along
   edit('paste', (dd) => {
     dd.assets = { ...dd.assets, ...extraAssets };
     dd.items = [...copies.filter((x) => x.type === 'group'), ...dd.items, ...copies.filter((x) => x.type !== 'group')];
@@ -1349,6 +1552,7 @@ document.addEventListener('paste', async (e) => {
   e.preventDefault();
   const text = dt.getData('text/plain');
   if (S.clip && text === S.clip.nonce) return pasteClip();
+  if (!readOnly() && parseVideoUrl(text.trim())) return addVideo(text.trim(), S.mouse);
   const files = [...dt.files].filter((f) => f.type.startsWith('image/'));
   if (files.length) {
     const named = files.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `pasted-${Date.now()}-${i + 1}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })));
@@ -1430,6 +1634,7 @@ function contextMenu(pt, hit, world) {
     openMenu(pt, [
       { label: t('ctx.paste'), icon: 'copy', hint: 'Ctrl+V', disabled: ro || !S.clip, onClick: () => pasteClip(world) },
       { label: t('menu.addImages'), icon: 'images', disabled: ro, onClick: pickAndAdd },
+      { label: t('video.add'), icon: 'video', hint: 'Y', disabled: ro, onClick: askVideo },
       { sep: true },
       { label: t('zoom.fit'), icon: 'fit', hint: 'Shift+1', onClick: () => S.board.fitAll() },
       { label: t('ctx.selectAll'), hint: 'Ctrl+A', onClick: selectAll },
@@ -1441,6 +1646,8 @@ function contextMenu(pt, hit, world) {
   openMenu(pt, [
     imgs.length === 1 ? { label: t('ctx.zoomTo'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() } : { label: t('zoom.selection'), icon: 'focus', hint: 'Shift+2', onClick: () => S.board.fitSelection() },
     imgs.length === 1 ? { label: t('ctx.openOriginal'), icon: 'eye', onClick: () => openOriginal(imgs[0]) } : null,
+    s.length === 1 && s[0].type === 'video' ? { label: t('video.play'), icon: 'play', onClick: () => S.video.play(s[0].id) } : null,
+    s.length === 1 && s[0].type === 'video' ? { label: t('video.openYoutube'), icon: 'external', onClick: () => window.open(s[0].url + (s[0].start ? `&t=${Math.floor(s[0].start)}s` : ''), '_blank', 'noopener') } : null,
     !ro && notes.length === 1 && s.length === 1 ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(notes[0].id) } : null,
     !ro && s.length === 1 && s[0].type === 'shape' ? { label: t('note.edit'), icon: 'pencil', hint: 'Enter', onClick: () => S.notes.open(s[0].id) } : null,
     !ro && s.length === 1 && s[0].type === 'connector' ? { label: t('conn.label'), icon: 'text', hint: 'Enter', onClick: () => S.notes.editLabel(s[0].id) } : null,
@@ -1457,9 +1664,9 @@ function contextMenu(pt, hit, world) {
     { sep: true },
     !ro && imgs.length ? { label: t('ctx.flipH'), icon: 'flipH', hint: 'Shift+H', onClick: () => flip('flipX') } : null,
     !ro && imgs.length ? { label: t('ctx.flipV'), icon: 'flipV', hint: 'Shift+V', onClick: () => flip('flipY') } : null,
-    !ro && imgs.length ? { label: t('ctx.rotateRight'), icon: 'rotate', hint: 'Shift+R', onClick: () => rotate(90) } : null,
-    !ro && imgs.length ? { label: t('ctx.rotateLeft'), icon: 'rotateLeft', onClick: () => rotate(-90) } : null,
-    !ro && imgs.some((it) => it.rot || it.flipX || it.flipY) ? { label: t('ctx.reset'), onClick: resetTransform } : null,
+    !ro && s.some((it) => TURNS.has(it.type)) ? { label: t('ctx.rotateRight'), icon: 'rotate', hint: 'Shift+R', onClick: () => rotate(90) } : null,
+    !ro && s.some((it) => TURNS.has(it.type)) ? { label: t('ctx.rotateLeft'), icon: 'rotateLeft', onClick: () => rotate(-90) } : null,
+    !ro && s.some((it) => TURNS.has(it.type) && (it.rot || it.flipX || it.flipY)) ? { label: t('ctx.reset'), onClick: resetTransform } : null,
     !ro && imgs.length ? { label: t('ctx.natural'), onClick: naturalSize } : null,
     !ro && imgs.length > 1 ? { label: t('ctx.sameHeight'), onClick: sameHeight } : null,
     { sep: true },
@@ -1481,6 +1688,7 @@ function onDblClick(hit, e) {
   const it = hit.id && byId(doc()).get(hit.id);
   if ((it?.type === 'note' || it?.type === 'shape') && !readOnly()) return S.notes.open(it.id);
   if (it?.type === 'connector' && !readOnly()) return S.notes.editLabel(it.id);
+  if (it?.type === 'video') return S.video.play(it.id);
   if (hit.kind === 'item' || hit.kind === 'group') {
     if (it) S.board.fitBounds(itemBounds(it), true, { maxZ: 16, pad: 0.03 });
     return null;
@@ -1820,6 +2028,8 @@ addEventListener('keydown', (e) => {
   else if (k === 'p' && !readOnly()) setTool('pen');
   else if (k === 't' && !readOnly()) setTool('tape');
   else if (k === 'e' && !readOnly()) setTool('eraser');
+  else if (k === 'i' && !readOnly()) pickAndAdd();
+  else if (k === 'y' && !readOnly()) askVideo();
   else if (k === 'm') toggleMap();
 });
 
@@ -1872,7 +2082,8 @@ function agentApi() {
       if (readOnly()) throw new Error('this canvas is read only');
       const before = snapshot();
       let r;
-      try { r = await applyOps(doc(), ops, { by: 'agent', addImages: urlAdder }); } catch (e) { restore(before); throw e; }
+      const videoMeta = async (v) => { const m = await fetchVideoMeta(v); if (m.assets) doc().assets = { ...doc().assets, ...m.assets }; return m; };
+      try { r = await applyOps(doc(), ops, { by: 'agent', addImages: urlAdder, videoMeta }); } catch (e) { restore(before); throw e; }
       S.notes.fitHeights(doc(), r.created);
       commit('agent', before);
       return r;
@@ -1888,7 +2099,11 @@ function agentApi() {
       return { ...S.board.view };
     },
     /** Renderer numbers: decoded images, memory, last frame time. */
-    perf({ draw = false } = {}) { const frame = draw ? S.board.drawNow() : { ...S.board.stats }; return { images: S.images.stats(), frame, failed: [...S.images.failed.entries()] }; },
+    perf({ draw = false } = {}) {
+      const frame = draw ? S.board.drawNow() : { ...S.board.stats };
+      if (draw && S.showMap) S.minimap.draw();
+      return { images: S.images.stats(), frame, minimap: { ...S.minimap.stats }, failed: [...S.images.failed.entries()] };
+    },
     save: () => save(),
     undo: () => undo(),
     redo: () => redo(),
@@ -1954,7 +2169,7 @@ async function start() {
   S.images = new ImageCache({
     resolve: (id, kind) => S.store?.blob(id, kind) ?? null,
     natural: (id) => { const a = doc()?.assets[id]; return a ? Math.max(a.w || 0, a.h || 0) : 0; },
-    onLoad: () => { S.board.invalidate(); if (S.showMap) S.minimap.invalidate(); },
+    onLoad: () => S.board.invalidate(), // the minimap shows silhouettes: images loading do not change it
   });
   S.board = new Board({
     stage, scene: $('scene'), overlay: $('overlay'), images: S.images,
@@ -1966,6 +2181,7 @@ async function start() {
       selection: () => S.notes?.render(),
       create: (tool, where, o) => (tool === 'shape' ? S.notes.createShape(where, o) : S.notes.create(where, o)),
       connect: (from, to) => S.notes.connect(from, to),
+      playVideo: (id) => S.video.play(id),
       brush: strokeBrush,
       stroke: addStroke,
       toggleTask: (id, block) => S.notes.toggleTask(id, block),
@@ -1982,13 +2198,16 @@ async function start() {
       dblclick: onDblClick,
       dropFiles: dropData,
       insets: () => { const u = currentUi(); return { left: ((S.sidebar && !isNarrow() ? 292 : 0) + 64) * u, right: 0, top: 64 * u, bottom: 0 }; },
-      drawn: () => S.notes?.place(),
+      drawn: () => { S.notes?.place(); if (S.video?.open) S.video.place(); },
     },
   });
   S.board.wheelMode = pref.get('wheel', 'zoom');
+  S.board.snap = pref.get('snap', true);
+  S.board.snapGrid = pref.get('snapGrid', true);
   S.notes = new NotesUI({
     board: S.board, doc, edit, readOnly, pref, setTool,
   }, { layer: $('editlayer'), bar: $('selbar') });
+  S.video = new VideoPlayer({ board: S.board, doc, edit, silent, readOnly, toast }, $('videolayer'));
   applyUi();
   S.bg = new Background($('bg'));
   S.bg.onReady = drawBackground;

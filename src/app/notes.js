@@ -8,7 +8,7 @@ import { connectorPath, midpoint, ROUTES } from '../core/connectors.js';
 import { toggleTask, MARK_COLORS } from '../core/markdown.js';
 import { NoteEditor } from './editor.js';
 import { neededHeight, NOTE_BG, MARK_ON_LIGHT, HIGHLIGHT } from './text.js';
-import { FILL, LINE_COLOR } from './shapes.js';
+import { FILL, LINE_COLOR, fillColor, lineColor } from './shapes.js';
 import { INK_COLOR, inkColor } from './ink.js';
 import { openColorPicker } from './colorpicker.js';
 import { INK_TOOLS, INK_WIDTHS, inkScale, reframe, strokeScale } from '../core/ink.js';
@@ -337,12 +337,37 @@ export class NotesUI {
     this.bar.replaceChildren(...parts);
   }
 
-  #paintMenu(anchor, current, onPick, { none = false, lines = false } = {}) {
+  #paintMenu(anchor, current, onPick, { none = false, lines = false, custom = null } = {}) {
     const table = lines ? LINE_COLOR : FILL;
     openMenu(anchor, [
       ...(none ? [{ label: t('paint.none'), icon: 'x', checked: current === 'none' || !current, onClick: () => onPick('none') }] : []),
       ...PAINT.map((c) => ({ label: t(`paint.${c}`), swatch: table[c], checked: current === c, onClick: () => onPick(c) })),
-    ]);
+      custom ? { label: t('color.custom'), icon: 'pipette', checked: isHexColor(current), onClick: custom } : null,
+    ].filter(Boolean));
+  }
+
+  /**
+   * A custom colour for one field of the selected items of a type: shown live
+   * while dragging, one undo step per colour chosen.
+   */
+  #customColor(anchor, type, field, shown, key) {
+    const ids = new Set(this.#ofType(type).map((k) => k.id));
+    const d0 = this.app.doc();
+    if (!ids.size || !d0) return;
+    let before = d0.items;
+    const first = d0.items.find((it) => ids.has(it.id));
+    openColorPicker(anchor, shown(first[field]), (hex, done) => {
+      const d = this.app.doc();
+      if (!d) return;
+      if (!done) {
+        d.items = d.items.map((it) => (ids.has(it.id) ? { ...it, [field]: hex } : it));
+        this.board.invalidate();
+        return;
+      }
+      d.items = before;
+      this.#set(field, () => ({ [field]: hex }), type);
+      before = d.items;
+    }, { key, place: 'below' });
   }
 
   #shapeBar(shapes) {
@@ -352,10 +377,12 @@ export class NotesUI {
       label: t(`shape.${k}`), icon: KIND_ICON[k], checked: same('kind') && one.kind === k,
       onClick: () => { this.app.pref.set('shapeKind', k); this.#set('kind', () => ({ kind: k }), 'shape'); },
     }))));
-    const fillBtn = this.#btn(null, t('shape.fill'), () => this.#paintMenu(fillBtn, one.fill, (c) => { this.app.pref.set('shapeFill', c); this.#set('fill', () => ({ fill: c }), 'shape'); }, { none: true }));
-    fillBtn.append(h('span.sb-swatch', { class: one.fill === 'none' ? 'none' : '', style: { background: FILL[one.fill] || 'transparent' } }));
-    const strokeBtn = this.#btn(null, t('shape.stroke'), () => this.#paintMenu(strokeBtn, one.stroke || 'none', (c) => this.#set('stroke', () => ({ stroke: c === 'none' ? undefined : c }), 'shape'), { none: true, lines: true }));
-    strokeBtn.append(h('span.sb-swatch.ring', { class: one.stroke ? '' : 'none', style: { borderColor: LINE_COLOR[one.stroke] || 'transparent' } }));
+    const fillBtn = this.#btn(null, t('shape.fill'), () => this.#paintMenu(fillBtn, one.fill, (c) => { this.app.pref.set('shapeFill', c); this.#set('fill', () => ({ fill: c }), 'shape'); }, { none: true, custom: () => this.#customColor(fillBtn, 'shape', 'fill', fillColor, 'shape-fill') }));
+    fillBtn.dataset.cp = 'shape-fill';
+    fillBtn.append(h('span.sb-swatch', { class: one.fill === 'none' ? 'none' : '', style: { background: one.fill === 'none' ? 'transparent' : fillColor(one.fill) } }));
+    const strokeBtn = this.#btn(null, t('shape.stroke'), () => this.#paintMenu(strokeBtn, one.stroke || 'none', (c) => this.#set('stroke', () => ({ stroke: c === 'none' ? undefined : c }), 'shape'), { none: true, lines: true, custom: () => this.#customColor(strokeBtn, 'shape', 'stroke', lineColor, 'shape-stroke') }));
+    strokeBtn.dataset.cp = 'shape-stroke';
+    strokeBtn.append(h('span.sb-swatch.ring', { class: one.stroke ? '' : 'none', style: { borderColor: one.stroke ? lineColor(one.stroke) : 'transparent' } }));
     const al = one.align || 'center';
     const parts = [kindBtn, h('span.sb-sep'), fillBtn, strokeBtn, h('span.sb-sep')];
     for (const s of ['s', 'm', 'l', 'xl']) parts.push(this.#btn(null, t('note.size'), () => this.#set('size', () => ({ size: s === 'm' ? undefined : s }), 'shape'), (one.size || 'm') === s && same('size'), s.toUpperCase()));
@@ -380,8 +407,9 @@ export class NotesUI {
       if (which === 'start') b.classList.add('flip-x');
       return b;
     };
-    const colorBtn = this.#btn(null, t('conn.color'), () => this.#paintMenu(colorBtn, one.color, (c) => { this.app.pref.set('lineColor', c); set('color', () => ({ color: c })); }, { lines: true }));
-    colorBtn.append(h('span.sb-swatch', { style: { background: LINE_COLOR[one.color] || LINE_COLOR.grey } }));
+    const colorBtn = this.#btn(null, t('conn.color'), () => this.#paintMenu(colorBtn, one.color, (c) => { this.app.pref.set('lineColor', c); set('color', () => ({ color: c })); }, { lines: true, custom: () => this.#customColor(colorBtn, 'connector', 'color', lineColor, 'conn-color') }));
+    colorBtn.dataset.cp = 'conn-color';
+    colorBtn.append(h('span.sb-swatch', { style: { background: lineColor(one.color) } }));
     const widthBtn = this.#btn('lineWidth', t('conn.width'), () => openMenu(widthBtn, [[1, 'thin'], [2, 'medium'], [4, 'thick'], [8, 'bold']].map(([w, n]) => ({
       label: t(`conn.${n}`), checked: (one.width || 2) === w, onClick: () => set('width', () => ({ width: w === 2 ? undefined : w })),
     }))));
@@ -397,23 +425,7 @@ export class NotesUI {
 
   /** A custom colour for the selected strokes: shown live while dragging, one undo step per colour chosen. */
   #customInk(anchor) {
-    const ids = new Set(this.#ofType('stroke').map((k) => k.id));
-    const d0 = this.app.doc();
-    if (!ids.size || !d0) return;
-    let before = d0.items;
-    const first = d0.items.find((it) => ids.has(it.id));
-    openColorPicker(anchor, inkColor(first.color), (hex, done) => {
-      const d = this.app.doc();
-      if (!d) return;
-      if (!done) {
-        d.items = d.items.map((it) => (ids.has(it.id) ? { ...it, color: hex } : it));
-        this.board.invalidate();
-        return;
-      }
-      d.items = before;
-      this.#set('color', () => ({ color: hex }), 'stroke');
-      before = d.items;
-    }, { key: 'stroke-color', place: 'below' });
+    this.#customColor(anchor, 'stroke', 'color', inkColor, 'stroke-color');
   }
 
   /** Selected strokes: tool, colour, width (a new width or tool measures the stroke's frame again). */

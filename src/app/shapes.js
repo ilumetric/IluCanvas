@@ -13,7 +13,17 @@ export const LINE_COLOR = {
   white: '#f5f5f4', grey: '#9a9ca3', black: '#1f1d1a', red: '#e5484d', orange: '#f76b15',
   yellow: '#e2b203', green: '#30a46c', blue: '#3e8ef7', violet: '#8e4ec6', pink: '#e93d82',
 };
-export const darkFill = (it) => it.fill === 'black' || it.fill === 'none';
+/** A fill / outline colour on screen: a palette name or its own #rrggbb. */
+export const fillColor = (c) => FILL[c] || (/^#[0-9a-f]{6}$/i.test(c || '') ? c : FILL.blue);
+export const lineColor = (c) => LINE_COLOR[c] || (/^#[0-9a-f]{6}$/i.test(c || '') ? c : LINE_COLOR.grey);
+/** Dark enough for light text: black, no fill, or a dark custom colour. */
+export function darkFill(it) {
+  if (it.fill === 'black' || it.fill === 'none') return true;
+  const m = /^#([0-9a-f]{6})$/i.exec(it.fill || '');
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255) < 140;
+}
 
 /** Trace a shape's outline (call fill / stroke after). */
 export function tracePath(ctx, kind, x, y, w, h) {
@@ -75,12 +85,12 @@ export function shapeHeightFor(it, textH) {
 export function drawShapeBody(ctx, it, { px }) {
   const dpr = devicePixelRatio || 1;
   tracePath(ctx, it.kind, it.x, it.y, it.w, it.h);
-  if (it.fill && it.fill !== 'none') { ctx.fillStyle = FILL[it.fill] || FILL.blue; ctx.fill(); }
+  if (it.fill && it.fill !== 'none') { ctx.fillStyle = fillColor(it.fill); ctx.fill(); }
   const stroke = it.stroke || (it.fill === 'none' ? 'grey' : null);
   if (stroke) {
     ctx.lineWidth = Math.max((2 * dpr) / px, Math.min(it.w, it.h) * 0.012);
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = LINE_COLOR[stroke] || LINE_COLOR.grey;
+    ctx.strokeStyle = lineColor(stroke);
     ctx.stroke();
   }
 }
@@ -97,7 +107,7 @@ export const connectorWidth = (c, px) => Math.max((1.5 * (devicePixelRatio || 1)
 export function drawConnector(ctx, c, lookup, { px, theme, family, path: given = null }) {
   const path = given || connectorPath(c, lookup);
   const lw = connectorWidth(c, px);
-  const color = LINE_COLOR[c.color] || LINE_COLOR.grey;
+  const color = lineColor(c.color);
   const head = Math.max(lw * 3.2, 9 * (devicePixelRatio || 1) / px);
   ctx.strokeStyle = color;
   ctx.fillStyle = color;

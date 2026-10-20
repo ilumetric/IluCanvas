@@ -84,6 +84,9 @@ export class Board {
     this.wheelMode = 'zoom';
     this.ui = 1; // interface scale (group tags, handles)
     this.editingId = null; // the note whose text is in the editor
+    this.snap = true; // moving / resizing snaps to the edges and centres of other items (Ctrl: not now)
+    this.snapGrid = true; // … and, where no item is near, to the background's grid
+    this.gridDense = 13; // the background's densest spacing on screen, css px (background.js: 16 for the grid)
     this.stats = { drawn: 0, ms: 0 };
     this.#bind();
     new ResizeObserver(() => this.invalidate()).observe(stage);
@@ -319,13 +322,23 @@ export class Board {
       const b = it.rot ? itemBounds(it) : it;
       if (!intersects(b, vis)) continue;
       drawn++;
-      if (it.type === 'stroke') { drawStroke(ctx, it, { px: k }); continue; }
-      if (it.type === 'note') { drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId }); continue; }
-      if (it.type === 'shape') {
-        drawShapeBody(ctx, it, { px: k });
-        drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId });
+      if (it.type === 'stroke' || it.type === 'note' || it.type === 'shape') {
+        // turned about their centre (like images)
+        if (it.rot) {
+          ctx.save();
+          ctx.translate(it.x + it.w / 2, it.y + it.h / 2);
+          ctx.rotate((it.rot * Math.PI) / 180);
+          ctx.translate(-it.x - it.w / 2, -it.y - it.h / 2);
+        }
+        if (it.type === 'stroke') drawStroke(ctx, it, { px: k });
+        else {
+          if (it.type === 'shape') drawShapeBody(ctx, it, { px: k });
+          drawNote(ctx, it, { px: k, theme, family: theme.font, textless: it.id === this.editingId });
+        }
+        if (it.rot) ctx.restore();
         continue;
       }
+      if (it.type === 'video') { this.#drawVideo(ctx, it, k, z); continue; }
       if (it.type !== 'image') { this.#drawUnknown(ctx, it, z); continue; }
       const a = this.doc.assets[it.asset];
       const px = Math.max(it.w, it.h) * k;
@@ -373,6 +386,107 @@ export class Board {
     for (const g of labels) this.#drawLabel(ctx, g, counts.get(g.id) || 0);
     this.images.flush();
     this.stats = { drawn, ms: performance.now() - t0 };
+  }
+
+  /** A video's card: its poster (cut to the card's shape), the title, a play button, speed / loop and the timecodes. */
+  #drawVideo(ctx, it, k, z) {
+    const { x, y, w, h } = it;
+    const px = Math.max(w, h) * k;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.fillStyle = '#0f0f10';
+    ctx.fillRect(x, y, w, h);
+    if (this.activeVideo === it.id) { ctx.restore(); return; } // the player is on top
+    const a = it.asset && this.doc.assets[it.asset];
+    if (a && px >= 5) {
+      const level = levelFor(px, Math.max(a.w || 0, a.h || 0) || LEVELS[2]);
+      const bmp = this.images.get(it.asset, level);
+      if (!this.images.has(it.asset, level)) this.images.want(it.asset, level, (bmp ? 1e6 : 0) + level * 1000);
+      if (bmp) {
+        // cover: the 4:3 posters have black bars — cut to the card
+        const r = Math.max(w / bmp.width, h / bmp.height);
+        const sw = w / r;
+        const sh = h / r;
+        ctx.drawImage(bmp, (bmp.width - sw) / 2, (bmp.height - sh) / 2, sw, sh, x, y, w, h);
+      } else if (a.color) { ctx.fillStyle = a.color; ctx.fillRect(x, y, w, h); }
+    }
+    if (px < 40) { ctx.restore(); return; }
+    const u = Math.min(w, h);
+    // the bottom: shade, title, timecodes
+    const g = ctx.createLinearGradient(0, y + h * 0.55, 0, y + h);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.72)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y + h * 0.55, w, h * 0.45);
+    const fs = Math.max(u * 0.065, 1);
+    if (it.title && fs * z > 6) {
+      ctx.font = `600 ${fs}px ${this.theme.font}`;
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'alphabetic';
+      let title = it.title;
+      const max = w - fs * 1.6;
+      if (ctx.measureText(title).width > max) {
+        while (title.length > 1 && ctx.measureText(`${title}…`).width > max) title = title.slice(0, -1);
+        title += '…';
+      }
+      ctx.fillText(title, x + fs * 0.8, y + h - fs * (it.duration && it.marks?.length ? 1.6 : 0.8));
+    }
+    if (it.duration > 0 && (it.marks?.length || it.loop)) {
+      const ty = y + h - fs * 0.7;
+      const tx = x + fs * 0.8;
+      const tw = w - fs * 1.6;
+      ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      ctx.fillRect(tx, ty, tw, Math.max(fs * 0.1, 1 / z));
+      if (it.loop) { ctx.fillStyle = 'rgba(255,214,10,0.85)'; ctx.fillRect(tx + (tw * it.loop.a) / it.duration, ty - fs * 0.05, (tw * (it.loop.b - it.loop.a)) / it.duration, fs * 0.2); }
+      ctx.fillStyle = '#ff375f';
+      for (const m of it.marks || []) { ctx.beginPath(); ctx.arc(tx + (tw * Math.min(m.t, it.duration)) / it.duration, ty + fs * 0.05, fs * 0.16, 0, Math.PI * 2); ctx.fill(); }
+    }
+    // play
+    const R = u * 0.12;
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + h / 2, R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fill();
+    ctx.lineWidth = Math.max(R * 0.06, 1 / z);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + w / 2 - R * 0.32, y + h / 2 - R * 0.45);
+    ctx.lineTo(x + w / 2 + R * 0.5, y + h / 2);
+    ctx.lineTo(x + w / 2 - R * 0.32, y + h / 2 + R * 0.45);
+    ctx.closePath();
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    // badges: YouTube, speed, loop
+    const bs = u * 0.05;
+    if (bs * z > 5) {
+      ctx.font = `700 ${bs}px ${this.theme.font}`;
+      const badge = (text, bx, bg) => {
+        const tw2 = ctx.measureText(text).width + bs * 0.9;
+        ctx.fillStyle = bg;
+        ctx.beginPath();
+        ctx.roundRect(bx, y + bs * 0.6, tw2, bs * 1.6, bs * 0.4);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, bx + bs * 0.45, y + bs * 1.42);
+        return tw2;
+      };
+      let bx = x + bs * 0.6;
+      bx += badge('▶ YouTube', bx, 'rgba(255,0,0,0.85)') + bs * 0.4;
+      if (it.rate) bx += badge(`${it.rate}×`, bx, 'rgba(0,0,0,0.6)') + bs * 0.4;
+      if (it.loop) badge('A–B', bx, 'rgba(0,0,0,0.6)');
+      ctx.textBaseline = 'alphabetic';
+    }
+    ctx.restore();
+  }
+
+  /** Is board point p on a video card's play button? */
+  #onPlay(it, p) {
+    const R = Math.min(it.w, it.h) * 0.12 * 1.15;
+    return it.type === 'video' && Math.hypot(p.x - (it.x + it.w / 2), p.y - (it.y + it.h / 2)) <= R;
   }
 
   #drawUnknown(ctx, it, z) {
@@ -565,6 +679,22 @@ export class Board {
       ctx.lineWidth = 1;
       ctx.fillRect(a.x, a.y, r.w * this.view.z, r.h * this.view.z);
       ctx.strokeRect(Math.round(a.x) + 0.5, Math.round(a.y) + 0.5, Math.round(r.w * this.view.z), Math.round(r.h * this.view.z));
+    }
+    // snapping guides
+    if (this.drag?.guides && this.drag.moved) {
+      ctx.save();
+      ctx.strokeStyle = '#ff375f';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      for (const g of this.drag.guides) {
+        const a = this.toScreen(g.x1, g.y1);
+        const b = this.toScreen(g.x2, g.y2);
+        ctx.moveTo(Math.round(a.x) + 0.5, Math.round(a.y) + 0.5);
+        ctx.lineTo(Math.round(b.x) + 0.5, Math.round(b.y) + 0.5);
+      }
+      ctx.stroke();
+      ctx.restore();
     }
     // a stroke being drawn, in board units
     if (this.drag?.type === 'ink') {
@@ -923,10 +1053,10 @@ export class Board {
     const w = this.toWorld(p.x, p.y);
     if (d.type === 'move') {
       if (first) this.#moveStart(d);
-      this.#moveTo(d, w.x - d.wx, w.y - d.wy, e.shiftKey);
+      this.#moveTo(d, w.x - d.wx, w.y - d.wy, e.shiftKey, e.ctrlKey || e.metaKey);
     } else if (d.type === 'resize') {
       if (first) d.before = this.doc.items;
-      this.#resizeTo(d, w);
+      this.#resizeTo(d, this.#snapPoint(d, w, e.ctrlKey || e.metaKey));
     } else if (d.type === 'marquee') {
       d.rect = { x: Math.min(d.wx, w.x), y: Math.min(d.wy, w.y), w: Math.abs(w.x - d.wx), h: Math.abs(w.y - d.wy) };
       this.#marqueeSelect(d);
@@ -1016,10 +1146,11 @@ export class Board {
       return;
     }
     if (d.type === 'move' && !d.moved && d.hit.kind === 'item' && !d.shift) {
-      // a click on a note: tick a checkbox, open a link (Ctrl)
+      // a click on a note: tick a checkbox, open a link (Ctrl); on a video's play button: play
       const it = byId(this.doc).get(d.hit.id);
+      if (it?.type === 'video' && this.#onPlay(it, { x: d.wx, y: d.wy })) { this.cb.playVideo?.(it.id); this.invalidateOverlay(); return; }
       if (it?.type === 'note' && it.id !== this.editingId) {
-        const p = { x: d.wx, y: d.wy };
+        const p = unturn(it, { x: d.wx, y: d.wy });
         const box = !this.readOnly && checkAt(it, p, this.theme.font);
         if (box) { this.cb.toggleTask?.(it.id, box.block); this.invalidateOverlay(); return; }
         const link = d.ctrl && linkAt(it, p, this.theme.font);
@@ -1083,7 +1214,8 @@ export class Board {
     let cursor = hit.kind === 'handle' ? ({ nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw', n: 'ns', s: 'ns', e: 'ew', w: 'ew' })[hit.handle] : hit.kind === 'dot' || hit.kind === 'end' ? 'crosshair' : '';
     if (!cursor && hit.kind === 'item') {
       const it = byId(this.doc).get(hit.id);
-      if (it?.type === 'note' && it.id !== this.editingId && !this.readOnly && checkAt(it, this.toWorld(p.x, p.y), this.theme.font)) cursor = 'pointer';
+      if (it?.type === 'note' && it.id !== this.editingId && !this.readOnly && checkAt(it, unturn(it, this.toWorld(p.x, p.y)), this.theme.font)) cursor = 'pointer';
+      if (it?.type === 'video' && this.#onPlay(it, this.toWorld(p.x, p.y))) cursor = 'pointer';
     }
     if (this.stage.dataset.cursor !== cursor) this.stage.dataset.cursor = cursor;
     if (id !== this.hover) { this.hover = id; this.invalidateOverlay(); }
@@ -1110,10 +1242,23 @@ export class Board {
     d.ids = withChildren(this.doc, [...this.selection]);
     d.start = new Map();
     for (const it of this.doc.items) if (d.ids.has(it.id) && !it.locked) d.start.set(it.id, it);
+    d.box = unionBounds([...d.start.values()].filter((it) => it.type !== 'connector').map(itemBounds));
+    d.snapTo = this.#snapTargets(d.ids);
   }
 
-  #moveTo(d, dx, dy, axis) {
+  #moveTo(d, dx, dy, axis, noSnap = false) {
     if (axis) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+    d.guides = null;
+    if ((this.snap || this.snapGrid) && !noSnap && d.box) {
+      const b = { ...d.box, x: d.box.x + dx, y: d.box.y + dy };
+      const sx = !this.snap || (axis && dx === 0) ? null : this.#snap1(d.snapTo, 'x', [b.x, b.x + b.w / 2, b.x + b.w]);
+      const sy = !this.snap || (axis && dy === 0) ? null : this.#snap1(d.snapTo, 'y', [b.y, b.y + b.h / 2, b.y + b.h]);
+      if (sx) dx += sx.delta;
+      else if (this.snapGrid && !(axis && dx === 0)) dx += this.#onGrid(b.x) - b.x;
+      if (sy) dy += sy.delta;
+      else if (this.snapGrid && !(axis && dy === 0)) dy += this.#onGrid(b.y) - b.y;
+      d.guides = this.#guides(d.snapTo, { ...d.box, x: d.box.x + dx, y: d.box.y + dy }, sx, sy);
+    }
     this.doc.items = this.doc.items.map((it) => {
       const s = d.start.get(it.id);
       return s ? translateItem(s, dx, dy) : it;
@@ -1129,6 +1274,7 @@ export class Board {
     const sel = this.selectedItems();
     const b = unionBounds(sel.map(itemBounds));
     if (!b) return null;
+    this.resizeSnap = this.#snapTargets(withChildren(this.doc, sel.map((s) => s.id)));
     const frameOnly = sel.length === 1 && freeResize(sel[0]);
     const ids = frameOnly ? new Set([sel[0].id]) : withChildren(this.doc, sel.map((s) => s.id));
     const start = new Map();
@@ -1136,6 +1282,82 @@ export class Board {
     const ax = handle.includes('w') ? b.x + b.w : handle.includes('e') ? b.x : null;
     const ay = handle.includes('n') ? b.y + b.h : handle.includes('s') ? b.y : null;
     return { box: b, frameOnly, start, ax, ay };
+  }
+
+  /** The pointer while resizing, snapped on the axes the handle moves. */
+  #snapPoint(d, w, noSnap) {
+    d.guides = null;
+    if ((!this.snap && !this.snapGrid) || noSnap || !this.resizeSnap) return w;
+    const h = d.handle;
+    const sx = this.snap && /[we]/.test(h) ? this.#snap1(this.resizeSnap, 'x', [w.x]) : null;
+    const sy = this.snap && /[ns]/.test(h) ? this.#snap1(this.resizeSnap, 'y', [w.y]) : null;
+    const gx = !sx && this.snapGrid && /[we]/.test(h);
+    const gy = !sy && this.snapGrid && /[ns]/.test(h);
+    const p = { x: sx ? w.x + sx.delta : gx ? this.#onGrid(w.x) : w.x, y: sy ? w.y + sy.delta : gy ? this.#onGrid(w.y) : w.y };
+    d.guides = this.#guides(this.resizeSnap, { x: p.x, y: p.y, w: 0, h: 0 }, sx, sy);
+    return p;
+  }
+
+  // ---- snapping ---------------------------------------------------------------------------------------
+
+/** The background's grid step at this zoom, board units: 24 · 2ⁿ, as dense as the lines drawn (background.js). */
+  gridStep() {
+    let g = 24;
+    const T = this.gridDense;
+    let k = 0;
+    while (g * this.view.z < T && k < 60) { g *= 2; k++; }
+    while (g * this.view.z >= 2 * T && k > -60) { g /= 2; k--; }
+    return g;
+  }
+
+  #onGrid(v) { const g = this.gridStep(); return Math.round(v / g) * g; }
+
+  /** Edges and centres of the items near the view that are not moving: { x: [{ v, b }], y: [...] }. */
+  #snapTargets(moving) {
+    const vis = this.visibleWorld(200);
+    const xs = [];
+    const ys = [];
+    for (const it of this.doc.items) {
+      if (moving.has(it.id) || it.type === 'connector') continue;
+      const b = itemBounds(it);
+      if (!intersects(b, vis)) continue;
+      xs.push({ v: b.x, b }, { v: b.x + b.w / 2, b }, { v: b.x + b.w, b });
+      ys.push({ v: b.y, b }, { v: b.y + b.h / 2, b }, { v: b.y + b.h, b });
+      if (xs.length > 6000) break;
+    }
+    return { x: xs, y: ys };
+  }
+
+  /** The smallest shift (within 7 screen px) that puts one of `vals` on a target line: { delta, v } | null. */
+  #snap1(t, axis, vals) {
+    const thr = 7 / this.view.z;
+    let best = null;
+    for (const v of vals) {
+      for (const c of t[axis]) {
+        const dlt = c.v - v;
+        if (Math.abs(dlt) <= thr && (!best || Math.abs(dlt) < Math.abs(best.delta))) best = { delta: dlt, v: c.v };
+      }
+    }
+    return best;
+  }
+
+  /** Guide lines (board units) through the snapped lines, from the box to the items on them. */
+  #guides(t, box, sx, sy) {
+    const out = [];
+    const eps = 0.5 / this.view.z;
+    if (sx) {
+      let y0 = box.y;
+      let y1 = box.y + box.h;
+      for (const c of t.x) if (Math.abs(c.v - sx.v) < eps) { y0 = Math.min(y0, c.b.y); y1 = Math.max(y1, c.b.y + c.b.h); }
+      out.push({ x1: sx.v, y1: y0, x2: sx.v, y2: y1 });
+    }
+    if (sy) {
+      let x0 = box.x;
+      let x1 = box.x + box.w;
+      for (const c of t.y) if (Math.abs(c.v - sy.v) < eps) { x0 = Math.min(x0, c.b.x); x1 = Math.max(x1, c.b.x + c.b.w); }
+      out.push({ x1: x0, y1: sy.v, x2: x1, y2: sy.v });
+    }
+    return out.length ? out : null;
   }
 
   #resizeTo(d, w) {
@@ -1241,7 +1463,18 @@ export class Board {
 }
 
 /** Items whose box is resized on its own (8 handles) rather than scaled with the selection. */
-const freeResize = (it) => it.type === 'group' || it.type === 'note' || it.type === 'shape';
+const freeResize = (it) => it.type === 'group' || ((it.type === 'note' || it.type === 'shape') && !it.rot); // turned: scaled as a whole
+
+/** A board point in an item's own (unturned) frame. */
+function unturn(it, p) {
+  if (!it.rot) return p;
+  const cx = it.x + it.w / 2;
+  const cy = it.y + it.h / 2;
+  const a = (-it.rot * Math.PI) / 180;
+  const dx = p.x - cx;
+  const dy = p.y - cy;
+  return { x: cx + dx * Math.cos(a) - dy * Math.sin(a), y: cy + dx * Math.sin(a) + dy * Math.cos(a) };
+}
 
 /** The side of `it` whose middle is near board point `p` (within 24 px on screen), if any. */
 function sideNear(it, p, z) {

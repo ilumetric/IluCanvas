@@ -13,7 +13,19 @@ export const HEADS = ['none', 'arrow', 'dot'];
 export const SIDES = ['top', 'right', 'bottom', 'left'];
 const DIR = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
 
-const boxOf = (it) => ({ x: it.x, y: it.y, w: it.w, h: it.h });
+const boxOf = (it) => ({ x: it.x, y: it.y, w: it.w, h: it.h, rot: it.rot || 0 });
+
+/** Turn point p about box b's centre by the box's rotation (degrees, clockwise on screen). */
+function turn(b, p, sign = 1) {
+  if (!b.rot) return p;
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  const a = (sign * b.rot * Math.PI) / 180;
+  const dx = p.x - cx;
+  const dy = p.y - cy;
+  return { x: cx + dx * Math.cos(a) - dy * Math.sin(a), y: cy + dx * Math.sin(a) + dy * Math.cos(a) };
+}
+const turnDir = (b, d) => { if (!b.rot) return d; const a = (b.rot * Math.PI) / 180; return { x: d.x * Math.cos(a) - d.y * Math.sin(a), y: d.x * Math.sin(a) + d.y * Math.cos(a) }; };
 const centre = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
 
 /** The middle of one side of a box. */
@@ -61,18 +73,19 @@ export function connectorPath(c, lookup) {
   const freeB = { x: c.to?.x ?? (c.x ?? 0) + (c.w ?? 0), y: c.to?.y ?? (c.y ?? 0) + (c.h ?? 0) };
   const ca = ba ? centre(ba) : freeA;
   const cb = bb ? centre(bb) : freeB;
-  const sideA = ba ? (c.from.side && DIR[c.from.side] ? c.from.side : facingSide(ba, cb)) : null;
-  const sideB = bb ? (c.to.side && DIR[c.to.side] ? c.to.side : facingSide(bb, sideA ? sidePoint(ba, sideA) : ca)) : null;
-  const a = ba ? sidePoint(ba, sideA) : freeA;
-  const b = bb ? sidePoint(bb, sideB) : freeB;
+  // a turned item: its sides turn with it (the side facing the other end is found in its own frame)
+  const sideA = ba ? (c.from.side && DIR[c.from.side] ? c.from.side : facingSide(ba, turn(ba, cb, -1))) : null;
+  const sideB = bb ? (c.to.side && DIR[c.to.side] ? c.to.side : facingSide(bb, turn(bb, sideA ? turn(ba, sidePoint(ba, sideA)) : ca, -1))) : null;
+  const a = ba ? turn(ba, sidePoint(ba, sideA)) : freeA;
+  const b = bb ? turn(bb, sidePoint(bb, sideB)) : freeB;
   const toward = (p, q) => {
     const dx = q.x - p.x;
     const dy = q.y - p.y;
     if (Math.abs(dx) >= Math.abs(dy)) return { x: Math.sign(dx) || 1, y: 0 };
     return { x: 0, y: Math.sign(dy) || 1 };
   };
-  const dirA = sideA ? DIR[sideA] : toward(a, b);
-  const dirB = sideB ? DIR[sideB] : toward(b, a);
+  const dirA = sideA ? turnDir(ba, DIR[sideA]) : toward(a, b);
+  const dirB = sideB ? turnDir(bb, DIR[sideB]) : toward(b, a);
   const route = ROUTES.includes(c.route) ? c.route : 'straight';
   if (route === 'curve') {
     const d = Math.hypot(b.x - a.x, b.y - a.y);

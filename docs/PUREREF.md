@@ -1,6 +1,13 @@
 # PureRef `.pur` format and the IluCanvas reader
 
-`src/core/pureref.js` opens PureRef boards read-only and returns the embedded images and where each one sits on the canvas. Text notes are partly supported. This document covers:
+`src/core/pureref.js` opens PureRef boards read-only and returns the embedded images and where each one sits on the canvas. Text notes are partly supported. `src/core/purdoc.js` puts the result on IluCanvas's own widgets — the app shows a `.pur` that way and `ilucanvas from-pur` converts it:
+
+* images → image items (crop, rotation, flips, opacity, lock; the PureRef name goes to `note`);
+* groups → group frames around what is in them, nested as in PureRef; the background colour picks the nearest group colour; empty groups are dropped;
+* text notes → notes: text straight on the board (`color: none`) or, with a background, the nearest sticky colour; the text is kept literally (Markdown characters escaped); size from the note's fixed size or estimated from its text and scale;
+* drawings → not yet (their format is unknown; a sample file is needed).
+
+This document covers:
 
 * the byte layout as checked against a real file
 * what is verified, what is inferred, and what is unknown

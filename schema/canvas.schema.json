@@ -72,6 +72,9 @@
             "$ref": "#/$defs/stroke"
           },
           {
+            "$ref": "#/$defs/video"
+          },
+          {
             "$ref": "#/$defs/other"
           }
         ]
@@ -217,7 +220,7 @@
       }
     },
     "other": {
-      "description": "Item types from newer versions (video…): kept and drawn as a box.",
+      "description": "Item types from newer versions: kept and drawn as a box.",
       "allOf": [
         {
           "$ref": "#/$defs/box"
@@ -232,7 +235,8 @@
               "note",
               "shape",
               "connector",
-              "stroke"
+              "stroke",
+              "video"
             ]
           }
         }
@@ -390,35 +394,51 @@
           ]
         },
         "fill": {
-          "enum": [
-            "white",
-            "grey",
-            "black",
-            "red",
-            "orange",
-            "yellow",
-            "green",
-            "blue",
-            "violet",
-            "pink",
-            "none"
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "grey",
+                "black",
+                "red",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "violet",
+                "pink",
+                "none"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$"
+            }
           ],
-          "description": "Fixed colours; none = only the outline."
+          "description": "A palette name, none (only the outline), or a custom #rrggbb."
         },
         "stroke": {
-          "enum": [
-            "white",
-            "grey",
-            "black",
-            "red",
-            "orange",
-            "yellow",
-            "green",
-            "blue",
-            "violet",
-            "pink"
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "grey",
+                "black",
+                "red",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "violet",
+                "pink"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$"
+            }
           ],
-          "description": "Outline colour; no outline when left out (grey for fill none)."
+          "description": "Outline colour (palette or #rrggbb); no outline when left out."
         },
         "text": {
           "type": "string",
@@ -532,17 +552,25 @@
           "description": "Head at the to end."
         },
         "color": {
-          "enum": [
-            "white",
-            "grey",
-            "black",
-            "red",
-            "orange",
-            "yellow",
-            "green",
-            "blue",
-            "violet",
-            "pink"
+          "anyOf": [
+            {
+              "enum": [
+                "white",
+                "grey",
+                "black",
+                "red",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "violet",
+                "pink"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^#[0-9a-f]{6}$"
+            }
           ]
         },
         "width": {
@@ -637,6 +665,95 @@
             "type": "number"
           },
           "description": "Stylus barrel rotation per sample, degrees."
+        }
+      }
+    },
+    "video": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/box"
+        }
+      ],
+      "required": [
+        "provider",
+        "videoId",
+        "url"
+      ],
+      "description": "A YouTube video by link; its poster is an image asset so the board shows it offline.",
+      "properties": {
+        "type": {
+          "const": "video"
+        },
+        "provider": {
+          "const": "youtube"
+        },
+        "videoId": {
+          "type": "string",
+          "pattern": "^[\\w-]{11}$"
+        },
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "asset": {
+          "$ref": "#/$defs/id",
+          "description": "The poster (an image asset)."
+        },
+        "start": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Seconds to start from."
+        },
+        "rate": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 2,
+          "description": "Playback speed; 1 when left out."
+        },
+        "loop": {
+          "type": "object",
+          "required": [
+            "a",
+            "b"
+          ],
+          "properties": {
+            "a": {
+              "type": "number",
+              "minimum": 0
+            },
+            "b": {
+              "type": "number"
+            }
+          },
+          "description": "The A–B loop, seconds."
+        },
+        "duration": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "marks": {
+          "type": "array",
+          "description": "Labelled timecodes, sorted by t.",
+          "items": {
+            "type": "object",
+            "required": [
+              "t"
+            ],
+            "properties": {
+              "t": {
+                "type": "number",
+                "minimum": 0
+              },
+              "end": {
+                "type": "number"
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     }

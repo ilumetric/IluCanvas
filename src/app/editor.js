@@ -309,7 +309,8 @@ export class NoteEditor {
     if (!this.el) return;
     const { x, y, z } = this.board.view;
     const it = this.item;
-    this.el.style.transform = `translate(${it.x * z + x}px, ${it.y * z + y}px) scale(${z})`;
+    const turn = it.rot ? ` translate(${it.w / 2}px, ${it.h / 2}px) rotate(${it.rot}deg) translate(${-it.w / 2}px, ${-it.h / 2}px)` : '';
+    this.el.style.transform = `translate(${it.x * z + x}px, ${it.y * z + y}px) scale(${z})${turn}`;
   }
 
   #input(e) {

@@ -112,11 +112,15 @@ test('ink takes a custom #rrggbb colour too', async () => {
   await applyOps(d, [{ op: 'set', id: k.id, color: '#0a84ff' }]);
   assert.equal(d.items[0].color, '#0a84ff');
   await assert.rejects(() => applyOps(d, [{ op: 'set', id: k.id, color: '#12345' }]), /or #rrggbb/);
-  // only ink: a connector keeps to the palette
+  // connectors and shapes take custom colours too; groups keep to their palette
   await applyOps(d, [{ op: 'connect', from: k.id, to: { x: 300, y: 0 }, as: '$c' }]);
   const c = d.items.find((i) => i.type === 'connector');
   assert.equal(c.route, 'dubins', 'new connectors are Dubins paths');
-  await assert.rejects(() => applyOps(d, [{ op: 'set', id: c.id, color: '#ff0000' }]), /color must be one of/);
+  await applyOps(d, [{ op: 'set', id: c.id, color: '#FF0000' }]);
+  assert.equal(d.items.find((i) => i.id === c.id).color, '#ff0000');
+  const s = await applyOps(d, [{ op: 'shape', kind: 'rect', fill: '#123456', stroke: '#abcdef' }, { op: 'newgroup', name: 'G', as: '$g' }]);
+  assert.equal(d.items.find((i) => i.id === s.created[0]).fill, '#123456');
+  await assert.rejects(() => applyOps(d, [{ op: 'set', id: s.created[1], color: '#ff0000' }]), /color must be one of/);
   assert.equal(normalize({ format: 'ilucanvas', assets: {}, items: [{ id: 'k', type: 'stroke', x: 0, y: 0, w: 1, h: 1, color: '#ABCDEF', pts: [] }] }).items[0].color, '#abcdef');
   assert.ok(validate(d).ok);
 });

@@ -33,11 +33,15 @@ pictures under their own names. Rename a copy to `.zip` and take any reference o
 - **Ink**: pen (P) with pressure and an italic nib, highlighter (Shift+P),
   washi tape (T) and an eraser (E) that removes whole strokes; a stylus
   draws, its back end erases, fingers pan. Ten fixed colours and a colour
-  picker (wheel, hex, eyedropper, recent colours).
+  picker (wheel, H / S / L sliders, hex, eyedropper, recent colours) — for
+  shapes and connectors too. Pictures, notes, shapes and ink turn (Shift+R).
+- **YouTube videos by link** (Y, or paste / drop a link): a card with the
+  poster kept in the file; it plays on the board with speed 0.25–2, an A–B
+  loop, frame steps and labelled timecodes.
 - **Three styles** (Fun, Calm, Oli — same as IluBoard) and **six backgrounds**:
   dots, grid, crosses, doodles, garden, plain. Settings apply to every board.
-- **PureRef:** `.pur` files open for viewing — just the pictures and their
-  layout; *Save as .ilucanvas* makes an editable copy. Format 2.x is verified
+- **PureRef:** `.pur` files open for viewing on IluCanvas's own widgets —
+  pictures, their groups as frames, text notes as notes; *Save as .ilucanvas* makes an editable copy. Format 2.x is verified
   against a real file, 1.x follows the format description ([docs/PUREREF.md](docs/PUREREF.md)).
 - **Google Drive links:** share the file with "Anyone with the link" — your team
   opens the board by link, the file downloads to them, updates come with the

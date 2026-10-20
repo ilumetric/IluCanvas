@@ -13,12 +13,13 @@ export const FORMAT_VERSION = 1;
 export const GROUP_COLORS = ['violet', 'blue', 'orange', 'green', 'pink', 'yellow', 'red', 'amber', 'grey'];
 import { connectorPath, pathBounds, ROUTES, HEADS, SIDES } from './connectors.js';
 import { INK_TOOLS, INK_DEFAULTS } from './ink.js';
+import { PROVIDERS, RATE_MIN, RATE_MAX, cleanMarks } from './video.js';
 
-export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke'];
+export const ITEM_TYPES = ['image', 'group', 'note', 'shape', 'connector', 'stroke', 'video'];
 export const SHAPE_KINDS = ['rect', 'rounded', 'ellipse', 'diamond', 'triangle', 'parallelogram', 'hexagon', 'star'];
 /** Fixed colours of shapes, connectors and ink (they do not follow the style). */
 export const PAINT = ['white', 'grey', 'black', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'pink'];
-/** A custom colour (ink can have one besides the PAINT names). */
+/** A custom colour: ink, shapes and connectors take one besides the PAINT names. */
 export const isHexColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 /** Note papers: stickies, `paper` for documents, `none` for text straight on the board. */
 export const NOTE_COLORS = ['yellow', 'orange', 'pink', 'green', 'blue', 'violet', 'grey', 'paper', 'none'];
@@ -36,6 +37,7 @@ const ITEM_KEYS = {
   shape: ['id', 'type', 'kind', 'x', 'y', 'w', 'h', 'rot', 'fill', 'stroke', 'size', 'scale', 'align', 'parent', 'locked', 'text'],
   connector: ['id', 'type', 'from', 'to', 'route', 'start', 'end', 'color', 'width', 'dash', 'label', 'x', 'y', 'w', 'h', 'locked'],
   stroke: ['id', 'type', 'tool', 'nib', 'color', 'width', 'x', 'y', 'w', 'h', 'vw', 'vh', 'parent', 'locked', 'pts', 'tw'],
+  video: ['id', 'type', 'provider', 'videoId', 'url', 'title', 'asset', 'x', 'y', 'w', 'h', 'rot', 'start', 'rate', 'loop', 'duration', 'parent', 'locked', 'note', 'marks'],
 };
 const ASSET_KEYS = ['file', 'type', 'w', 'h', 'bytes', 'sha256', 'thumb', 'color', 'name', 'source', 'added'];
 const DOC_KEYS = ['format', 'version', 'id', 'title', 'created', 'updated', 'updated_by', 'generator', 'assets', 'items'];
@@ -110,8 +112,10 @@ export function normalize(raw) {
     }
     if (n.type === 'shape') {
       if (!SHAPE_KINDS.includes(n.kind)) n.kind = 'rect';
-      if (!PAINT.includes(n.fill) && n.fill !== 'none') n.fill = 'blue';
-      if (!PAINT.includes(n.stroke)) delete n.stroke;
+      if (isHexColor(n.fill)) n.fill = n.fill.toLowerCase();
+      else if (!PAINT.includes(n.fill) && n.fill !== 'none') n.fill = 'blue';
+      if (isHexColor(n.stroke)) n.stroke = n.stroke.toLowerCase();
+      else if (!PAINT.includes(n.stroke)) delete n.stroke;
       n.text = typeof n.text === 'string' ? n.text : '';
       if (!NOTE_SIZES.includes(n.size) || n.size === 'm') delete n.size;
       if (!(n.scale > 0) || n.scale === 1) delete n.scale;
@@ -123,11 +127,26 @@ export function normalize(raw) {
       if (!ROUTES.includes(n.route) || n.route === 'straight') delete n.route;
       if (!HEADS.includes(n.start) || n.start === 'none') delete n.start;
       if (!HEADS.includes(n.end)) n.end = 'arrow';
-      if (!PAINT.includes(n.color)) n.color = 'grey';
+      if (isHexColor(n.color)) n.color = n.color.toLowerCase();
+      else if (!PAINT.includes(n.color)) n.color = 'grey';
       if (!(n.width > 0) || n.width === 2) delete n.width;
       if (n.dash !== true) delete n.dash;
       if (typeof n.label !== 'string' || !n.label) delete n.label;
       delete n.parent;
+    }
+    if (n.type === 'video') {
+      if (!PROVIDERS.includes(n.provider)) n.provider = 'youtube';
+      if (typeof n.videoId !== 'string') n.videoId = '';
+      if (typeof n.url !== 'string') n.url = n.videoId ? `https://www.youtube.com/watch?v=${n.videoId}` : '';
+      if (typeof n.title !== 'string' || !n.title) delete n.title;
+      if (typeof n.asset !== 'string' || !n.asset) delete n.asset;
+      if (!(n.start > 0)) delete n.start;
+      if (!(n.duration > 0)) delete n.duration;
+      if (!(n.rate >= RATE_MIN && n.rate <= RATE_MAX) || n.rate === 1) delete n.rate;
+      if (!n.loop || !(n.loop.a >= 0) || !(n.loop.b > n.loop.a)) delete n.loop;
+      else n.loop = { a: n.loop.a, b: n.loop.b };
+      const marks = cleanMarks(n.marks);
+      if (marks.length) n.marks = marks; else delete n.marks;
     }
     if (n.type === 'stroke') {
       if (!INK_TOOLS.includes(n.tool)) n.tool = 'pen';
@@ -197,6 +216,10 @@ export function validate(doc, { files = null } = {}) {
     ids.add(it.id);
     if (!ITEM_TYPES.includes(it.type)) warn(`${p}.type`, `unknown type "${it.type}" (kept, not editable here)`, it.id);
     if ((it.type === 'note' || it.type === 'shape') && typeof it.text !== 'string') err(`${p}.text`, 'must be a string (Markdown)', it.id);
+    if (it.type === 'video') {
+      if (!/^[\w-]{11}$/.test(it.videoId || '')) err(`${p}.videoId`, 'must be a YouTube video id (11 characters)', it.id);
+      if (it.asset !== undefined) { if (!doc.assets?.[it.asset]) err(`${p}.asset`, `unknown asset "${it.asset}"`, it.id); used.add(it.asset); }
+    }
     if (it.type === 'stroke') {
       if (!Array.isArray(it.pts) || it.pts.length % 3 || !it.pts.every((v) => typeof v === 'number' && Number.isFinite(v))) err(`${p}.pts`, 'must be numbers: x, y, pressure for each sample', it.id);
       else if (!it.pts.length) warn(`${p}.pts`, 'an empty stroke', it.id);
@@ -354,9 +377,12 @@ export function isInside(doc, id, gid) {
   return false;
 }
 
+/** Items that show an image asset: pictures, and videos (their poster). */
+export const hasAsset = (it) => (it.type === 'image' || it.type === 'video') && typeof it.asset === 'string' && !!it.asset;
+
 export function usedAssets(doc) {
   const s = new Set();
-  for (const it of doc.items) if (it.type === 'image' && it.asset) s.add(it.asset);
+  for (const it of doc.items) if (hasAsset(it)) s.add(it.asset);
   return s;
 }
 
