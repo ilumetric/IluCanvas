@@ -68,6 +68,9 @@ const S = {
   saving: null,
   saveAgain: false,
   saveTimer: 0,
+  saveFirst: 0, // when the first change waiting for autosave was made
+  dirtySince: 0, // changes pending since (no successful save after it)
+  quietTimer: 0,
   saveError: null,
   active: null, // { kind: 'file' | 'link' | 'new' | 'server' | 'local', key, path }
   local: [], // boards kept in this browser: { key, gen, name, handle, title, mtime, size, path }
@@ -87,6 +90,26 @@ const S = {
 
 const doc = () => S.store?.doc || null;
 const isDirty = () => !!S.store && S.rev !== S.savedRev;
+
+// Autosave keeps up with editing: a change is on disk a second later, so the
+// "unsaved" chip, the Save button and the tab's dot would blink on every edit.
+// While autosave is on they stay quiet, unless a save is late (a huge file, a
+// slow disk) or failed.
+const QUIET_MS = 4000;
+const autosaves = () => !!(S.store?.writable && S.store.source && pref.get('autosave', true) && !S.saveError);
+
+/** Changes the human should be told about: autosave off, or it has not caught up for a while. */
+function showDirty() {
+  const pending = isDirty() || !!S.saving;
+  if (!pending) { S.dirtySince = 0; return false; }
+  if (!autosaves()) return isDirty();
+  if (!S.dirtySince) {
+    S.dirtySince = performance.now();
+    clearTimeout(S.quietTimer);
+    S.quietTimer = setTimeout(() => { if (S.dirtySince) { renderTopbar(); updateDocTitle(); } }, QUIET_MS + 50);
+  }
+  return performance.now() - S.dirtySince > QUIET_MS;
+}
 const readOnly = () => !S.store || S.store.readOnly;
 const isNarrow = () => innerWidth <= 860;
 
@@ -225,7 +248,7 @@ function render() {
 
 function updateDocTitle() {
   const d = doc();
-  document.title = d ? `${isDirty() ? '• ' : ''}${d.title || t('untitled')} — IluCanvas` : 'IluCanvas';
+  document.title = d ? `${showDirty() ? '• ' : ''}${d.title || t('untitled')} — IluCanvas` : 'IluCanvas';
 }
 
 const hue = (s) => { let x = 0; for (const c of String(s)) x = (x * 31 + c.codePointAt(0)) % 360; return x; };
@@ -462,13 +485,14 @@ function stateChip() {
   if (!st) return null;
   let cls = '';
   let text;
-  if (S.saving) { cls = 'busy'; text = t('state.saving'); }
+  const loud = showDirty();
+  if (S.saving && (loud || !autosaves())) { cls = 'busy'; text = t('state.saving'); }
   else if (S.saveError) { cls = 'error'; text = t('state.error'); }
   else if (st.kind === 'pur') { cls = 'readonly'; text = t('state.pur'); }
   else if (S.link) { cls = S.link.update ? 'update' : 'readonly'; text = S.link.update ? t('link.updateAvailable') : t('state.link'); }
   else if (st.readOnly) { cls = 'readonly'; text = t('state.readonly'); }
   else if (!st.source) { cls = 'dirty'; text = t('state.noFile'); }
-  else if (isDirty()) { cls = 'dirty'; text = t('state.unsaved'); }
+  else if (isDirty() && loud) { cls = 'dirty'; text = t('state.unsaved'); }
   else text = t('state.saved');
   return h(`span.chip-state${cls ? `.${cls}` : ''}`, { title: S.saveError || st.source?.path || text }, h('span.dot'), h('span.state-text.ellipsis', {}, text));
 }
@@ -494,7 +518,8 @@ function renderTopbar() {
       right.append(h(`button.btn${S.link.update ? '.warn' : ''}`, { type: 'button', onclick: () => syncLink(S.link, true) }, icon('refresh', 16), t('link.sync')));
     } else if (S.store.writable) {
       if (S.store.source?.kind === 'local') right.append(h('button.icon-btn', { type: 'button', title: t('local.download'), 'aria-label': t('local.download'), onclick: downloadCopy }, icon('download')));
-      right.append(h('button.btn.primary', { type: 'button', disabled: !isDirty() && !S.saveError, onclick: () => save(), title: 'Ctrl+S' }, icon('save', 16), t('top.save')));
+      // with autosave on, the button shows up only when saving is late or failed (Ctrl+S always saves)
+      if (!autosaves() || showDirty()) right.append(h('button.btn.primary', { type: 'button', disabled: !isDirty() && !S.saveError, onclick: () => save(), title: 'Ctrl+S' }, icon('save', 16), t('top.save')));
     } else {
       const keep = !disk.fsaSupported() && inBrowser();
       right.append(h('button.btn.primary', { type: 'button', onclick: () => saveAs(), title: 'Ctrl+Shift+S' }, icon(disk.fsaSupported() || keep ? 'save' : 'download', 16), S.store.kind === 'pur' ? t('top.savePur') : disk.fsaSupported() ? t('top.saveAs') : keep ? t('top.keep') : t('top.download')));
@@ -919,7 +944,10 @@ function scheduleSave(delay) {
   if (!st?.writable || !pref.get('autosave', true) || !isDirty()) return;
   const size = st.file?.size || 0;
   const d = delay ?? Math.min(20000, 800 + (size / (64 * 1024 * 1024)) * 1000);
-  S.saveTimer = setTimeout(() => save(), d);
+  // every change waits a moment for the next one, but steady work is still saved every few seconds
+  const now = performance.now();
+  if (!S.saveFirst) S.saveFirst = now;
+  S.saveTimer = setTimeout(() => save(), Math.max(0, Math.min(d, S.saveFirst + Math.max(3000, d) - now)));
 }
 
 async function save() {
@@ -928,6 +956,7 @@ async function save() {
   if (!st.writable) return saveAs();
   if (S.saving) { S.saveAgain = true; return S.saving; }
   clearTimeout(S.saveTimer);
+  S.saveFirst = 0;
   S.saving = (async () => {
     renderTopbar();
     try {
@@ -937,6 +966,7 @@ async function save() {
       if (S.store === st) {
         S.savedRev = rev;
         S.saveError = null;
+        S.dirtySince = 0; // saved: what changed meanwhile has its own few seconds
         if (r.mode === 'full' && r.size > 32 * 1024 * 1024) toast(t('save.compacted'), { kind: 'ok' });
       }
     } catch (e) {
@@ -1921,7 +1951,7 @@ function openSettings() {
   };
   paintBgPicks();
 
-  const autosave = h('label.check', {}, h('input', { type: 'checkbox', checked: pref.get('autosave', true), onchange: (e) => { pref.set('autosave', e.target.checked); if (e.target.checked) scheduleSave(); } }), t('settings.autosaveText'));
+  const autosave = h('label.check', {}, h('input', { type: 'checkbox', checked: pref.get('autosave', true), onchange: (e) => { pref.set('autosave', e.target.checked); if (e.target.checked) scheduleSave(); renderTopbar(); updateDocTitle(); } }), t('settings.autosaveText'));
 
   const linksDir = h('div.links-dir');
   const paintLinksDir = () => {
